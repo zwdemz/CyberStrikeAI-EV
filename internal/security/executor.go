@@ -1,0 +1,1681 @@
+package security
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/mcp"
+
+	"github.com/creack/pty"
+	"go.uber.org/zap"
+)
+
+var errShellReapTimeout = errors.New("shell process did not exit within reap grace")
+
+const shellReapGrace = 5 * time.Second
+
+func waitShellExitBounded(done <-chan error, grace time.Duration, force func()) error {
+	if grace <= 0 {
+		grace = shellReapGrace
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		if force != nil {
+			force()
+		}
+		return errShellReapTimeout
+	}
+}
+
+func waitShellSessionBounded(session *ShellSession) error {
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+	return waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
+}
+
+// ToolOutputCallback 用于在工具执行过程中把 stdout/stderr 增量推给上层（SSE）。
+// 通过 context 传递，避免修改 MCP ToolHandler 签名导致的“写死工具”问题。
+type ToolOutputCallback func(chunk string)
+
+type toolOutputCallbackCtxKey struct{}
+
+// ToolOutputCallbackCtxKey 是 context 中的 key，供 Agent 写入回调，Executor 读取并流式回调。
+var ToolOutputCallbackCtxKey = toolOutputCallbackCtxKey{}
+
+// Executor 安全工具执行器
+type Executor struct {
+	config                  *config.SecurityConfig
+	toolIndex               map[string]*config.ToolConfig // 工具索引，用于 O(1) 查找
+	mcpServer               *mcp.Server
+	logger                  *zap.Logger
+	shellNoOutputTimeoutSec int  // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
+	injectCmdTimeout        bool // 对 curl/wget 在未指定超时时注入 --max-time 兜底（默认 true，见 SetInjectCmdTimeout）
+	maxWallClockSec         int  // exec/execute 单次工具调用 wall-clock 总上限秒数；0=默认 300；-1=关闭（见 SetMaxWallClockSeconds）
+}
+
+// NewExecutor 创建新的执行器
+func NewExecutor(cfg *config.SecurityConfig, mcpServer *mcp.Server, logger *zap.Logger) *Executor {
+	executor := &Executor{
+		config:    cfg,
+		toolIndex: make(map[string]*config.ToolConfig),
+		mcpServer: mcpServer,
+		logger:    logger,
+	}
+	// 构建工具索引
+	executor.buildToolIndex()
+	return executor
+}
+
+// SetShellNoOutputTimeoutSeconds 配置 exec 工具无输出空闲终止（与 agent.shell_no_output_timeout_seconds 一致）。
+func (e *Executor) SetShellNoOutputTimeoutSeconds(sec int) {
+	e.shellNoOutputTimeoutSec = sec
+}
+
+// SetInjectCmdTimeout 配置 exec 命令层超时注入（curl/wget 在未指定超时时注入 --max-time 兜底）。
+func (e *Executor) SetInjectCmdTimeout(enable bool) {
+	e.injectCmdTimeout = enable
+}
+
+// SetMaxWallClockSeconds 配置 exec/execute 单次工具调用的 wall-clock 总上限秒数（0=默认 300，负数=关闭）。
+func (e *Executor) SetMaxWallClockSeconds(sec int) {
+	e.maxWallClockSec = sec
+}
+
+// ResolveWallClockTimeoutSeconds 解析 wall-clock 总上限：-1=关闭（返回 0）；0=默认 300；否则原样返回。
+func ResolveWallClockTimeoutSeconds(sec int) int {
+	if sec < 0 {
+		return 0
+	}
+	if sec == 0 {
+		return 300
+	}
+	return sec
+}
+
+// WallClockTimeoutMessage 构造 wall-clock 超时 soft error（含 P1-a 风格的 error_code/retryable）。
+func WallClockTimeoutMessage(sec int, output string) string {
+	const maxOutput = 800
+	snippet := output
+	if len(snippet) > maxOutput {
+		snippet = snippet[:maxOutput] + "\n... [truncated]"
+	}
+	return fmt.Sprintf(`命令执行超过单次 wall-clock 上限 %ds，已被终止。
+输出截止点：
+%s
+
+可能原因与建议：
+- 脚本串行执行了过多慢请求（如此前的 for+15 个 API）。建议改用并行(xargs -P)或缩短目标列表。
+- 扫描范围过大。建议收窄 scope、severity 或字典。
+- 确需长跑的任务请改后台运行(&)后异步查结果。
+
+[error_code: timeout, retryable: true]`, sec, snippet)
+}
+
+// buildToolIndex 构建工具索引，将 O(n) 查找优化为 O(1)
+func (e *Executor) buildToolIndex() {
+	e.toolIndex = make(map[string]*config.ToolConfig)
+	for i := range e.config.Tools {
+		if e.config.Tools[i].Enabled {
+			e.toolIndex[e.config.Tools[i].Name] = &e.config.Tools[i]
+		}
+	}
+	e.logger.Info("工具索引构建完成",
+		zap.Int("totalTools", len(e.config.Tools)),
+		zap.Int("enabledTools", len(e.toolIndex)),
+	)
+}
+
+// ExecuteTool 执行安全工具
+func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.ToolResult, error) {
+	e.logger.Info("ExecuteTool被调用",
+		zap.String("toolName", toolName),
+		zap.Any("args", args),
+	)
+
+	// 敏感 HTTP 写操作硬闸：在真实发请求/执行命令前拦截（非 HITL、非纯提示词）。
+	if blocked, msg := CheckSensitiveHTTPGate(toolName, args); blocked {
+		e.logger.Warn("敏感接口硬拦截",
+			zap.String("toolName", toolName),
+		)
+		return &mcp.ToolResult{
+			Content: []mcp.Content{{Type: "text", Text: msg}},
+			IsError: true,
+		}, nil
+	}
+
+	// 特殊处理：exec工具直接执行系统命令
+	if toolName == "exec" {
+		e.logger.Info("执行exec工具")
+		return e.executeSystemCommand(ctx, args)
+	}
+
+	// 使用索引查找工具配置（O(1) 查找）
+	toolConfig, exists := e.toolIndex[toolName]
+	if !exists {
+		e.logger.Error("工具未找到或未启用",
+			zap.String("toolName", toolName),
+			zap.Int("totalTools", len(e.config.Tools)),
+			zap.Int("enabledTools", len(e.toolIndex)),
+		)
+		return nil, fmt.Errorf("工具 %s 未找到或未启用", toolName)
+	}
+
+	e.logger.Info("找到工具配置",
+		zap.String("toolName", toolName),
+		zap.String("command", toolConfig.Command),
+		zap.Strings("args", toolConfig.Args),
+	)
+
+	// 特殊处理：内部工具（command 以 "internal:" 开头）
+	if strings.HasPrefix(toolConfig.Command, "internal:") {
+		e.logger.Info("执行内部工具",
+			zap.String("toolName", toolName),
+			zap.String("command", toolConfig.Command),
+		)
+		return e.executeInternalTool(ctx, toolName, toolConfig.Command, args)
+	}
+
+	// 构建命令 - 根据工具类型使用不同的参数格式
+	cmdArgs := e.buildCommandArgs(toolName, toolConfig, args)
+
+	e.logger.Info("构建命令参数完成",
+		zap.String("toolName", toolName),
+		zap.Strings("cmdArgs", cmdArgs),
+		zap.Int("argsCount", len(cmdArgs)),
+	)
+
+	// 验证命令参数
+	if len(cmdArgs) == 0 {
+		e.logger.Warn("命令参数为空",
+			zap.String("toolName", toolName),
+			zap.Any("inputArgs", args),
+		)
+		return &mcp.ToolResult{
+			Content: []mcp.Content{
+				{
+					Type: "text",
+					Text: fmt.Sprintf("错误: 工具 %s 缺少必需的参数。接收到的参数: %v", toolName, args),
+				},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// 启动前预检：nuclei 模板 / ffuf 字典缺失则不拉子进程，直接返回结构化 soft error 指引换路。
+	if msg := e.preflightToolPaths(toolName, toolConfig, args); msg != "" {
+		e.logger.Warn("工具启动前预检失败",
+			zap.String("tool", toolName),
+			zap.String("reason", "preflight"),
+		)
+		return &mcp.ToolResult{
+			Content: []mcp.Content{{Type: "text", Text: msg}},
+			IsError: true,
+		}, nil
+	}
+
+	// 执行命令
+	cmd := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+	applyDefaultTerminalEnv(cmd)
+	attachNonInteractiveStdin(cmd)
+	_ = prepareShellCmdSession(cmd)
+
+	e.logger.Info("执行安全工具",
+		zap.String("tool", toolName),
+		zap.Strings("args", cmdArgs),
+	)
+
+	var output string
+	var err error
+	// 如果上层提供了 stdout/stderr 增量回调，则边执行边读取并回调。
+	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); ok && cb != nil {
+		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec))
+		if err != nil && shouldRetryWithPTY(output) {
+			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
+				zap.String("tool", toolName),
+			)
+			cmd2 := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+			applyDefaultTerminalEnv(cmd2)
+			_ = prepareShellCmdSession(cmd2)
+			output, err = runCommandWithPTY(ctx, cmd2, cb)
+		}
+	} else {
+		// 非流式：内存缓冲 + ctx 取消杀进程组 + 无输出空闲兜底；行为对齐原 CombinedOutput，避免双流管道 fan-in 死锁。
+		output, err = combinedOutputCancellableWithInactivity(ctx, cmd, e.shellNoOutputTimeoutSec)
+		if err != nil && shouldRetryWithPTY(output) {
+			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
+				zap.String("tool", toolName),
+			)
+			cmd2 := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+			applyDefaultTerminalEnv(cmd2)
+			_ = prepareShellCmdSession(cmd2)
+			output, err = runCommandWithPTY(ctx, cmd2, nil)
+		}
+	}
+	if err != nil {
+		// 检查退出码是否在允许列表中
+		exitCode := getExitCode(err)
+		if exitCode != nil && toolConfig.AllowedExitCodes != nil {
+			for _, allowedCode := range toolConfig.AllowedExitCodes {
+				if *exitCode == allowedCode {
+					e.logger.Info("工具执行完成（退出码在允许列表中）",
+						zap.String("tool", toolName),
+						zap.Int("exitCode", *exitCode),
+						zap.String("output", string(output)),
+					)
+					return &mcp.ToolResult{
+						Content: []mcp.Content{
+							{
+								Type: "text",
+								Text: string(output),
+							},
+						},
+						IsError: false,
+					}, nil
+				}
+			}
+		}
+
+		e.logger.Error("工具执行失败",
+			zap.String("tool", toolName),
+			zap.Error(err),
+			zap.Int("exitCode", getExitCodeValue(err)),
+			zap.String("output", string(output)),
+		)
+		return &mcp.ToolResult{
+			Content: []mcp.Content{
+				{
+					Type: "text",
+					Text: fmt.Sprintf("工具执行失败: %v\n输出: %s", err, string(output)),
+				},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	e.logger.Info("工具执行成功",
+		zap.String("tool", toolName),
+		zap.String("output", string(output)),
+	)
+
+	return &mcp.ToolResult{
+		Content: []mcp.Content{
+			{
+				Type: "text",
+				Text: string(output),
+			},
+		},
+		IsError: false,
+	}, nil
+}
+
+// RegisterTools 注册工具到MCP服务器
+func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
+	e.logger.Info("开始注册工具",
+		zap.Int("totalTools", len(e.config.Tools)),
+		zap.Int("enabledTools", len(e.toolIndex)),
+	)
+
+	// 重新构建索引（以防配置更新）
+	e.buildToolIndex()
+
+	for i, toolConfig := range e.config.Tools {
+		if !toolConfig.Enabled {
+			e.logger.Debug("跳过未启用的工具",
+				zap.String("tool", toolConfig.Name),
+			)
+			continue
+		}
+
+		// 创建工具配置的副本，避免闭包问题
+		toolName := toolConfig.Name
+		toolConfigCopy := toolConfig
+
+		// 根据配置决定暴露给 AI/API 的描述：short_description 或 description
+		useFullDescription := strings.TrimSpace(strings.ToLower(e.config.ToolDescriptionMode)) == "full"
+		shortDesc := toolConfigCopy.ShortDescription
+		if shortDesc == "" {
+			// 如果没有简短描述，从详细描述中提取第一行或前10000个字符
+			desc := toolConfigCopy.Description
+			if len(desc) > 10000 {
+				if idx := strings.Index(desc, "\n"); idx > 0 && idx < 10000 {
+					shortDesc = strings.TrimSpace(desc[:idx])
+				} else {
+					shortDesc = desc[:10000] + "..."
+				}
+			} else {
+				shortDesc = desc
+			}
+		}
+		if useFullDescription {
+			shortDesc = "" // 使用 description 时清空 ShortDescription，下游会回退到 Description
+		}
+
+		tool := mcp.Tool{
+			Name:             toolConfigCopy.Name,
+			Description:      toolConfigCopy.Description,
+			ShortDescription: shortDesc,
+			InputSchema:      e.buildInputSchema(&toolConfigCopy),
+		}
+
+		handler := func(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {
+			e.logger.Info("工具handler被调用",
+				zap.String("toolName", toolName),
+				zap.Any("args", args),
+			)
+			return e.ExecuteTool(ctx, toolName, args)
+		}
+
+		mcpServer.RegisterTool(tool, handler)
+		e.logger.Info("注册安全工具成功",
+			zap.String("tool", toolConfigCopy.Name),
+			zap.String("command", toolConfigCopy.Command),
+			zap.Int("index", i),
+		)
+	}
+
+	e.logger.Info("工具注册完成",
+		zap.Int("registeredCount", len(e.config.Tools)),
+	)
+}
+
+// buildCommandArgs 构建命令参数
+func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConfig, args map[string]interface{}) []string {
+	cmdArgs := make([]string, 0)
+
+	// 如果配置中定义了参数映射，使用配置中的映射规则
+	if len(toolConfig.Parameters) > 0 {
+		// 检查是否有 scan_type 参数，如果有则替换默认的扫描类型参数
+		hasScanType := false
+		var scanTypeValue string
+		if scanType, ok := args["scan_type"].(string); ok && scanType != "" {
+			hasScanType = true
+			scanTypeValue = scanType
+		}
+
+		// 添加固定参数（如果指定了 scan_type，可能需要过滤掉默认的扫描类型参数）
+		if hasScanType && toolName == "nmap" {
+			// 对于 nmap，如果指定了 scan_type，跳过默认的 -sT -sV -sC
+			// 这些参数会被 scan_type 参数替换
+		} else {
+			cmdArgs = append(cmdArgs, toolConfig.Args...)
+		}
+
+		// 按位置参数排序
+		positionalParams := make([]config.ParameterConfig, 0)
+		flagParams := make([]config.ParameterConfig, 0)
+
+		for _, param := range toolConfig.Parameters {
+			if param.Position != nil {
+				positionalParams = append(positionalParams, param)
+			} else {
+				flagParams = append(flagParams, param)
+			}
+		}
+
+		// 对于需要子命令的工具（如 gobuster dir），position 0 必须紧跟在命令名后、所有 flag 之前
+		for _, param := range positionalParams {
+			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" ||
+				isSensitiveGateOnlyParam(param.Name) {
+				continue
+			}
+			if param.Position != nil && *param.Position == 0 {
+				value := e.getParamValue(args, param)
+				if value == nil && param.Default != nil {
+					value = param.Default
+				}
+				if value != nil {
+					cmdArgs = append(cmdArgs, e.formatParamValue(param, value))
+				}
+				break
+			}
+		}
+
+		// 处理标志参数
+		for _, param := range flagParams {
+			// 跳过特殊参数，它们会在后面单独处理
+			// action / 敏感闸放行参数仅用于框架逻辑，不传递给外部命令
+			if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" ||
+				isSensitiveGateOnlyParam(param.Name) {
+				continue
+			}
+
+			value := e.getParamValue(args, param)
+			if value == nil {
+				if param.Required {
+					// 必需参数缺失，返回空数组让上层处理错误
+					e.logger.Warn("缺少必需的标志参数",
+						zap.String("tool", toolName),
+						zap.String("param", param.Name),
+					)
+					return []string{}
+				}
+				continue
+			}
+
+			// 布尔值特殊处理：如果为 false，跳过；如果为 true，只添加标志
+			if param.Type == "bool" {
+				var boolVal bool
+				var ok bool
+
+				// 尝试多种类型转换
+				if boolVal, ok = value.(bool); ok {
+					// 已经是布尔值
+				} else if numVal, ok := value.(float64); ok {
+					// JSON 数字类型（float64）
+					boolVal = numVal != 0
+					ok = true
+				} else if numVal, ok := value.(int); ok {
+					// int 类型
+					boolVal = numVal != 0
+					ok = true
+				} else if strVal, ok := value.(string); ok {
+					// 字符串类型
+					boolVal = strVal == "true" || strVal == "1" || strVal == "yes"
+					ok = true
+				}
+
+				if ok {
+					if !boolVal {
+						continue // false 时不添加任何参数
+					}
+					// true 时只添加标志，不添加值
+					if param.Flag != "" {
+						cmdArgs = append(cmdArgs, param.Flag)
+					}
+					continue
+				}
+			}
+
+			format := param.Format
+			if format == "" {
+				format = "flag" // 默认格式
+			}
+
+			formattedValue := e.formatParamValue(param, value)
+			// 空字符串值不传递：避免 --flag standalone 把下一个参数误吞掉（如 nmap --script <target>）。
+			if formattedValue == "" && param.Type != "bool" {
+				continue
+			}
+
+			switch format {
+			case "flag":
+				// --flag value 或 -f value
+				if param.Flag != "" {
+					cmdArgs = append(cmdArgs, param.Flag)
+				}
+				cmdArgs = append(cmdArgs, formattedValue)
+			case "combined":
+				// --flag=value 或 -f=value
+				if param.Flag != "" {
+					cmdArgs = append(cmdArgs, fmt.Sprintf("%s=%s", param.Flag, formattedValue))
+				} else {
+					cmdArgs = append(cmdArgs, formattedValue)
+				}
+			case "template":
+				// 使用模板字符串
+				if param.Template != "" {
+					template := param.Template
+					template = strings.ReplaceAll(template, "{flag}", param.Flag)
+					template = strings.ReplaceAll(template, "{value}", formattedValue)
+					template = strings.ReplaceAll(template, "{name}", param.Name)
+					cmdArgs = append(cmdArgs, strings.Fields(template)...)
+				} else {
+					// 如果没有模板，使用默认格式
+					if param.Flag != "" {
+						cmdArgs = append(cmdArgs, param.Flag)
+					}
+					cmdArgs = append(cmdArgs, formattedValue)
+				}
+			case "positional":
+				// 位置参数（已在上面处理）
+				cmdArgs = append(cmdArgs, formattedValue)
+			default:
+				// 默认：直接添加值
+				cmdArgs = append(cmdArgs, formattedValue)
+			}
+		}
+
+		// 然后处理位置参数（位置参数通常在标志参数之后）
+		// 对位置参数按位置排序
+		// 首先找到最大的位置值，确定需要处理多少个位置
+		maxPosition := -1
+		for _, param := range positionalParams {
+			if param.Position != nil && *param.Position > maxPosition {
+				maxPosition = *param.Position
+			}
+		}
+
+		// 按位置顺序处理参数，确保即使某些位置没有参数或使用默认值，也能正确传递
+		// position 0 已在前面插入（子命令优先），此处从 1 开始
+		for i := 0; i <= maxPosition; i++ {
+			if i == 0 {
+				continue
+			}
+			for _, param := range positionalParams {
+				// 跳过特殊参数，它们会在后面单独处理
+				// action 参数仅用于工具内部逻辑，不传递给命令
+				if param.Name == "additional_args" || param.Name == "scan_type" || param.Name == "action" {
+					continue
+				}
+
+				if param.Position != nil && *param.Position == i {
+					value := e.getParamValue(args, param)
+					if value == nil {
+						if param.Required {
+							// 必需参数缺失，返回空数组让上层处理错误
+							e.logger.Warn("缺少必需的位置参数",
+								zap.String("tool", toolName),
+								zap.String("param", param.Name),
+								zap.Int("position", *param.Position),
+							)
+							return []string{}
+						}
+						// 对于非必需参数，如果值为 nil，尝试使用默认值
+						if param.Default != nil {
+							value = param.Default
+						} else {
+							// 如果没有默认值，跳过这个位置，继续处理下一个位置
+							break
+						}
+					}
+					// 只有当值不为 nil 时才添加到命令参数中
+					if value != nil {
+						cmdArgs = append(cmdArgs, e.formatParamValue(param, value))
+					}
+					break
+				}
+			}
+			// 如果某个位置没有找到对应的参数，继续处理下一个位置
+			// 这样可以确保位置参数的顺序正确
+		}
+
+		// 特殊处理：additional_args 参数（需要按空格分割成多个参数）
+		if additionalArgs, ok := args["additional_args"].(string); ok && additionalArgs != "" {
+			// 按空格分割，但保留引号内的内容
+			additionalArgsList := e.parseAdditionalArgs(additionalArgs)
+			cmdArgs = append(cmdArgs, additionalArgsList...)
+		}
+
+		// 特殊处理：scan_type 参数（需要按空格分割并插入到合适位置）
+		if hasScanType {
+			scanTypeArgs := e.parseAdditionalArgs(scanTypeValue)
+			if len(scanTypeArgs) > 0 {
+				// 对于 nmap，scan_type 应该替换默认的扫描类型参数
+				// 由于我们已经跳过了默认的 args，现在需要将 scan_type 插入到合适位置
+				// 找到 target 参数的位置（通常是最后一个位置参数）
+				insertPos := len(cmdArgs)
+				for i := len(cmdArgs) - 1; i >= 0; i-- {
+					// target 通常是最后一个非标志参数
+					if !strings.HasPrefix(cmdArgs[i], "-") {
+						insertPos = i
+						break
+					}
+				}
+				// 在 target 之前插入 scan_type 参数
+				newArgs := make([]string, 0, len(cmdArgs)+len(scanTypeArgs))
+				newArgs = append(newArgs, cmdArgs[:insertPos]...)
+				newArgs = append(newArgs, scanTypeArgs...)
+				newArgs = append(newArgs, cmdArgs[insertPos:]...)
+				cmdArgs = newArgs
+			}
+		}
+
+		return cmdArgs
+	}
+
+	// 如果没有定义参数配置，使用固定参数和通用处理
+	// 添加固定参数
+	cmdArgs = append(cmdArgs, toolConfig.Args...)
+
+	// 通用处理：将参数转换为命令行参数
+	for key, value := range args {
+		if key == "_tool_name" {
+			continue
+		}
+		// 使用 --key value 格式
+		cmdArgs = append(cmdArgs, fmt.Sprintf("--%s", key))
+		if strValue, ok := value.(string); ok {
+			cmdArgs = append(cmdArgs, strValue)
+		} else {
+			cmdArgs = append(cmdArgs, fmt.Sprintf("%v", value))
+		}
+	}
+
+	return cmdArgs
+}
+
+// parseAdditionalArgs 解析 additional_args 字符串，按空格分割但保留引号内的内容
+func (e *Executor) parseAdditionalArgs(argsStr string) []string {
+	if argsStr == "" {
+		return []string{}
+	}
+
+	result := make([]string, 0)
+	var current strings.Builder
+	inQuotes := false
+	var quoteChar rune
+	escapeNext := false
+
+	runes := []rune(argsStr)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		if escapeNext {
+			current.WriteRune(r)
+			escapeNext = false
+			continue
+		}
+
+		if r == '\\' {
+			// 检查下一个字符是否是引号
+			if i+1 < len(runes) && (runes[i+1] == '"' || runes[i+1] == '\'') {
+				// 转义的引号：跳过反斜杠，将引号作为普通字符写入
+				i++
+				current.WriteRune(runes[i])
+			} else {
+				// 其他转义字符：写入反斜杠，下一个字符会在下次迭代处理
+				escapeNext = true
+				current.WriteRune(r)
+			}
+			continue
+		}
+
+		if !inQuotes && (r == '"' || r == '\'') {
+			inQuotes = true
+			quoteChar = r
+			continue
+		}
+
+		if inQuotes && r == quoteChar {
+			inQuotes = false
+			quoteChar = 0
+			continue
+		}
+
+		if !inQuotes && (r == ' ' || r == '\t' || r == '\n') {
+			if current.Len() > 0 {
+				result = append(result, current.String())
+				current.Reset()
+			}
+			continue
+		}
+
+		current.WriteRune(r)
+	}
+
+	// 处理最后一个参数（如果存在）
+	if current.Len() > 0 {
+		result = append(result, current.String())
+	}
+
+	// 如果解析结果为空，使用简单的空格分割作为降级方案
+	if len(result) == 0 {
+		result = strings.Fields(argsStr)
+	}
+
+	return result
+}
+
+// getParamValue 获取参数值，支持默认值
+func (e *Executor) getParamValue(args map[string]interface{}, param config.ParameterConfig) interface{} {
+	// 从参数中获取值
+	if value, ok := args[param.Name]; ok && value != nil {
+		return value
+	}
+
+	// 如果参数是必需的但没有提供，返回 nil（让上层处理错误）
+	if param.Required {
+		return nil
+	}
+
+	// 返回默认值
+	return param.Default
+}
+
+// formatParamValue 格式化参数值
+func (e *Executor) formatParamValue(param config.ParameterConfig, value interface{}) string {
+	switch param.Type {
+	case "bool":
+		// 布尔值应该在上层处理，这里不应该被调用
+		if boolVal, ok := value.(bool); ok {
+			return fmt.Sprintf("%v", boolVal)
+		}
+		return "false"
+	case "array":
+		// 数组：转换为逗号分隔的字符串
+		if arr, ok := value.([]interface{}); ok {
+			strs := make([]string, 0, len(arr))
+			for _, item := range arr {
+				strs = append(strs, fmt.Sprintf("%v", item))
+			}
+			return strings.Join(strs, ",")
+		}
+		return fmt.Sprintf("%v", value)
+	case "object":
+		// 对象/字典：序列化为 JSON 字符串
+		if jsonBytes, err := json.Marshal(value); err == nil {
+			return string(jsonBytes)
+		}
+		// 如果 JSON 序列化失败，回退到默认格式化
+		return fmt.Sprintf("%v", value)
+	default:
+		formattedValue := fmt.Sprintf("%v", value)
+		// 特殊处理：对于 ports 参数（通常是 nmap 等工具的端口参数），清理空格
+		// nmap 不接受端口列表中有空格，例如 "80,443, 22" 应该变成 "80,443,22"
+		if param.Name == "ports" {
+			// 移除所有空格，但保留逗号和其他字符
+			formattedValue = strings.ReplaceAll(formattedValue, " ", "")
+		}
+		return formattedValue
+	}
+}
+
+// IsBackgroundShellCommand 检测命令是否为完全后台命令（末尾有独立 &，且不在引号内）。
+// command1 & command2 不算完全后台（command2 仍在前台执行）。
+func IsBackgroundShellCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	positions := findStandaloneAmpersandPositions(command)
+	if len(positions) == 0 {
+		return false
+	}
+	last := positions[len(positions)-1]
+	afterAmpersand := strings.TrimSpace(command[last+1:])
+	if afterAmpersand != "" {
+		return false
+	}
+	beforeAmpersand := strings.TrimSpace(command[:last])
+	return beforeAmpersand != ""
+}
+
+// executeSystemCommand 执行系统命令
+func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {
+	// 获取命令
+	command, ok := args["command"].(string)
+	if !ok {
+		return &mcp.ToolResult{
+			Content: []mcp.Content{
+				{
+					Type: "text",
+					Text: "错误: 缺少command参数",
+				},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	if command == "" {
+		return &mcp.ToolResult{
+			Content: []mcp.Content{
+				{
+					Type: "text",
+					Text: "错误: command参数不能为空",
+				},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// 安全检查：记录执行的命令
+	e.logger.Warn("执行系统命令",
+		zap.String("command", command),
+	)
+
+	// wall-clock 总上限：针对 exec 单次工具调用的硬兜底，治"持续慢输出但始终不超 inactivity"的长脚本
+	//（如 for 循环串行跑 15 个 API 跑 600s+）。与 inactivity（无输出空闲）互补。
+	wallClockSec := ResolveWallClockTimeoutSeconds(e.maxWallClockSec)
+	if wallClockSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(wallClockSec)*time.Second)
+		defer cancel()
+	}
+
+	command = PrepareShellCommandForExecute(command)
+
+	// 命令层超时兜底：对 curl/wget 在用户未指定超时时注入 --max-time/--connect-timeout，
+	// 消除「TCP 半开连接无限等」导致的命令挂起（现场日志卡死根因）。开关默认开，可配关闭。
+	if e.injectCmdTimeout {
+		if injected := maybeInjectCmdTimeout(command); injected != command {
+			e.logger.Info("注入命令层超时（curl/wget 兜底）", zap.String("command", injected))
+			command = injected
+		}
+	}
+
+	// 获取shell类型（可选，默认为sh）
+	shell := "sh"
+	if s, ok := args["shell"].(string); ok && s != "" {
+		shell = s
+	}
+
+	// 获取工作目录（可选）
+	workDir := ""
+	if wd, ok := args["workdir"].(string); ok && wd != "" {
+		workDir = wd
+	}
+
+	// 检测是否为后台命令（包含 & 符号，但不在引号内）
+	isBackground := IsBackgroundShellCommand(command)
+
+	// 构建命令
+	var cmd *exec.Cmd
+	if workDir != "" {
+		cmd = exec.CommandContext(ctx, shell, "-c", command)
+		cmd.Dir = workDir
+	} else {
+		cmd = exec.CommandContext(ctx, shell, "-c", command)
+	}
+	ConfigureShellCmdForAgentExecute(cmd)
+
+	// 执行命令
+	e.logger.Info("执行系统命令",
+		zap.String("command", command),
+		zap.String("shell", shell),
+		zap.String("workdir", workDir),
+		zap.Bool("isBackground", isBackground),
+	)
+
+	// 如果是后台命令，使用特殊处理来获取实际的后台进程PID
+	if isBackground {
+		// 移除命令末尾的 & 符号
+		commandWithoutAmpersand := strings.TrimSuffix(strings.TrimSpace(command), "&")
+		commandWithoutAmpersand = strings.TrimSpace(commandWithoutAmpersand)
+
+		// 构建新命令：后台作业重定向标准流后 echo $pid（与 RedirectBackgroundJobStdio 一致）。
+		pidCommand := RedirectBackgroundJobStdio(commandWithoutAmpersand+" &") + " pid=$!; echo $pid"
+
+		// 创建新命令来获取PID
+		var pidCmd *exec.Cmd
+		if workDir != "" {
+			pidCmd = exec.CommandContext(ctx, shell, "-c", pidCommand)
+			pidCmd.Dir = workDir
+		} else {
+			pidCmd = exec.CommandContext(ctx, shell, "-c", pidCommand)
+		}
+		ConfigureShellCmdForAgentExecute(pidCmd)
+
+		// 获取stdout管道
+		stdout, err := pidCmd.StdoutPipe()
+		if err != nil {
+			e.logger.Error("创建stdout管道失败",
+				zap.String("command", command),
+				zap.Error(err),
+			)
+			// 如果创建管道失败，使用shell进程的PID作为fallback
+			if err := pidCmd.Start(); err != nil {
+				return &mcp.ToolResult{
+					Content: []mcp.Content{
+						{
+							Type: "text",
+							Text: fmt.Sprintf("后台命令启动失败: %v", err),
+						},
+					},
+					IsError: true,
+				}, nil
+			}
+			pid := pidCmd.Process.Pid
+			go pidCmd.Wait() // 在后台等待，避免僵尸进程
+			return &mcp.ToolResult{
+				Content: []mcp.Content{
+					{
+						Type: "text",
+						Text: fmt.Sprintf("后台命令已启动\n命令: %s\n进程ID: %d (可能不准确，获取PID失败)\n\n注意: 后台进程将继续运行，不会等待其完成。", command, pid),
+					},
+				},
+				IsError: false,
+			}, nil
+		}
+
+		// 启动命令
+		if err := pidCmd.Start(); err != nil {
+			stdout.Close()
+			e.logger.Error("后台命令启动失败",
+				zap.String("command", command),
+				zap.Error(err),
+			)
+			return &mcp.ToolResult{
+				Content: []mcp.Content{
+					{
+						Type: "text",
+						Text: fmt.Sprintf("后台命令启动失败: %v", err),
+					},
+				},
+				IsError: true,
+			}, nil
+		}
+
+		// 读取第一行输出（PID）
+		reader := bufio.NewReader(stdout)
+		pidLine, err := reader.ReadString('\n')
+		stdout.Close()
+
+		var actualPid int
+		if err != nil && err != io.EOF {
+			e.logger.Warn("读取后台进程PID失败",
+				zap.String("command", command),
+				zap.Error(err),
+			)
+			// 如果读取失败，使用shell进程的PID
+			actualPid = pidCmd.Process.Pid
+		} else {
+			// 解析PID
+			pidStr := strings.TrimSpace(pidLine)
+			if parsedPid, err := strconv.Atoi(pidStr); err == nil {
+				actualPid = parsedPid
+			} else {
+				e.logger.Warn("解析后台进程PID失败",
+					zap.String("command", command),
+					zap.String("pidLine", pidStr),
+					zap.Error(err),
+				)
+				// 如果解析失败，使用shell进程的PID
+				actualPid = pidCmd.Process.Pid
+			}
+		}
+
+		// 在goroutine中等待shell进程，避免僵尸进程
+		go func() {
+			if err := pidCmd.Wait(); err != nil {
+				e.logger.Debug("后台命令shell进程执行完成",
+					zap.String("command", command),
+					zap.Error(err),
+				)
+			}
+		}()
+
+		e.logger.Info("后台命令已启动",
+			zap.String("command", command),
+			zap.Int("actualPid", actualPid),
+		)
+
+		return &mcp.ToolResult{
+			Content: []mcp.Content{
+				{
+					Type: "text",
+					Text: fmt.Sprintf("后台命令已启动\n命令: %s\n进程ID: %d\n\n注意: 后台进程将继续运行，不会等待其完成。", command, actualPid),
+				},
+			},
+			IsError: false,
+		}, nil
+	}
+
+	// 非后台命令：等待输出
+	var output string
+	var err error
+	// 若上层提供工具输出增量回调，则边执行边流式读取。
+	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); ok && cb != nil {
+		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec))
+		if err != nil && shouldRetryWithPTY(output) {
+			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
+			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
+			if workDir != "" {
+				cmd2.Dir = workDir
+			}
+			ConfigureShellCmdForAgentExecute(cmd2)
+			output, err = runCommandWithPTY(ctx, cmd2, cb)
+		}
+	} else {
+		output, err = combinedOutputCancellableWithInactivity(ctx, cmd, e.shellNoOutputTimeoutSec)
+		if err != nil && shouldRetryWithPTY(output) {
+			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
+			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
+			if workDir != "" {
+				cmd2.Dir = workDir
+			}
+			ConfigureShellCmdForAgentExecute(cmd2)
+			output, err = runCommandWithPTY(ctx, cmd2, nil)
+		}
+	}
+	if err != nil {
+		text := FormatCommandFailureFromErr(err, output)
+		// wall-clock 超时优先给出结构化提示（error_code=timeout / retryable），便于模型换路。
+		if wallClockSec > 0 && errors.Is(err, context.DeadlineExceeded) {
+			text = WallClockTimeoutMessage(wallClockSec, output)
+			e.logger.Warn("exec wall-clock timeout",
+				zap.String("command", command),
+				zap.Int("max_wall_clock_sec", wallClockSec),
+			)
+		}
+		e.logger.Error("系统命令执行失败",
+			zap.String("command", command),
+			zap.Error(err),
+			zap.String("output", string(output)),
+		)
+		return &mcp.ToolResult{
+			Content: []mcp.Content{
+				{
+					Type: "text",
+					Text: text,
+				},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	e.logger.Info("系统命令执行成功",
+		zap.String("command", command),
+		zap.String("output_length", fmt.Sprintf("%d", len(output))),
+	)
+
+	return &mcp.ToolResult{
+		Content: []mcp.Content{
+			{
+				Type: "text",
+				Text: string(output),
+			},
+		},
+		IsError: false,
+	}, nil
+}
+
+// combinedOutputCancellable 行为对齐 cmd.CombinedOutput（stdout/stderr 写入内存缓冲），
+// 但在 ctx 取消时 terminateCmdTree 终止整棵进程树。
+// 非流式路径不使用双流管道 fan-in，避免 stderr 撑满管道缓冲区时与 stdout 互相阻塞导致死锁。
+// noOutputSec<=0 时仅保留原 ctx 取消语义；>0 时叠加无输出空闲兜底（与流式路径一致）。
+func combinedOutputCancellable(ctx context.Context, cmd *exec.Cmd) (string, error) {
+	return combinedOutputCancellableWithInactivity(ctx, cmd, 0)
+}
+
+// combinedOutputCancellableWithInactivity 在 combinedOutputCancellable 基础上叠加无输出空闲检测：
+// 当 noOutputSec 内 stdout/stderr 均无新写入，则终止进程树并返回软失败提示（与流式路径语义一致）。
+func combinedOutputCancellableWithInactivity(ctx context.Context, cmd *exec.Cmd, noOutputSec int) (string, error) {
+	var stdoutBuf, stderrBuf strings.Builder
+	idleWatch := NewShellInactivityWatch(noOutputSec)
+	cmd.Stdout = wrapBumpingWriter(&stdoutBuf, idleWatch)
+	cmd.Stderr = wrapBumpingWriter(&stderrBuf, idleWatch)
+
+	session, err := StartShellSession(cmd)
+	if err != nil {
+		if idleWatch != nil {
+			idleWatch.Stop()
+		}
+		return "", err
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Wait()
+	}()
+
+	stopWatch := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			TerminateShellCmdSession(session)
+		case <-stopWatch:
+		}
+	}()
+	defer close(stopWatch)
+	if idleWatch != nil {
+		defer idleWatch.Stop()
+	}
+
+	var idleCh <-chan struct{}
+	if idleWatch != nil {
+		idleCh = idleWatch.Expired
+	}
+
+	var waitErr error
+	select {
+	case waitErr = <-done:
+	case <-ctx.Done():
+		waitErr = waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
+		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), ctx.Err()
+	case <-idleCh:
+		// 无输出空闲超时：杀进程组，等待回收，返回软失败提示（模型可见、可换路）。
+		TerminateShellCmdSession(session)
+		waitErr = waitShellExitBounded(done, shellReapGrace, func() { TerminateShellCmdSession(session) })
+		return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), fmt.Errorf("%s", ShellNoOutputTimeoutMessage(noOutputSec))
+	}
+	return joinCommandOutput(stdoutBuf.String(), stderrBuf.String()), waitErr
+}
+
+// bumpingWriter 包装底层 Writer，每次 Write 时 Bump 无输出空闲计时器。
+type bumpingWriter struct {
+	w     io.Writer
+	watch *ShellInactivityWatch
+}
+
+func (bw *bumpingWriter) Write(p []byte) (int, error) {
+	n, err := bw.w.Write(p)
+	if bw.watch != nil {
+		bw.watch.Bump()
+	}
+	return n, err
+}
+
+// wrapBumpingWriter 仅当存在空闲计时器时包装，否则原样返回（零开销）。
+func wrapBumpingWriter(w io.Writer, watch *ShellInactivityWatch) io.Writer {
+	if watch == nil {
+		return w
+	}
+	return &bumpingWriter{w: w, watch: watch}
+}
+
+// maybeInjectCmdTimeout 对 curl/wget 在未显式指定超时时注入兜底超时，
+// 消除「TCP 半开连接无限等」导致的命令挂起（现场日志卡死根因）。
+// 保守策略：命令已含 --max-time(curl) 或 --timeout/-T(wget) 时不覆盖；返回值与入参相同时表示未注入。
+func maybeInjectCmdTimeout(command string) string {
+	if command == "" {
+		return command
+	}
+	if strings.Contains(command, "curl") && !strings.Contains(command, "--max-time") {
+		command = strings.ReplaceAll(command, "curl ", "curl --max-time 60 --connect-timeout 10 ")
+	}
+	if strings.Contains(command, "wget") && !strings.Contains(command, "--timeout") && !strings.Contains(command, " -T ") {
+		command = strings.ReplaceAll(command, "wget ", "wget --timeout=60 --tries=2 ")
+	}
+	return command
+}
+
+// preflightToolPaths 对重工具做启动前路径校验（nuclei 模板 / ffuf 字典），
+// 缺失时不拉子进程，返回结构化 soft error 指引模型换路（避免 nuclei 自身 [FTL] 后才失败、白白等超时）。
+// 返回空串表示校验通过。
+func (e *Executor) preflightToolPaths(toolName string, toolConfig *config.ToolConfig, args map[string]interface{}) string {
+	switch toolName {
+	case "nuclei":
+		// 模型显式指定 template 参数（-t）则跳过内置目录校验。
+		if hasNonEmptyArg(args, "template") || hasAdditionalArgSubstring(args, "-t ") || hasAdditionalArgSubstring(args, "-templates ") {
+			return ""
+		}
+		if tp := defaultNucleiTemplatesDir(); tp != "" && !pathExists(tp) {
+			return fmt.Sprintf(`[preflight] nuclei 内置模板目录不存在: %s
+
+命令已中止（未启动子进程），避免空等超时。建议：
+- 安装/更新模板库: nuclei -update-templates
+- 或显式指定模板参数 template（如 -t <路径>）
+- 或改用不依赖模板库的工具（如 http-framework-test）
+
+[preflight] nuclei built-in templates dir missing: %s`, tp, tp)
+		}
+	case "ffuf":
+		wl := resolveFfufWordlist(args, toolConfig)
+		if wl != "" && !pathExists(wl) {
+			return fmt.Sprintf(`[preflight] ffuf 字典路径不存在: %s
+
+命令已中止（未启动子进程），避免空等超时。建议：
+- 提供已存在的 wordlist 路径（或安装 seclists/dirb 等字典包）
+- 或改用其它目录发现方式
+
+[preflight] ffuf wordlist missing: %s`, wl, wl)
+		}
+	}
+	return ""
+}
+
+func hasNonEmptyArg(args map[string]interface{}, key string) bool {
+	v, ok := args[key]
+	if !ok {
+		return false
+	}
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s) != ""
+	}
+	return v != nil
+}
+
+func hasAdditionalArgSubstring(args map[string]interface{}, sub string) bool {
+	s, _ := args["additional_args"].(string)
+	return strings.Contains(s, sub)
+}
+
+func pathExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	if _, err := os.Stat(p); err == nil {
+		return true
+	}
+	return false
+}
+
+// defaultNucleiTemplatesDir 返回 nuclei 默认模板目录（$HOME/nuclei-templates）；取不到 HOME 时返回空串。
+func defaultNucleiTemplatesDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return home + "/nuclei-templates"
+}
+
+// resolveFfufWordlist 解析 ffuf 实际使用的字典路径：模型显式参数 > additional_args 中的 -w > yaml 默认值。
+func resolveFfufWordlist(args map[string]interface{}, toolConfig *config.ToolConfig) string {
+	if wl, ok := args["wordlist"].(string); ok && strings.TrimSpace(wl) != "" {
+		return wl
+	}
+	if additional, ok := args["additional_args"].(string); ok && additional != "" {
+		if wl := extractFlagValue(additional, "-w", "--wordlist"); wl != "" {
+			return wl
+		}
+	}
+	if toolConfig != nil {
+		for _, p := range toolConfig.Parameters {
+			if p.Name == "wordlist" && p.Default != nil {
+				if s, ok := p.Default.(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// extractFlagValue 从空格分隔的参数串中提取 -x/--xxx 紧随的值；找不到返回空串。
+func extractFlagValue(s string, flags ...string) string {
+	parts := strings.Fields(s)
+	for i := 0; i < len(parts); i++ {
+		for _, f := range flags {
+			if parts[i] == f && i+1 < len(parts) {
+				return parts[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+func joinCommandOutput(stdout, stderr string) string {
+	if stderr == "" {
+		return stdout
+	}
+	if stdout == "" {
+		return stderr
+	}
+	return stdout + stderr
+}
+
+// streamCommandOutput 以“边读边回调”的方式读取命令 stdout/stderr。
+// 使用定长块读取，避免按行读取在无换行输出时永久阻塞；ctx 取消时终止进程树。
+func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback, noOutputSec int) (string, error) {
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdoutPipe.Close()
+		return "", err
+	}
+	session, err := StartShellSession(cmd)
+	if err != nil {
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
+		return "", err
+	}
+
+	stopWatch := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			TerminateShellCmdSession(session)
+		case <-stopWatch:
+		}
+	}()
+	defer close(stopWatch)
+
+	chunks := make(chan string, 64)
+	var wg sync.WaitGroup
+	readFn := func(r io.Reader) {
+		defer wg.Done()
+		buf := make([]byte, 8192)
+		for {
+			n, readErr := r.Read(buf)
+			if n > 0 {
+				chunks <- string(buf[:n])
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}
+
+	wg.Add(2)
+	go readFn(stdoutPipe)
+	go readFn(stderrPipe)
+
+	go func() {
+		wg.Wait()
+		close(chunks)
+	}()
+
+	var outBuilder strings.Builder
+	var deltaBuilder strings.Builder
+	lastFlush := time.Now()
+
+	flush := func() {
+		if deltaBuilder.Len() == 0 {
+			return
+		}
+		if cb != nil {
+			cb(deltaBuilder.String())
+		}
+		deltaBuilder.Reset()
+		lastFlush = time.Now()
+	}
+
+	idleWatch := NewShellInactivityWatch(noOutputSec)
+	if idleWatch != nil {
+		defer idleWatch.Stop()
+	}
+
+	fireInactivity := func() {
+		TerminateShellCmdSession(session)
+		msg := ShellNoOutputTimeoutMessage(idleWatch.Sec)
+		outBuilder.WriteString(msg)
+		if cb != nil {
+			cb(msg)
+		}
+		_ = waitShellSessionBounded(session)
+	}
+
+chunksLoop:
+	for {
+		var idleCh <-chan struct{}
+		if idleWatch != nil {
+			idleCh = idleWatch.Expired
+		}
+		select {
+		case <-ctx.Done():
+			TerminateShellCmdSession(session)
+			flush()
+			_ = waitShellSessionBounded(session)
+			return outBuilder.String(), ctx.Err()
+		case <-idleCh:
+			fireInactivity()
+			return outBuilder.String(), fmt.Errorf("shell inactivity timeout (%ds)", idleWatch.Sec)
+		case chunk, ok := <-chunks:
+			if !ok {
+				break chunksLoop
+			}
+			if chunk != "" && idleWatch != nil {
+				idleWatch.Bump()
+			}
+			outBuilder.WriteString(chunk)
+			deltaBuilder.WriteString(chunk)
+			if deltaBuilder.Len() >= 2048 || time.Since(lastFlush) >= 200*time.Millisecond {
+				flush()
+			}
+		}
+	}
+	flush()
+
+	// 等待命令结束，返回最终退出状态
+	waitErr := session.Wait()
+	return outBuilder.String(), waitErr
+}
+
+// applyDefaultTerminalEnv 为外部工具补齐常见的终端环境变量。
+// 注意：这不会创建 TTY，只是减少某些工具在非交互环境下的“奇怪排版/检测失败”。
+func applyDefaultTerminalEnv(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	// 仅在未显式设置 Env 时，继承当前进程环境
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = ApplyNonInteractivePagerEnv(cmd.Env)
+	// 如果用户已设置 TERM/COLUMNS/LINES，则不覆盖
+	has := func(k string) bool {
+		prefix := k + "="
+		for _, e := range cmd.Env {
+			if strings.HasPrefix(e, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("TERM") {
+		cmd.Env = append(cmd.Env, "TERM=xterm-256color")
+	}
+	if !has("COLUMNS") {
+		cmd.Env = append(cmd.Env, "COLUMNS=256")
+	}
+	if !has("LINES") {
+		cmd.Env = append(cmd.Env, "LINES=40")
+	}
+}
+
+func shouldRetryWithPTY(output string) bool {
+	o := strings.ToLower(output)
+	// autorecon / python termios 常见报错
+	if strings.Contains(o, "inappropriate ioctl for device") {
+		return true
+	}
+	if strings.Contains(o, "termios.error") {
+		return true
+	}
+	// 兜底：stdin 不是 tty
+	if strings.Contains(o, "not a tty") {
+		return true
+	}
+	return false
+}
+
+// runCommandWithPTY 为子进程分配 PTY，适配需要交互式终端的工具（如 autorecon）。
+// 若 cb != nil，将持续回调增量输出（用于 SSE）。
+func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback) (string, error) {
+	if runtime.GOOS == "windows" {
+		// PTY 方案为类 Unix；Windows 走原逻辑
+		if cb != nil {
+			return streamCommandOutput(ctx, cmd, cb, 0)
+		}
+		_ = prepareShellCmdSession(cmd)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	_ = prepareShellCmdSession(cmd)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = ptmx.Close() }()
+
+	rootPID := 0
+	if cmd.Process != nil {
+		rootPID = cmd.Process.Pid
+	}
+
+	// ctx 取消时尽快终止子进程
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = ptmx.Close() // 触发读退出
+			terminateProcessGroup(rootPID, cmd)
+		case <-done:
+		}
+	}()
+	defer close(done)
+
+	var outBuilder strings.Builder
+	var deltaBuilder strings.Builder
+	lastFlush := time.Now()
+	flush := func() {
+		if cb == nil || deltaBuilder.Len() == 0 {
+			deltaBuilder.Reset()
+			lastFlush = time.Now()
+			return
+		}
+		cb(deltaBuilder.String())
+		deltaBuilder.Reset()
+		lastFlush = time.Now()
+	}
+
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := ptmx.Read(buf)
+		if n > 0 {
+			chunk := string(buf[:n])
+			// 统一换行为 \n，避免前端错位
+			chunk = strings.ReplaceAll(chunk, "\r\n", "\n")
+			chunk = strings.ReplaceAll(chunk, "\r", "\n")
+			outBuilder.WriteString(chunk)
+			deltaBuilder.WriteString(chunk)
+			if deltaBuilder.Len() >= 2048 || time.Since(lastFlush) >= 200*time.Millisecond {
+				flush()
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	flush()
+
+	waitErr := cmd.Wait()
+	return outBuilder.String(), waitErr
+}
+
+// executeInternalTool 执行内部工具（不执行外部命令）
+func (e *Executor) executeInternalTool(ctx context.Context, toolName string, command string, args map[string]interface{}) (*mcp.ToolResult, error) {
+	internalToolType := strings.TrimPrefix(command, "internal:")
+	e.logger.Warn("未知的内部工具",
+		zap.String("toolName", toolName),
+		zap.String("internalToolType", internalToolType),
+	)
+	return &mcp.ToolResult{
+		Content: []mcp.Content{
+			{
+				Type: "text",
+				Text: fmt.Sprintf("错误: 未知的内部工具类型: %s", internalToolType),
+			},
+		},
+		IsError: true,
+	}, nil
+}
+
+// buildInputSchema 构建输入模式
+func (e *Executor) buildInputSchema(toolConfig *config.ToolConfig) map[string]interface{} {
+	schema := map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{},
+		"required":   []string{},
+	}
+
+	// 如果配置中定义了参数，优先使用配置中的参数定义
+	if len(toolConfig.Parameters) > 0 {
+		properties := make(map[string]interface{})
+		required := []string{}
+
+		for _, param := range toolConfig.Parameters {
+			// 跳过 name 为空的参数（避免 YAML 中 name: null 或空导致非法 schema）
+			if strings.TrimSpace(param.Name) == "" {
+				e.logger.Debug("跳过无名称的参数",
+					zap.String("tool", toolConfig.Name),
+					zap.String("type", param.Type),
+				)
+				continue
+			}
+			// 转换类型为OpenAI/JSON Schema标准类型（空类型默认为 string）
+			openAIType := e.convertToOpenAIType(param.Type)
+
+			prop := map[string]interface{}{
+				"type":        openAIType,
+				"description": param.Description,
+			}
+
+			// JSON Schema/OpenAI 要求 array 类型必须包含 items，否则 API 报 invalid_function_parameters
+			if openAIType == "array" {
+				itemType := strings.TrimSpace(param.ItemType)
+				if itemType == "" {
+					itemType = "string"
+				}
+				prop["items"] = map[string]interface{}{
+					"type": e.convertToOpenAIType(itemType),
+				}
+			}
+
+			// 添加默认值
+			if param.Default != nil {
+				prop["default"] = param.Default
+			}
+
+			// 添加枚举选项
+			if len(param.Options) > 0 {
+				prop["enum"] = param.Options
+			}
+
+			properties[param.Name] = prop
+
+			// 添加到必需参数列表
+			if param.Required {
+				required = append(required, param.Name)
+			}
+		}
+
+		schema["properties"] = properties
+		schema["required"] = required
+		return schema
+	}
+
+	// 如果没有定义参数配置，返回空schema
+	// 这种情况下工具可能只使用固定参数（args字段）
+	// 或者需要通过YAML配置文件定义参数
+	e.logger.Warn("工具未定义参数配置，返回空schema",
+		zap.String("tool", toolConfig.Name),
+	)
+	return schema
+}
+
+// convertToOpenAIType 将配置中的类型转换为OpenAI/JSON Schema标准类型
+func (e *Executor) convertToOpenAIType(configType string) string {
+	// 空或 null 类型统一视为 string，避免非法 schema 导致工具调用失败
+	if strings.TrimSpace(configType) == "" {
+		return "string"
+	}
+	switch configType {
+	case "bool":
+		return "boolean"
+	case "int", "integer":
+		return "number"
+	case "float", "double":
+		return "number"
+	case "string", "array", "object":
+		return configType
+	default:
+		// 默认返回原类型，但记录警告
+		e.logger.Warn("未知的参数类型，使用原类型",
+			zap.String("type", configType),
+		)
+		return configType
+	}
+}
+
+// getExitCode 从错误中提取退出码，如果不是ExitError则返回nil
+func getExitCode(err error) *int {
+	if err == nil {
+		return nil
+	}
+	if exitError, ok := err.(*exec.ExitError); ok {
+		if exitError.ProcessState != nil {
+			exitCode := exitError.ExitCode()
+			return &exitCode
+		}
+	}
+	return nil
+}
+
+// getExitCodeValue 从错误中提取退出码值，如果不是ExitError则返回-1
+func getExitCodeValue(err error) int {
+	if code := getExitCode(err); code != nil {
+		return *code
+	}
+	return -1
+}

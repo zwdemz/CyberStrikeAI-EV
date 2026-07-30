@@ -1,0 +1,269 @@
+package multiagent
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"cyberstrike-ai/internal/config"
+
+	localbk "github.com/cloudwego/eino-ext/adk/backend/local"
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
+	"github.com/cloudwego/eino/adk/middlewares/patchtoolcalls"
+	"github.com/cloudwego/eino/adk/middlewares/plantask"
+	"github.com/cloudwego/eino/adk/middlewares/reduction"
+	"github.com/cloudwego/eino/components/tool"
+	"go.uber.org/zap"
+)
+
+// einoMWPlacement controls which optional middleware runs on orchestrator vs sub-agents.
+type einoMWPlacement int
+
+const (
+	einoMWMain einoMWPlacement = iota // Deep / Supervisor main chat agent
+	einoMWSub                         // Specialist ChatModelAgent
+)
+
+func sanitizeEinoPathSegment(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "default"
+	}
+	s = strings.ReplaceAll(s, string(filepath.Separator), "-")
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, "\\", "-")
+	s = strings.ReplaceAll(s, "..", "__")
+	if len(s) > 180 {
+		s = s[:180]
+	}
+	return s
+}
+
+func splitToolsForToolSearch(all []tool.BaseTool, alwaysVisible int) (static []tool.BaseTool, dynamic []tool.BaseTool, ok bool) {
+	if alwaysVisible <= 0 || len(all) <= alwaysVisible+1 {
+		return all, nil, false
+	}
+	return append([]tool.BaseTool(nil), all[:alwaysVisible]...), append([]tool.BaseTool(nil), all[alwaysVisible:]...), true
+}
+
+func splitToolsForToolSearchByNames(all []tool.BaseTool, names []string, fallbackAlwaysVisible int) (static []tool.BaseTool, dynamic []tool.BaseTool, ok bool) {
+	nameSet := expandAlwaysVisibleNameSet(names)
+	if len(nameSet) == 0 {
+		return splitToolsForToolSearch(all, fallbackAlwaysVisible)
+	}
+	static = make([]tool.BaseTool, 0, len(all))
+	dynamic = make([]tool.BaseTool, 0, len(all))
+	for _, t := range all {
+		if t == nil {
+			continue
+		}
+		info, err := t.Info(context.Background())
+		name := ""
+		if err == nil && info != nil {
+			name = info.Name
+		}
+		if toolMatchesAlwaysVisible(name, nameSet) {
+			static = append(static, t)
+			continue
+		}
+		dynamic = append(dynamic, t)
+	}
+	if len(static) == 0 || len(dynamic) == 0 {
+		// fallback: preserve previous behavior when whitelist misses all or includes all.
+		return splitToolsForToolSearch(all, fallbackAlwaysVisible)
+	}
+	return static, dynamic, true
+}
+
+func reductionCacheRootDir(configuredBase, projectID, conversationID string) string {
+	base := strings.TrimSpace(configuredBase)
+	if base == "" {
+		base = filepath.Join("tmp", "reduction")
+	}
+	if pid := strings.TrimSpace(projectID); pid != "" {
+		return filepath.Join(base, "projects", sanitizeEinoPathSegment(pid))
+	}
+	conv := strings.TrimSpace(conversationID)
+	if conv == "" {
+		conv = "default"
+	}
+	return filepath.Join(base, "conversations", sanitizeEinoPathSegment(conv))
+}
+
+func buildReductionMiddleware(ctx context.Context, mw config.MultiAgentEinoMiddlewareConfig, projectID, convID string, loc *localbk.Local, boundToolNames []string, logger *zap.Logger) (adk.ChatModelAgentMiddleware, error) {
+	if loc == nil {
+		return nil, fmt.Errorf("reduction: local backend nil")
+	}
+	root := reductionCacheRootDir(mw.ReductionRootDir, projectID, convID)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, fmt.Errorf("reduction root: %w", err)
+	}
+	// 不清空：用户配置 + 框架元工具 + 本轮角色绑定工具（禁止硬编码 MCP 工具名）
+	excl := mergeReductionClearExclude(mw.ReductionClearExclude, boundToolNames)
+	redMW, err := reduction.New(ctx, &reduction.Config{
+		Backend:           loc,
+		RootDir:           root,
+		ReadFileToolName:  "read_file",
+		ClearExcludeTools: excl,
+		MaxLengthForTrunc: mw.ReductionMaxLengthForTruncEffective(),
+		MaxTokensForClear: int64(mw.ReductionMaxTokensForClearEffective()),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if logger != nil {
+		logger.Info("eino middleware: reduction enabled",
+			zap.String("root", root),
+			zap.Bool("execution_boost", mw.ExecutionBoostEffective()),
+			zap.Int("bound_tools", len(boundToolNames)),
+			zap.Int("clear_exclude_count", len(excl)))
+	}
+	return redMW, nil
+}
+
+// prependEinoMiddlewares returns handlers to prepend (outermost first) and optionally replaces tools when tool_search is used.
+// toolSearchActive is true when the toolsearch middleware was mounted (dynamic tools split off); callers should pass this to
+// injectToolNamesOnlyInstruction — tool_search is not part of the pre-middleware tools list, so name-scanning alone cannot detect it.
+func prependEinoMiddlewares(
+	ctx context.Context,
+	mw *config.MultiAgentEinoMiddlewareConfig,
+	place einoMWPlacement,
+	tools []tool.BaseTool,
+	einoLoc *localbk.Local,
+	skillsRoot string,
+	conversationID string,
+	projectID string,
+	logger *zap.Logger,
+) (outTools []tool.BaseTool, extraHandlers []adk.ChatModelAgentMiddleware, toolSearchActive bool, err error) {
+	if mw == nil {
+		return tools, nil, false, nil
+	}
+	outTools = tools
+	// 本轮已绑定工具名（来自角色 ToolsForRole → ToolsFromDefinitions），编排层禁止再注入硬编码 MCP 名
+	boundNames := collectToolNames(ctx, tools)
+
+	if mw.PatchToolCallsEffective() {
+		patchMW, perr := patchtoolcalls.New(ctx, &patchtoolcalls.Config{})
+		if perr != nil {
+			return nil, nil, false, fmt.Errorf("patchtoolcalls: %w", perr)
+		}
+		extraHandlers = append(extraHandlers, patchMW)
+	}
+
+	if mw.ReductionEnable && einoLoc != nil {
+		if place == einoMWSub && !mw.ReductionSubAgents {
+			// skip
+		} else {
+			redMW, rerr := buildReductionMiddleware(ctx, *mw, projectID, conversationID, einoLoc, boundNames, logger)
+			if rerr != nil {
+				return nil, nil, false, rerr
+			}
+			extraHandlers = append(extraHandlers, redMW)
+		}
+	}
+
+	minTools := mw.ToolSearchMinTools
+	if minTools <= 0 {
+		minTools = 20
+	}
+	alwaysVis := mw.ToolSearchAlwaysVisible
+	if alwaysVis <= 0 {
+		alwaysVis = 12
+	}
+	boost := mw.ExecutionBoostEffective()
+	// always_visible 仅能来自：配置∩角色绑定 或 角色绑定列表前 N 项
+	alwaysVisibleMerged := resolveAlwaysVisibleToolNames(mw.ToolSearchAlwaysVisibleTools, boundNames, alwaysVis)
+	if mw.ToolSearchEnable && len(tools) >= minTools {
+		static, dynamic, split := splitToolsForToolSearchByNames(tools, alwaysVisibleMerged, alwaysVis)
+		if split && len(dynamic) > 0 {
+			ts, terr := toolsearch.New(ctx, &toolsearch.Config{DynamicTools: dynamic})
+			if terr != nil {
+				return nil, nil, false, fmt.Errorf("toolsearch: %w", terr)
+			}
+			extraHandlers = append(extraHandlers, ts)
+			outTools = static
+			toolSearchActive = true
+			if logger != nil {
+				logger.Info("eino middleware: tool_search enabled",
+					zap.Bool("execution_boost", boost),
+					zap.Int("always_visible_merged", len(alwaysVisibleMerged)),
+					zap.Int("static_tools", len(static)),
+					zap.Int("dynamic_tools", len(dynamic)))
+			}
+		} else if logger != nil {
+			logger.Info("eino middleware: tool_search skipped (no dynamic split)",
+				zap.Bool("execution_boost", boost),
+				zap.Int("always_visible_merged", len(alwaysVisibleMerged)),
+				zap.Int("tools", len(tools)))
+		}
+	} else if logger != nil {
+		logger.Info("eino middleware: tool_search disabled or below min_tools",
+			zap.Bool("tool_search_enable", mw.ToolSearchEnable),
+			zap.Bool("execution_boost", boost),
+			zap.Int("tools", len(tools)),
+			zap.Int("min_tools", minTools),
+			zap.Int("always_visible_merged", len(alwaysVisibleMerged)))
+	}
+
+	if place == einoMWMain && mw.PlantaskEnable {
+		if einoLoc == nil || strings.TrimSpace(skillsRoot) == "" {
+			if logger != nil {
+				logger.Warn("eino middleware: plantask_enable ignored (need eino_skills + skills_dir)")
+			}
+		} else {
+			rel := strings.TrimSpace(mw.PlantaskRelDir)
+			if rel == "" {
+				rel = ".eino/plantask"
+			}
+			baseDir := filepath.Join(skillsRoot, rel, sanitizeEinoPathSegment(conversationID))
+			if mk := os.MkdirAll(baseDir, 0o755); mk != nil {
+				return nil, nil, toolSearchActive, fmt.Errorf("plantask mkdir: %w", mk)
+			}
+			ptBE := newLocalPlantaskBackend(einoLoc)
+			pt, perr := plantask.New(ctx, &plantask.Config{Backend: ptBE, BaseDir: baseDir})
+			if perr != nil {
+				return nil, nil, toolSearchActive, fmt.Errorf("plantask: %w", perr)
+			}
+			extraHandlers = append(extraHandlers, pt)
+			if logger != nil {
+				logger.Info("eino middleware: plantask enabled", zap.String("baseDir", baseDir))
+			}
+		}
+	}
+
+	return outTools, extraHandlers, toolSearchActive, nil
+}
+
+func deepExtrasFromConfig(ma *config.MultiAgentConfig) (outputKey string, taskDesc func(context.Context, []adk.Agent) (string, error)) {
+	if ma == nil {
+		return "", nil
+	}
+	mw := ma.EinoMiddleware
+	if k := strings.TrimSpace(mw.DeepOutputKey); k != "" {
+		outputKey = k
+	}
+	prefix := strings.TrimSpace(mw.TaskToolDescriptionPrefix)
+	if prefix != "" {
+		taskDesc = func(ctx context.Context, agents []adk.Agent) (string, error) {
+			_ = ctx
+			var names []string
+			for _, a := range agents {
+				if a == nil {
+					continue
+				}
+				n := strings.TrimSpace(a.Name(ctx))
+				if n != "" {
+					names = append(names, n)
+				}
+			}
+			if len(names) == 0 {
+				return prefix, nil
+			}
+			return prefix + "\n可用子代理（按名称 transfer / task 调用）：" + strings.Join(names, "、"), nil
+		}
+	}
+	return outputKey, taskDesc
+}
