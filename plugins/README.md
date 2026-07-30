@@ -1,6 +1,6 @@
 ## Plugins
 
-This directory contains optional plugins/extensions that integrate CyberStrikeAI with other tools.
+This directory contains optional plugins/extensions that integrate CyberStrikeAI-EV with other tools.
 
 - `burp-suite/`: Burp Suite extensions
 

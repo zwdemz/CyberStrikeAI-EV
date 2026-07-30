@@ -1,7 +1,7 @@
 # [Bug] Eino ChatModel 节点偶发 400（Invalid request body）于工具执行后的第二次模型调用
 
 ## 环境信息
-- CyberStrikeAI-SRC `v1.6.51-src`
+- CyberStrikeAI-EV-SRC `v1.6.51-src`
 - 模型：`glm-5.2`，`base_url: https://ark.cn-beijing.volces.com/api/coding/v3`（火山方舟 **Coding Plan** 端点），`provider: openai`
 - `reasoning: {mode: on, effort: high, profile: auto}` -> 经 `resolveWireProfile` 走 `wireOpenAI`，`applyOpenAICompat` 向请求体注入 `reasoning_effort: "high"`
 - 依赖：`eino-ext/components/model/openai v0.1.13`、`eino-ext/libs/acl/openai v0.1.17`、`meguminnnnnnnnn/go-openai v0.1.2`

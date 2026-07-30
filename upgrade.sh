@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-BINARY_NAME="cyberstrike-ai"
+BINARY_NAME="cyberstrike-ai-ev"
 CONFIG_FILE="$ROOT_DIR/config.yaml"
 DATA_DIR="$ROOT_DIR/data"
 VENV_DIR="$ROOT_DIR/venv"
@@ -45,7 +45,7 @@ Options:
   --no-venv                 Do not preserve venv/ (Python deps will be re-installed).
   --no-stop                 Do not try to stop the running service.
   --force-stop             If no process matching current directory is found, also stop
-                            any cyberstrike-ai processes (use with caution).
+                            any cyberstrike-ai-ev processes (use with caution).
   --yes                     Do not ask for confirmation.
   --no-sync-roles-skills   Preserve local roles/ and skills/ instead of syncing from
                             upstream (default: roles/skills are synced).
@@ -87,7 +87,7 @@ http_get() {
 
 stop_service() {
   # Try to stop the service that is running from the current project directory.
-  # If nothing is found and --force-stop is enabled, stop all cyberstrike-ai processes.
+  # If nothing is found and --force-stop is enabled, stop all cyberstrike-ai-ev processes.
   if [[ "$STOP_SERVICE" -ne 1 ]]; then
     return 0
   fi

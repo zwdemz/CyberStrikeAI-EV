@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/database"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -275,7 +275,7 @@ func (h *RobotHandler) robotMessageTimeout() time.Duration {
 
 func (h *RobotHandler) cmdHelp() string {
 	var b strings.Builder
-	b.WriteString("【CyberStrikeAI 机器人命令】\n\n")
+	b.WriteString("【CyberStrikeAI-EV 机器人命令】\n\n")
 	b.WriteString("【通用 General】\n")
 	b.WriteString("· 帮助 / help — 显示本帮助\n")
 	b.WriteString("· 版本 / version — 显示当前版本号\n")
@@ -608,7 +608,7 @@ func (h *RobotHandler) cmdVersion() string {
 	if v == "" {
 		v = "未知"
 	}
-	return "CyberStrikeAI " + v
+	return "CyberStrikeAI-EV " + v
 }
 
 // handleRobotCommand 处理机器人内置命令；若匹配到命令返回 (回复内容, true)，否则返回 ("", false)

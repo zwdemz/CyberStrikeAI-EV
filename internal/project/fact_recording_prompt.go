@@ -1,6 +1,6 @@
 package project
 
-import "cyberstrike-ai/internal/projectprompt"
+import "cyberstrike-ai-ev/internal/projectprompt"
 
 // FactRecordingIncrementalRhythmMarkdown 见 projectprompt。
 func FactRecordingIncrementalRhythmMarkdown(coordinator, subAgent bool) string {

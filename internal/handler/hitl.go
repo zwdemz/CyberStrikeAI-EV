@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/multiagent"
+	"cyberstrike-ai-ev/internal/database"
+	"cyberstrike-ai-ev/internal/multiagent"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"

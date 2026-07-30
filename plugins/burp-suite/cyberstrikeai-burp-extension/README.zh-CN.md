@@ -1,14 +1,14 @@
-## CyberStrikeAI Burp Suite 插件（中文说明）
+## CyberStrikeAI-EV Burp Suite 插件（中文说明）
 
 ### 功能概述
 
-- 在 Burp 的 `CyberStrikeAI` 标签页中配置 **Host、端口、密码、单/多 Agent**
+- 在 Burp 的 `CyberStrikeAI-EV` 标签页中配置 **Host、端口、密码、单/多 Agent**
 - 点击 **Validate（验证）**：
   - 调用 `POST /api/auth/login` 用密码换取 Token
   - 调用 `GET /api/auth/validate` 校验 Token
   - 验证通过后 Token 会保存在插件内存中（本次 Burp 会话有效）
-- 右键任意 HTTP 请求包 → **Send to CyberStrikeAI (stream test)**：
-  - 将该 HTTP 请求（含 headers/body；若存在响应则附带截断片段）发送到 CyberStrikeAI
+- 右键任意 HTTP 请求包 → **Send to CyberStrikeAI-EV (stream test)**：
+  - 将该 HTTP 请求（含 headers/body；若存在响应则附带截断片段）发送到 CyberStrikeAI-EV
   - 以 **SSE 流式**接收返回内容，并在标签页中实时展示
   - 单 Agent：`POST /api/eino-agent/stream`
   - 多 Agent：`POST /api/multi-agent/stream`（需 `multi_agent.enabled: true`，请求体 `orchestration`）
@@ -77,19 +77,19 @@ cd plugins/burp-suite/cyberstrikeai-burp-extension
 
 ### 使用方法
 
-1) 打开 Burp 顶部标签页 `CyberStrikeAI`
+1) 打开 Burp 顶部标签页 `CyberStrikeAI-EV`
 2) 填写：
    - **Host**：例如 `127.0.0.1`
    - **Port**：例如 `8080`
    - **HTTPS**：默认勾选（对接 `config.yaml` 中 `tls_enabled` / 自签证书）；插件会自动信任本地自签证书，无需导入
-   - **Password**：你的 CyberStrikeAI 登录密码（对应服务端 `auth.password`）
+   - **Password**：你的 CyberStrikeAI-EV 登录密码（对应服务端 `auth.password`）
    - **Agent mode**：选择 `Single Agent` 或 `Multi Agent`
 3) 点击 **Validate**
    - 成功：状态显示 `OK (token saved)`
    - 失败：状态会显示错误原因（例如密码错误、服务不可达、401/403 等）
 4) 在 Burp 的 Proxy/HTTP history/Repeater 等列表中选中一条 HTTP 包
-5) 右键 → **Send to CyberStrikeAI (stream test)**
-6) 每次发送后会在 `CyberStrikeAI` 标签页左侧显示一个“测试记录”（请求标题 + 单/多 Agent + 状态）；点击对应记录即可在右侧查看该次的流式输出结果
+5) 右键 → **Send to CyberStrikeAI-EV (stream test)**
+6) 每次发送后会在 `CyberStrikeAI-EV` 标签页左侧显示一个“测试记录”（请求标题 + 单/多 Agent + 状态）；点击对应记录即可在右侧查看该次的流式输出结果
 
 ### 常见问题（排错）
 
@@ -105,6 +105,6 @@ cd plugins/burp-suite/cyberstrikeai-burp-extension
 
 - **右键发送后无流式输出**
   - 先确认已 Validate（拿到 Token）
-  - 确认 Burp 能访问到 CyberStrikeAI（网络/代理/防火墙）
+  - 确认 Burp 能访问到 CyberStrikeAI-EV（网络/代理/防火墙）
   - 服务端的流式端点为 SSE，插件会解析 `data: {json}` 行；如果中间件缓冲可能影响实时性
 

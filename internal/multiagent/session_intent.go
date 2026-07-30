@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"cyberstrike-ai/internal/openai"
+	"cyberstrike-ai-ev/internal/openai"
 
 	"go.uber.org/zap"
 )

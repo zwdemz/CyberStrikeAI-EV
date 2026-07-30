@@ -1,4 +1,4 @@
-## CyberStrikeAI Burp Suite Extension
+## CyberStrikeAI-EV Burp Suite Extension
 
 中文说明见：`README.zh-CN.md`
 
@@ -6,7 +6,7 @@
 
 - Configure **Host / Port / HTTPS / Password** and choose an agent mode
 - Click **Validate** to login (`POST /api/auth/login`) and verify token (`GET /api/auth/validate`)
-- Right-click any HTTP message in Burp and send it to CyberStrikeAI for **streaming web pentest** (agent modes: **Eino Single**, Deep, Plan-Execute, Supervisor — maps to `/api/eino-agent/stream` or `/api/multi-agent/stream`)
+- Right-click any HTTP message in Burp and send it to CyberStrikeAI-EV for **streaming web pentest** (agent modes: **Eino Single**, Deep, Plan-Execute, Supervisor — maps to `/api/eino-agent/stream` or `/api/multi-agent/stream`)
 - Keep a **test history sidebar** (searchable) so you can revisit previous runs
 - Output is split into **collapsible Progress** + **Final Response** (Markdown rendering supported)
 - View captured **Request / Response** for each run

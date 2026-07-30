@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/config"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/callbacks"

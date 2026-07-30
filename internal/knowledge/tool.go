@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"cyberstrike-ai/internal/mcp"
-	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai-ev/internal/mcp"
+	"cyberstrike-ai-ev/internal/mcp/builtin"
 
 	"go.uber.org/zap"
 )

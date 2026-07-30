@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/database"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"

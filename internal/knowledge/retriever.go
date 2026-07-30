@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/config"
 
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"

@@ -29,7 +29,7 @@
     "daysAgo": "{{n}} 天前"
   },
   "header": {
-    "title": "CyberStrikeAI",
+    "title": "CyberStrikeAI-EV",
     "apiDocs": "API 文档",
     "github": "GitHub",
     "logout": "退出登录",
@@ -47,7 +47,7 @@
     "itemDefaultTitle": "通知"
   },
   "login": {
-    "title": "登录 CyberStrikeAI",
+    "title": "登录 CyberStrikeAI-EV",
     "titlePrefix": "登录",
     "subtitle": "请输入配置中的访问密码",
     "passwordLabel": "密码",
@@ -1051,10 +1051,10 @@
     },
     "robots": {
       "title": "机器人设置",
-      "description": "配置微信、企业微信、钉钉、飞书等机器人，在手机端直接与 CyberStrikeAI 对话，无需在服务器上打开网页。",
+      "description": "配置微信、企业微信、钉钉、飞书等机器人，在手机端直接与 CyberStrikeAI-EV 对话，无需在服务器上打开网页。",
       "wechat": {
         "title": "微信 / iLink",
-        "subtitle": "扫码绑定个人微信，在手机端直接与 CyberStrikeAI 对话",
+        "subtitle": "扫码绑定个人微信，在手机端直接与 CyberStrikeAI-EV 对话",
         "statusIdle": "未绑定",
         "statusBound": "已连接",
         "statusScanning": "绑定中…",
@@ -1221,9 +1221,9 @@
     "loadCallStatsError": "无法加载调用统计"
   },
   "apiDocs": {
-    "pageTitle": "API 文档 - CyberStrikeAI",
+    "pageTitle": "API 文档 - CyberStrikeAI-EV",
     "title": "API 文档",
-    "subtitle": "CyberStrikeAI 平台 API 接口文档，支持在线测试",
+    "subtitle": "CyberStrikeAI-EV 平台 API 接口文档，支持在线测试",
     "authTitle": "API 认证说明",
     "authAllNeedToken": "所有 API 接口都需要 Token 认证。",
     "authGetToken": "1. 获取 Token：",
@@ -2057,7 +2057,7 @@
     "title": "终端",
     "description": "在服务器上执行命令，便于运维与调试。命令在服务端执行，请勿执行敏感或破坏性操作。",
     "terminalTab": "终端 {{n}}",
-    "welcomeLine": "CyberStrikeAI 终端 - 真实 Shell 会话，直接输入命令；Ctrl+L 清屏",
+    "welcomeLine": "CyberStrikeAI-EV 终端 - 真实 Shell 会话，直接输入命令；Ctrl+L 清屏",
     "sessionClosed": "[会话已关闭]",
     "connectionError": "[终端连接出错]",
     "connectFailed": "[无法连接终端服务: {{msg}}]",
@@ -2710,7 +2710,7 @@
       "confirmDeleteSession": "从服务器删除此会话及其关联任务与文件记录？（不会向植入体发送退出；若需退出目标进程请使用「终止会话」。）",
       "toastExitSent": "退出指令已发送",
       "toastSessionDeleted": "会话记录已删除",
-      "terminalWelcome": "CyberStrikeAI C2 终端 — 回车执行；↑↓ 历史；Ctrl+L 清屏；Ctrl+C 取消输入",
+      "terminalWelcome": "CyberStrikeAI-EV C2 终端 — 回车执行；↑↓ 历史；Ctrl+L 清屏；Ctrl+C 取消输入",
       "termStatusReady": "就绪",
       "termStatusExec": "执行中…",
       "termStatusErr": "错误",

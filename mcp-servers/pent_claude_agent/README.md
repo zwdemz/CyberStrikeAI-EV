@@ -2,7 +2,7 @@
 
 [中文](README_CN.md)
 
-AI-powered **penetration testing engineer** MCP server. CyberStrikeAI can command it to run pentest tasks, analyze vulnerabilities, and perform security diagnostics. The agent runs a Claude-based AI internally and can be configured with its own MCP servers and tools.
+AI-powered **penetration testing engineer** MCP server. CyberStrikeAI-EV can command it to run pentest tasks, analyze vulnerabilities, and perform security diagnostics. The agent runs a Claude-based AI internally and can be configured with its own MCP servers and tools.
 
 ## Tools
 
@@ -34,24 +34,24 @@ Config options (see `pent_claude_agent_config.yaml`):
 - `env`: Environment variables (API keys, etc.)
 - `system_prompt`: Role and behavior definition
 
-Path placeholders: `${PROJECT_ROOT}` = CyberStrikeAI root, `${SCRIPT_DIR}` = this script's directory.
+Path placeholders: `${PROJECT_ROOT}` = CyberStrikeAI-EV root, `${SCRIPT_DIR}` = this script's directory.
 
-## Setup in CyberStrikeAI
+## Setup in CyberStrikeAI-EV
 
 1. **Paths**  
-   Example: project root `/path/to/CyberStrikeAI-main`  
-   Script: `/path/to/CyberStrikeAI-main/mcp-servers/pent_claude_agent/mcp_pent_claude_agent.py`
+   Example: project root `/path/to/CyberStrikeAI-EV-main`  
+   Script: `/path/to/CyberStrikeAI-EV-main/mcp-servers/pent_claude_agent/mcp_pent_claude_agent.py`
 
 2. **Web UI** → **Settings** → **External MCP** → **Add External MCP**. Paste JSON (replace paths with yours):
 
 ```json
 {
   "pent-claude-agent": {
-    "command": "/path/to/CyberStrikeAI-main/venv/bin/python3",
+    "command": "/path/to/CyberStrikeAI-EV-main/venv/bin/python3",
     "args": [
-      "/path/to/CyberStrikeAI-main/mcp-servers/pent_claude_agent/mcp_pent_claude_agent.py",
+      "/path/to/CyberStrikeAI-EV-main/mcp-servers/pent_claude_agent/mcp_pent_claude_agent.py",
       "--config",
-      "/path/to/CyberStrikeAI-main/mcp-servers/pent_claude_agent/pent_claude_agent_config.yaml"
+      "/path/to/CyberStrikeAI-EV-main/mcp-servers/pent_claude_agent/pent_claude_agent_config.yaml"
     ],
     "description": "Penetration testing engineer: run pentest tasks, analyze vulnerabilities, get status",
     "timeout": 300,
@@ -66,9 +66,9 @@ Path placeholders: `${PROJECT_ROOT}` = CyberStrikeAI root, `${SCRIPT_DIR}` = thi
    - Save, then click **Start** for this MCP to use the tools in chat.
 
 3. **Typical workflow**
-   - CyberStrikeAI calls `pent_claude_run_pentest_task("Scan target 192.168.1.1 for open ports")`.
+   - CyberStrikeAI-EV calls `pent_claude_run_pentest_task("Scan target 192.168.1.1 for open ports")`.
    - pent_claude_agent starts a Claude agent internally, which may use Bash, nmap, etc.
-   - Results are returned to CyberStrikeAI.
+   - Results are returned to CyberStrikeAI-EV.
 
 ## Run locally (optional)
 
@@ -77,7 +77,7 @@ Path placeholders: `${PROJECT_ROOT}` = CyberStrikeAI root, `${SCRIPT_DIR}` = thi
 ./venv/bin/python mcp-servers/pent_claude_agent/mcp_pent_claude_agent.py
 ```
 
-The process talks MCP over stdio; CyberStrikeAI starts it the same way when using External MCP.
+The process talks MCP over stdio; CyberStrikeAI-EV starts it the same way when using External MCP.
 
 ## Security
 

@@ -14,23 +14,23 @@ import (
 	"sync"
 	"time"
 
-	"cyberstrike-ai/internal/agent"
-	"cyberstrike-ai/internal/audit"
-	"cyberstrike-ai/internal/c2"
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/einoobserve"
-	"cyberstrike-ai/internal/handler"
-	"cyberstrike-ai/internal/hitl"
-	"cyberstrike-ai/internal/knowledge"
-	"cyberstrike-ai/internal/logger"
-	"cyberstrike-ai/internal/mcp"
-	"cyberstrike-ai/internal/mcp/builtin"
-	"cyberstrike-ai/internal/monitor"
-	"cyberstrike-ai/internal/multiagent"
-	"cyberstrike-ai/internal/robot"
-	"cyberstrike-ai/internal/security"
-	"cyberstrike-ai/internal/skillpackage"
+	"cyberstrike-ai-ev/internal/agent"
+	"cyberstrike-ai-ev/internal/audit"
+	"cyberstrike-ai-ev/internal/c2"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/database"
+	"cyberstrike-ai-ev/internal/einoobserve"
+	"cyberstrike-ai-ev/internal/handler"
+	"cyberstrike-ai-ev/internal/hitl"
+	"cyberstrike-ai-ev/internal/knowledge"
+	"cyberstrike-ai-ev/internal/logger"
+	"cyberstrike-ai-ev/internal/mcp"
+	"cyberstrike-ai-ev/internal/mcp/builtin"
+	"cyberstrike-ai-ev/internal/monitor"
+	"cyberstrike-ai-ev/internal/multiagent"
+	"cyberstrike-ai-ev/internal/robot"
+	"cyberstrike-ai-ev/internal/security"
+	"cyberstrike-ai-ev/internal/skillpackage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -302,7 +302,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		}()
 	}
 
-	// 配置文件路径必须由入口传入（与 flag -config 一致）。勿再用 os.Args[1]，否则 ./cyberstrike-ai --https 会把 --https 当成路径。
+	// 配置文件路径必须由入口传入（与 flag -config 一致）。勿再用 os.Args[1]，否则 ./cyberstrike-ai-ev --https 会把 --https 当成路径。
 	configPath = strings.TrimSpace(configPath)
 	if configPath == "" {
 		configPath = "config.yaml"

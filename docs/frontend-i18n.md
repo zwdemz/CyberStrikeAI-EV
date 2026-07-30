@@ -1,6 +1,6 @@
-## CyberStrikeAI 前端国际化方案
+## CyberStrikeAI-EV 前端国际化方案
 
-本文档说明 CyberStrikeAI Web 前端（`web/templates/index.html` + `web/static/js/*.js`）的国际化设计与开发规范，确保在不引入打包工具和不改动后端路由的前提下，实现可扩展、低返工的多语言支持。
+本文档说明 CyberStrikeAI-EV Web 前端（`web/templates/index.html` + `web/static/js/*.js`）的国际化设计与开发规范，确保在不引入打包工具和不改动后端路由的前提下，实现可扩展、低返工的多语言支持。
 
 当前目标：
 
@@ -75,13 +75,13 @@
     "settings": "系统设置"
   },
   "header": {
-    "title": "CyberStrikeAI",
+    "title": "CyberStrikeAI-EV",
     "apiDocs": "API 文档",
     "logout": "退出登录",
     "language": "界面语言"
   },
   "login": {
-    "title": "登录 CyberStrikeAI",
+    "title": "登录 CyberStrikeAI-EV",
     "subtitle": "请输入配置中的访问密码",
     "passwordLabel": "密码",
     "passwordPlaceholder": "输入登录密码",
@@ -107,13 +107,13 @@
     "settings": "Settings"
   },
   "header": {
-    "title": "CyberStrikeAI",
+    "title": "CyberStrikeAI-EV",
     "apiDocs": "API Docs",
     "logout": "Sign out",
     "language": "Interface language"
   },
   "login": {
-    "title": "Sign in to CyberStrikeAI",
+    "title": "Sign in to CyberStrikeAI-EV",
     "subtitle": "Enter the access password from config",
     "passwordLabel": "Password",
     "passwordPlaceholder": "Enter password",

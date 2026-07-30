@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/database"
 )
 
 var (

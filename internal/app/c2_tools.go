@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"cyberstrike-ai/internal/agent"
-	"cyberstrike-ai/internal/c2"
-	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/mcp"
-	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai-ev/internal/agent"
+	"cyberstrike-ai-ev/internal/c2"
+	"cyberstrike-ai-ev/internal/database"
+	"cyberstrike-ai-ev/internal/mcp"
+	"cyberstrike-ai-ev/internal/mcp/builtin"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"

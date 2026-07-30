@@ -15,12 +15,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"cyberstrike-ai/internal/agent"
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/einomcp"
-	"cyberstrike-ai/internal/einoobserve"
-	"cyberstrike-ai/internal/openai"
-	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai-ev/internal/agent"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/einomcp"
+	"cyberstrike-ai-ev/internal/einoobserve"
+	"cyberstrike-ai-ev/internal/openai"
+	"cyberstrike-ai-ev/internal/security"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"

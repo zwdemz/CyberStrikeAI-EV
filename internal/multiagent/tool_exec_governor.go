@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"cyberstrike-ai/internal/einomcp"
+	"cyberstrike-ai-ev/internal/einomcp"
 
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"

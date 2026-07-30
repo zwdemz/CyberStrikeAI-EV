@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/config"
 
 	"github.com/gin-gonic/gin"
 )

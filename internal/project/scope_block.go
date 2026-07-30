@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/database"
 )
 
 // projectScopePayload 解析 projects.scope_json（约定字段，可扩展）。

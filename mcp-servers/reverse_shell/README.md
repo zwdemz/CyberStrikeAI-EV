@@ -2,7 +2,7 @@
 
 [中文](README_CN.md)
 
-Add **reverse shell** capability to CyberStrikeAI via External MCP: start/stop a TCP listener and run commands on connected targets—no backend code changes required.
+Add **reverse shell** capability to CyberStrikeAI-EV via External MCP: start/stop a TCP listener and run commands on connected targets—no backend code changes required.
 
 ## Tools
 
@@ -19,19 +19,19 @@ Add **reverse shell** capability to CyberStrikeAI via External MCP: start/stop a
 - Python 3.10+
 - `mcp` package (included if using the project venv; otherwise: `pip install mcp`)
 
-## Setup in CyberStrikeAI
+## Setup in CyberStrikeAI-EV
 
 1. **Paths**  
-   Example: project root `/path/to/CyberStrikeAI-main`  
-   Script: `/path/to/CyberStrikeAI-main/mcp-servers/reverse_shell/mcp_reverse_shell.py`
+   Example: project root `/path/to/CyberStrikeAI-EV-main`  
+   Script: `/path/to/CyberStrikeAI-EV-main/mcp-servers/reverse_shell/mcp_reverse_shell.py`
 
 2. **Web UI** → **Settings** → **External MCP** → **Add External MCP**. Paste JSON (replace paths with yours):
 
 ```json
 {
   "reverse-shell": {
-    "command": "/path/to/CyberStrikeAI-main/venv/bin/python3",
-    "args": ["/path/to/CyberStrikeAI-main/mcp-servers/reverse_shell/mcp_reverse_shell.py"],
+    "command": "/path/to/CyberStrikeAI-EV-main/venv/bin/python3",
+    "args": ["/path/to/CyberStrikeAI-EV-main/mcp-servers/reverse_shell/mcp_reverse_shell.py"],
     "description": "Reverse shell: start/stop listener, run commands on connected target",
     "timeout": 60,
     "external_mcp_enable": true
@@ -58,7 +58,7 @@ Add **reverse shell** capability to CyberStrikeAI via External MCP: start/stop a
 ./venv/bin/python mcp-servers/reverse_shell/mcp_reverse_shell.py
 ```
 
-The process talks MCP over stdio; CyberStrikeAI starts it the same way when using External MCP.
+The process talks MCP over stdio; CyberStrikeAI-EV starts it the same way when using External MCP.
 
 ## Security
 

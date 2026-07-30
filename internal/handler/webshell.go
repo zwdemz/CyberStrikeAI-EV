@@ -13,8 +13,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"cyberstrike-ai/internal/audit"
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/audit"
+	"cyberstrike-ai-ev/internal/database"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -740,7 +740,7 @@ func (h *WebShellHandler) Exec(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, ExecResponse{OK: false, Error: err.Error()})
 		return
 	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-EV-WebShell/1.0)")
 
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
@@ -861,7 +861,7 @@ func (h *WebShellHandler) FileOp(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, FileOpResponse{OK: false, Error: err.Error()})
 		return
 	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-EV-WebShell/1.0)")
 
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
@@ -910,7 +910,7 @@ func (h *WebShellHandler) ExecWithConnection(conn *database.WebShellConnection, 
 	if err != nil {
 		return "", false, err.Error()
 	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-EV-WebShell/1.0)")
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
 		return "", false, err.Error()
@@ -979,7 +979,7 @@ func (h *WebShellHandler) FileOpWithConnection(conn *database.WebShellConnection
 	if err != nil {
 		return "", false, err.Error()
 	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-WebShell/1.0)")
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-EV-WebShell/1.0)")
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
 		return "", false, err.Error()

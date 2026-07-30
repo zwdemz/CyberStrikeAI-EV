@@ -84,7 +84,7 @@ sleep 1
 CONFIG_FILE="$ROOT_DIR/config.yaml"
 VENV_DIR="$ROOT_DIR/venv"
 REQUIREMENTS_FILE="$ROOT_DIR/requirements.txt"
-BINARY_NAME="cyberstrike-ai"
+BINARY_NAME="cyberstrike-ai-ev"
 
 # Check config file — auto-copy from example on first run
 if [ ! -f "$CONFIG_FILE" ]; then

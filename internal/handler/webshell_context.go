@@ -3,7 +3,7 @@ package handler
 import (
 	"strings"
 
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/database"
 )
 
 // WebshellSkillHintDefault 对话页 / Eino 单代理共用的 Skills 说明，放在 webshell 上下文末尾，

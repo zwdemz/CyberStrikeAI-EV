@@ -1,6 +1,6 @@
 package project
 
-import "cyberstrike-ai/internal/database"
+import "cyberstrike-ai-ev/internal/database"
 
 // GetProjectStats 聚合项目统计（含待补全事实数）。
 func GetProjectStats(db *database.DB, projectID string) (*database.ProjectStats, error) {

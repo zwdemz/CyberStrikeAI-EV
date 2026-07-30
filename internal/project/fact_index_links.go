@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/database"
 )
 
 var factIndexEdgeTypeOrder = []string{

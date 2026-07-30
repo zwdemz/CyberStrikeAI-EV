@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"cyberstrike-ai/internal/agent"
-	"cyberstrike-ai/internal/audit"
-	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai-ev/internal/agent"
+	"cyberstrike-ai-ev/internal/audit"
+	"cyberstrike-ai-ev/internal/database"
+	"cyberstrike-ai-ev/internal/mcp/builtin"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"

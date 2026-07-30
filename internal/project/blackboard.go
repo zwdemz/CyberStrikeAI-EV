@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/database"
 )
 
 // AppendSystemPromptBlock 将附加块追加到 system prompt。

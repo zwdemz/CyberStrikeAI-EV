@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"cyberstrike-ai/internal/mcp"
-	"cyberstrike-ai/internal/mcp/builtin"
-	"cyberstrike-ai/internal/multiagent"
+	"cyberstrike-ai-ev/internal/mcp"
+	"cyberstrike-ai-ev/internal/mcp/builtin"
+	"cyberstrike-ai-ev/internal/multiagent"
 
 	"go.uber.org/zap"
 )

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode"
 
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/config"
 
 	"gopkg.in/yaml.v3"
 )

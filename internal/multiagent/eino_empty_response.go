@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/config"
 )
 
 const defaultEmptyResponseContinueMaxAttempts = 5

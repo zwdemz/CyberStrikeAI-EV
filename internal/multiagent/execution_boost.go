@@ -3,7 +3,7 @@ package multiagent
 import (
 	"strings"
 
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/config"
 )
 
 // Framework meta-tools (Eino ADK)，非 MCP 角色 tools；reduction 永不 clear。

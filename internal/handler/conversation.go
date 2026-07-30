@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"cyberstrike-ai/internal/audit"
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/audit"
+	"cyberstrike-ai-ev/internal/database"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )

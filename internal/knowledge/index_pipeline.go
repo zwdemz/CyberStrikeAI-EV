@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/config"
 
 	"github.com/cloudwego/eino/components/document"
 	"github.com/cloudwego/eino/compose"

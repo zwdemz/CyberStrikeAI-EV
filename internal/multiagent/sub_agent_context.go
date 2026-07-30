@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"cyberstrike-ai/internal/agent"
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/agent"
+	"cyberstrike-ai-ev/internal/config"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"

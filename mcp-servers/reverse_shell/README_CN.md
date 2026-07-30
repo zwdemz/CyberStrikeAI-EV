@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-通过**外部 MCP** 为 CyberStrikeAI 增加**反向 Shell** 能力：开启/停止 TCP 监听、与已连接目标交互执行命令，**无需修改后端代码**。
+通过**外部 MCP** 为 CyberStrikeAI-EV 增加**反向 Shell** 能力：开启/停止 TCP 监听、与已连接目标交互执行命令，**无需修改后端代码**。
 
 ## 工具说明
 
@@ -19,19 +19,19 @@
 - Python 3.10+
 - 使用项目自带 venv 时已包含 `mcp`；单独运行需：`pip install mcp`
 
-## 在 CyberStrikeAI 中接入
+## 在 CyberStrikeAI-EV 中接入
 
 1. **路径**  
-   例如项目根为 `/path/to/CyberStrikeAI-main`，则脚本路径为：  
-   `/path/to/CyberStrikeAI-main/mcp-servers/reverse_shell/mcp_reverse_shell.py`
+   例如项目根为 `/path/to/CyberStrikeAI-EV-main`，则脚本路径为：  
+   `/path/to/CyberStrikeAI-EV-main/mcp-servers/reverse_shell/mcp_reverse_shell.py`
 
 2. **Web 界面** → **设置** → **外部 MCP** → **添加外部 MCP**，填入以下 JSON（将路径替换为你的实际路径）：
 
 ```json
 {
   "reverse-shell": {
-    "command": "/path/to/CyberStrikeAI-main/venv/bin/python3",
-    "args": ["/path/to/CyberStrikeAI-main/mcp-servers/reverse_shell/mcp_reverse_shell.py"],
+    "command": "/path/to/CyberStrikeAI-EV-main/venv/bin/python3",
+    "args": ["/path/to/CyberStrikeAI-EV-main/mcp-servers/reverse_shell/mcp_reverse_shell.py"],
     "description": "反向 Shell：开启/停止监听、与目标交互执行命令",
     "timeout": 60,
     "external_mcp_enable": true
@@ -58,7 +58,7 @@
 ./venv/bin/python mcp-servers/reverse_shell/mcp_reverse_shell.py
 ```
 
-进程通过 stdio 与 MCP 客户端通信；CyberStrikeAI 以 stdio 方式启动该脚本时行为相同。
+进程通过 stdio 与 MCP 客户端通信；CyberStrikeAI-EV 以 stdio 方式启动该脚本时行为相同。
 
 ## 安全提示
 

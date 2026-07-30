@@ -3,7 +3,7 @@ package project
 import (
 	"strings"
 
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/database"
 )
 
 // ApplyFactOutgoingLinks 替换某事实的出边（links 为 nil 时不修改）。

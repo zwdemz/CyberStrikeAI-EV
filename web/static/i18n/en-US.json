@@ -29,7 +29,7 @@
     "daysAgo": "{{n}} d ago"
   },
   "header": {
-    "title": "CyberStrikeAI",
+    "title": "CyberStrikeAI-EV",
     "apiDocs": "API Docs",
     "github": "GitHub",
     "logout": "Sign out",
@@ -47,7 +47,7 @@
     "itemDefaultTitle": "Notification"
   },
   "login": {
-    "title": "Sign in to CyberStrikeAI",
+    "title": "Sign in to CyberStrikeAI-EV",
     "titlePrefix": "Sign in to",
     "subtitle": "Enter the access password from config",
     "passwordLabel": "Password",
@@ -1063,10 +1063,10 @@
     },
     "robots": {
       "title": "Bot settings",
-      "description": "Configure WeChat (iLink), WeCom, DingTalk and Lark bots so you can chat with CyberStrikeAI on your phone without opening the web UI.",
+      "description": "Configure WeChat (iLink), WeCom, DingTalk and Lark bots so you can chat with CyberStrikeAI-EV on your phone without opening the web UI.",
       "wechat": {
         "title": "WeChat / iLink",
-        "subtitle": "Bind personal WeChat via QR code and chat with CyberStrikeAI on your phone",
+        "subtitle": "Bind personal WeChat via QR code and chat with CyberStrikeAI-EV on your phone",
         "statusIdle": "Not bound",
         "statusBound": "Connected",
         "statusScanning": "Binding…",
@@ -1233,9 +1233,9 @@
     "loadCallStatsError": "Failed to load call statistics"
   },
   "apiDocs": {
-    "pageTitle": "API Docs - CyberStrikeAI",
+    "pageTitle": "API Docs - CyberStrikeAI-EV",
     "title": "API Docs",
-    "subtitle": "CyberStrikeAI platform API documentation with online testing",
+    "subtitle": "CyberStrikeAI-EV platform API documentation with online testing",
     "authTitle": "API Authentication",
     "authAllNeedToken": "All API endpoints require Token authentication.",
     "authGetToken": "1. Get Token:",
@@ -2069,7 +2069,7 @@
     "title": "Terminal",
     "description": "Run commands on the server for ops and debugging. Commands run on the server; avoid sensitive or destructive operations.",
     "terminalTab": "Terminal {{n}}",
-    "welcomeLine": "CyberStrikeAI Terminal — real shell session; type commands directly. Ctrl+L to clear screen",
+    "welcomeLine": "CyberStrikeAI-EV Terminal — real shell session; type commands directly. Ctrl+L to clear screen",
     "sessionClosed": "[Session closed]",
     "connectionError": "[Terminal connection error]",
     "connectFailed": "[Cannot connect to terminal service: {{msg}}]",
@@ -2722,7 +2722,7 @@
       "confirmDeleteSession": "Remove this session and related tasks/files from the server? (Does not send exit to the implant; use Kill Session to exit the agent.)",
       "toastExitSent": "Exit command sent",
       "toastSessionDeleted": "Session record deleted",
-      "terminalWelcome": "CyberStrikeAI C2 Terminal — Enter to run; ↑↓ history; Ctrl+L clear; Ctrl+C cancel input",
+      "terminalWelcome": "CyberStrikeAI-EV C2 Terminal — Enter to run; ↑↓ history; Ctrl+L clear; Ctrl+C cancel input",
       "termStatusReady": "Ready",
       "termStatusExec": "Executing…",
       "termStatusErr": "Error",

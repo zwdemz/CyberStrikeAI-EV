@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"cyberstrike-ai/internal/attackchain"
-	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/project"
+	"cyberstrike-ai-ev/internal/attackchain"
+	"cyberstrike-ai-ev/internal/database"
+	"cyberstrike-ai-ev/internal/project"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"

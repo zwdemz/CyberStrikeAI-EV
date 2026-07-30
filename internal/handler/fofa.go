@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"cyberstrike-ai/internal/config"
-	openaiClient "cyberstrike-ai/internal/openai"
+	"cyberstrike-ai-ev/internal/config"
+	openaiClient "cyberstrike-ai-ev/internal/openai"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -352,7 +352,7 @@ func (h *FofaHandler) doFOFASearch(ctx context.Context, query string, size, page
 				}
 				headers := http.Header{}
 				headers.Set("Accept", "application/json, text/plain, */*")
-				headers.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-FOFA/1.6; +local)")
+				headers.Set("User-Agent", "Mozilla/5.0 (compatible; CyberStrikeAI-EV-FOFA/1.6; +local)")
 				if !isOfficialFOFAHost(rawURL) {
 					origin := u.Scheme + "://" + u.Host
 					headers.Set("Referer", origin+"/")

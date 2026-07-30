@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"cyberstrike-ai/internal/audit"
-	"cyberstrike-ai/internal/c2"
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/audit"
+	"cyberstrike-ai-ev/internal/c2"
+	"cyberstrike-ai-ev/internal/database"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"

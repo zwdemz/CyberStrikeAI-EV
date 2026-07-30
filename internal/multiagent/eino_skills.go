@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/einomcp"
-	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/einomcp"
+	"cyberstrike-ai-ev/internal/security"
 
 	localbk "github.com/cloudwego/eino-ext/adk/backend/local"
 	"github.com/cloudwego/eino/adk"

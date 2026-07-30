@@ -6,9 +6,9 @@ import (
 	"os"
 	"sync"
 
-	"cyberstrike-ai/internal/audit"
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai-ev/internal/audit"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/mcp"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"

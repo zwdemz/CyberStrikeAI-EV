@@ -1,12 +1,12 @@
 package agent
 
 import (
-	"cyberstrike-ai/internal/project"
+	"cyberstrike-ai-ev/internal/project"
 )
 
 // DefaultSingleAgentSystemPrompt 单代理（Eino ADK / MCP）内置系统提示；可通过 agent.system_prompt_path 覆盖为文件。
 func DefaultSingleAgentSystemPrompt() string {
-	return `你是 CyberStrikeAI，授权渗透测试专家。
+	return `你是 CyberStrikeAI-EV，授权渗透测试专家。
 
 ## 授权与使命
 

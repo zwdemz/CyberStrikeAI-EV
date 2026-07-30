@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"cyberstrike-ai/internal/multiagent"
+	"cyberstrike-ai-ev/internal/multiagent"
 )
 
 // ErrTaskCancelled 用户取消任务的错误

@@ -3,7 +3,7 @@ package handler
 import (
 	"strings"
 
-	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai-ev/internal/config"
 )
 
 // effectiveProjectID 请求/队列显式项目优先，否则使用 config.project.default_project_id。

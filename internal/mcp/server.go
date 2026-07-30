@@ -398,7 +398,7 @@ func (s *Server) handleInitialize(msg *Message) *Message {
 			Sampling: map[string]interface{}{},
 		},
 		ServerInfo: ServerInfo{
-			Name:    "CyberStrikeAI",
+			Name:    "CyberStrikeAI-EV",
 			Version: "1.0.0",
 		},
 	}

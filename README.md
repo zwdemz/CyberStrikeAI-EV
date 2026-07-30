@@ -1,8 +1,10 @@
 <div align="center">
-  <img src="images/logo.png" alt="CyberStrikeAI Logo" width="200">
+  <img src="images/logo.png" alt="CyberStrikeAI-EV Logo" width="200">
 </div>
 
-# CyberStrikeAI
+# CyberStrikeAI-EV
+
+> Based on [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) (modified).
 
 
 [中文](README_CN.md) | [English](README.md)
@@ -12,14 +14,14 @@
 <details>
 <summary><strong>WeChat group</strong> (click to reveal QR code)</summary>
 
-<img src="./images/wechat-group-cyberstrikeai-qr.jpg" alt="CyberStrikeAI WeChat group QR code" width="280">
+<img src="./images/wechat-group-cyberstrikeai-qr.jpg" alt="CyberStrikeAI-EV WeChat group QR code" width="280">
 
 </details>
 
 <details>
 <summary><strong>Sponsorship</strong> (click to expand)</summary>
 
-If CyberStrikeAI helps you, you can support the project via **WeChat Pay** or **Alipay**:
+If CyberStrikeAI-EV helps you, you can support the project via **WeChat Pay** or **Alipay**:
 
 <div align="center">
   <img src="./images/sponsor-wechat-alipay-qr.jpg" alt="WeChat Pay and Alipay sponsorship QR codes" width="480">
@@ -27,7 +29,7 @@ If CyberStrikeAI helps you, you can support the project via **WeChat Pay** or **
 
 </details>
 
-CyberStrikeAI is an **AI-native security testing platform** built in Go. It integrates 100+ security tools, an intelligent orchestration engine, role-based testing with predefined security roles, a skills system with specialized testing skills, comprehensive lifecycle management capabilities, and a **built-in lightweight C2 (Command & Control) framework** for **authorized** engagements (listeners, encrypted implants, sessions, tasks, real-time events, REST and MCP). Through native MCP protocol and AI agents, it enables end-to-end automation from conversational commands to vulnerability discovery, attack-chain analysis, knowledge retrieval, and result visualization—delivering an auditable, traceable, and collaborative testing environment for security teams.
+CyberStrikeAI-EV is an **AI-native security testing platform** built in Go. It integrates 100+ security tools, an intelligent orchestration engine, role-based testing with predefined security roles, a skills system with specialized testing skills, comprehensive lifecycle management capabilities, and a **built-in lightweight C2 (Command & Control) framework** for **authorized** engagements (listeners, encrypted implants, sessions, tasks, real-time events, REST and MCP). Through native MCP protocol and AI agents, it enables end-to-end automation from conversational commands to vulnerability discovery, attack-chain analysis, knowledge retrieval, and result visualization—delivering an auditable, traceable, and collaborative testing environment for security teams.
 
 ## Interface & Integration Preview
 
@@ -119,14 +121,14 @@ CyberStrikeAI is an **AI-native security testing platform** built in Go. It inte
 - 🧩 **Agent orchestration (CloudWeGo Eino)**: **single-agent** via **`/api/eino-agent/stream`** (Eino ADK `ChatModelAgent`); **multi-agent** via **`/api/multi-agent/stream`** with **`deep`** (coordinator + `task` sub-agents), **`plan_execute`**, or **`supervisor`** (`orchestration` in the request body). ADK **summarization** compresses long contexts; pre-compaction **transcripts** land at `data/conversation_artifacts/<conversation-id>/summarization/transcript.txt` (full user/assistant/tool turns; static system omitted). Markdown under `agents/`: `orchestrator.md`, `orchestrator-plan-execute.md`, `orchestrator-supervisor.md`, plus sub-agent `*.md` (see [Multi-agent doc](docs/MULTI_AGENT_EINO.md))
 - 🖼️ **Vision analysis (`analyze_image`)**: separate VL model (e.g. `qwen-vl-max`) via MCP for local screenshots, captchas, and UI; image bytes stay out of agent history (text summaries only). Configure `vision` in `config.yaml`; see [docs/VISION.md](docs/VISION.md)
 - 🎯 **Skills (refactored for Eino)**: packs under `skills_dir` follow **Agent Skills** layout (`SKILL.md` + optional files); **multi-agent** sessions use the official Eino ADK **`skill`** tool for **progressive disclosure** (load by name), with optional **host filesystem / shell** via `multi_agent.eino_skills`; optional **`eino_middleware`** adds patchtoolcalls, tool_search, **plantask** (`TaskCreate` / `TaskList` boards under `skills_dir/.eino/plantask/`), reduction, file **checkpoints** (`checkpoint_dir`), ChatModel **retries**, session **output key**, and Deep tuning—20+ sample domains (SQLi, XSS, API security, …) ship under `skills/`
-- 📱 **Chatbot**: DingTalk and Lark (Feishu) long-lived connections so you can talk to CyberStrikeAI from mobile (see [Robot / Chatbot guide](docs/robot_en.md) for setup and commands)
+- 📱 **Chatbot**: DingTalk and Lark (Feishu) long-lived connections so you can talk to CyberStrikeAI-EV from mobile (see [Robot / Chatbot guide](docs/robot_en.md) for setup and commands)
 - 🧑‍⚖️ **Human-in-the-loop (HITL)**: Chat sidebar to set approval mode and tool allowlists (listed tools skip approval); global list in `config.yaml` under `hitl.tool_whitelist`; **Apply** can merge new tools into the file and update the running server without restart; dedicated **HITL** page for pending approvals
 - 🐚 **WebShell management**: Add and manage WebShell connections (e.g. IceSword/AntSword compatible), use a virtual terminal for command execution, a built-in file manager for file operations, and an AI assistant tab that orchestrates tests and keeps per-connection conversation history; supports PHP, ASP, ASPX, JSP and custom shell types with configurable request method and command parameter.
 - 📡 **Built-in C2**: AI-oriented lightweight command-and-control—**listeners** (TCP reverse, HTTP/HTTPS beacon, WebSocket), **encrypted** beacon channel, **session** and **task** queues with persistence, **payload** helpers (one-liner / build / download), **SSE** live events, REST under `/api/c2/*`, plus unified MCP tools (`c2_listener`, `c2_session`, **`c2_task`**, `c2_task_manage`, `c2_payload`, `c2_event`, `c2_profile`, `c2_file`); optional **HITL** approval for sensitive operations and OPSEC-style controls (e.g. command deny rules). **Authorized testing only.**
 
 ## Plugins
 
-CyberStrikeAI includes optional integrations under `plugins/`.
+CyberStrikeAI-EV includes optional integrations under `plugins/`.
 
 - **Burp Suite extension**: `plugins/burp-suite/cyberstrikeai-burp-extension/`  
   Build output: `plugins/burp-suite/cyberstrikeai-burp-extension/dist/cyberstrikeai-burp-extension.jar`  
@@ -134,7 +136,7 @@ CyberStrikeAI includes optional integrations under `plugins/`.
 
 ## Tool Overview
 
-CyberStrikeAI ships with 100+ curated tools covering the whole kill chain:
+CyberStrikeAI-EV ships with 100+ curated tools covering the whole kill chain:
 
 - **Network Scanners** – nmap, masscan, rustscan, arp-scan, nbtscan
 - **Web & App Scanners** – sqlmap, nikto, dirb, gobuster, feroxbuster, ffuf, httpx
@@ -163,7 +165,7 @@ CyberStrikeAI ships with 100+ curated tools covering the whole kill chain:
 **One-Command Deployment:**
 ```bash
 git clone https://github.com/Ed1s0nZ/CyberStrikeAI.git
-cd CyberStrikeAI
+cd CyberStrikeAI-EV
 chmod +x run.sh && ./run.sh
 ```
 
@@ -221,7 +223,7 @@ If server logs show `client sent an HTTP request to an HTTPS server`, a client i
 
 ### Version Update (No Breaking Changes)
 
-**CyberStrikeAI one-click upgrade (recommended):**
+**CyberStrikeAI-EV one-click upgrade (recommended):**
 1. (First time) enable the script: `chmod +x upgrade.sh`
 2. Upgrade the default `master` branch with: `./upgrade.sh` (optional flags: `--branch <name>`, `--tag vX.Y.Z`, `--no-venv`, `--yes`). Local `tools/` is always preserved; use `--no-sync-roles-skills` to preserve local `roles/` and `skills/` changes.
 3. The script will back up your `config.yaml` and `data/`, download the selected GitHub source branch or tag, update `config.yaml`'s `version`, then restart the server.
@@ -344,7 +346,7 @@ Requirements / tips:
 - **Web mode** – ships with HTTP MCP server automatically consumed by the UI.
 - **MCP stdio mode** – `go run cmd/mcp-stdio/main.go` exposes the agent to Cursor/CLI.
 - **External MCP federation** – register third-party MCP servers (HTTP, stdio, or SSE) from the UI, toggle them per engagement, and monitor their health and call volume in real time.
-- **Optional MCP servers** – the [`mcp-servers/`](mcp-servers/README.md) directory provides standalone MCPs (e.g. reverse shell). They speak standard MCP over stdio and work with CyberStrikeAI (Settings → External MCP), Cursor, VS Code, and other MCP clients.
+- **Optional MCP servers** – the [`mcp-servers/`](mcp-servers/README.md) directory provides standalone MCPs (e.g. reverse shell). They speak standard MCP over stdio and work with CyberStrikeAI-EV (Settings → External MCP), Cursor, VS Code, and other MCP clients.
 
 #### MCP stdio quick start
 1. **Build the binary** (run from the project root):
@@ -397,7 +399,7 @@ Example of what the terminal prints (with auth enabled):
 If you do not set `auth_header` / `auth_header_value`, the endpoint accepts requests without authentication (suitable only for localhost or trusted networks).
 
 #### External MCP federation (HTTP/stdio/SSE)
-CyberStrikeAI supports connecting to external MCP servers via three transport modes:
+CyberStrikeAI-EV supports connecting to external MCP servers via three transport modes:
 - **HTTP mode** – traditional request/response over HTTP POST
 - **stdio mode** – process-based communication via standard input/output
 - **SSE mode** – Server-Sent Events for real-time streaming communication
@@ -462,7 +464,7 @@ A test SSE MCP server is available at `cmd/test-sse-mcp-server/` for validation 
 **Quick Start (Using Pre-built Knowledge Base):**
 1. **Download the knowledge database** – Download the pre-built knowledge database file from [GitHub Releases](https://github.com/Ed1s0nZ/CyberStrikeAI/releases).
 2. **Extract and place** – Extract the downloaded knowledge database file (`knowledge.db`) and place it in the project's `data/` directory.
-3. **Restart the service** – Restart the CyberStrikeAI service, and the knowledge base will be ready to use immediately without rebuilding the index.
+3. **Restart the service** – Restart the CyberStrikeAI-EV service, and the knowledge base will be ready to use immediately without rebuilding the index.
 
 **Setting up the knowledge base:**
 1. **Enable in config** – set `knowledge.enabled: true` in `config.yaml`:
@@ -600,12 +602,12 @@ enabled: true
 ## Related documentation
 
 - [Multi-agent mode (Eino)](docs/MULTI_AGENT_EINO.md): **Deep**, **Plan-Execute**, **Supervisor**, `agents/*.md`, `eino_skills` / `eino_middleware`, APIs, and chat/stream behavior.
-- [Robot / Chatbot guide (DingTalk & Lark)](docs/robot_en.md): Full setup, commands, and troubleshooting for using CyberStrikeAI from DingTalk or Lark on your phone. **Follow this doc to avoid common pitfalls.**
+- [Robot / Chatbot guide (DingTalk & Lark)](docs/robot_en.md): Full setup, commands, and troubleshooting for using CyberStrikeAI-EV from DingTalk or Lark on your phone. **Follow this doc to avoid common pitfalls.**
 
 ## Project Layout
 
 ```
-CyberStrikeAI/
+CyberStrikeAI-EV/
 ├── cmd/                 # Server, MCP stdio entrypoints, tooling
 ├── internal/            # Agent, MCP core, handlers, C2 (`internal/c2`), security executor
 ├── web/                 # Static SPA + templates
@@ -643,7 +645,7 @@ Build an attack chain for the latest engagement and export the node list with se
 
 <img src="./images/404StarLinkLogo.png" width="30%">
 
-CyberStrikeAI has joined [404Starlink](https://github.com/knownsec/404StarLink)
+CyberStrikeAI-EV has joined [404Starlink](https://github.com/knownsec/404StarLink)
 
 ## TCH Top-Ranked Intelligent Pentest Project  
 <div align="left">
@@ -660,7 +662,7 @@ CyberStrikeAI has joined [404Starlink](https://github.com/knownsec/404StarLink)
 
 ## License
 
-CyberStrikeAI is licensed under the Apache License 2.0.  
+CyberStrikeAI-EV is licensed under the Apache License 2.0.  
 See the [LICENSE](LICENSE) file for details.
 
 ---
@@ -669,7 +671,7 @@ See the [LICENSE](LICENSE) file for details.
 
 **This tool is for educational and authorized testing purposes only!**
 
-CyberStrikeAI is a professional security testing platform designed to assist security researchers, penetration testers, and IT professionals in conducting security assessments and vulnerability research **with explicit authorization**.
+CyberStrikeAI-EV is a professional security testing platform designed to assist security researchers, penetration testers, and IT professionals in conducting security assessments and vulnerability research **with explicit authorization**.
 
 **By using this tool, you agree to:**
 - Use this tool only on systems where you have clear written authorization

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai-ev/internal/database"
 
 	"go.uber.org/zap"
 )

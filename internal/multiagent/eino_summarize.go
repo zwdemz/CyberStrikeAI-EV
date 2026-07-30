@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cyberstrike-ai/internal/agent"
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/database"
-	copenai "cyberstrike-ai/internal/openai"
-	"cyberstrike-ai/internal/project"
+	"cyberstrike-ai-ev/internal/agent"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/database"
+	copenai "cyberstrike-ai-ev/internal/openai"
+	"cyberstrike-ai-ev/internal/project"
 
 	"github.com/bytedance/sonic"
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"

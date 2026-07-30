@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai-ev/internal/mcp"
 
 	"go.uber.org/zap"
 )

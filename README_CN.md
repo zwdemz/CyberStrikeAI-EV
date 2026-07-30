@@ -1,8 +1,10 @@
 <div align="center">
-  <img src="images/logo.png" alt="CyberStrikeAI Logo" width="200">
+  <img src="images/logo.png" alt="CyberStrikeAI-EV Logo" width="200">
 </div>
 
-# CyberStrikeAI
+# CyberStrikeAI-EV
+
+> 基于 [CyberStrikeAI](https://github.com/Ed1s0nZ/CyberStrikeAI) 修改。
 
 [中文](README_CN.md) | [English](README.md)
 
@@ -11,14 +13,14 @@
 <details>
 <summary><strong>微信群</strong>（点击展开二维码）</summary>
 
-<img src="./images/wechat-group-cyberstrikeai-qr.jpg" alt="CyberStrikeAI 微信群二维码" width="280">
+<img src="./images/wechat-group-cyberstrikeai-qr.jpg" alt="CyberStrikeAI-EV 微信群二维码" width="280">
 
 </details>
 
 <details>
 <summary><strong>赞助</strong>（点击展开）</summary>
 
-若 CyberStrikeAI 对您有帮助，可通过 **微信支付** 或 **支付宝** 赞助项目：
+若 CyberStrikeAI-EV 对您有帮助，可通过 **微信支付** 或 **支付宝** 赞助项目：
 
 <div align="center">
   <img src="./images/sponsor-wechat-alipay-qr.jpg" alt="微信与支付宝赞助二维码" width="480">
@@ -26,7 +28,7 @@
 
 </details>
 
-CyberStrikeAI 是一款 **AI 原生安全测试平台**，基于 Go 构建，集成了 100+ 安全工具、智能编排引擎、角色化测试与预设安全测试角色、Skills 技能系统与专业测试技能、完整的测试生命周期管理能力，以及面向 **授权场景** 的 **内置轻量 C2（Command & Control，指挥与控制）** 能力（监听器、加密通信、会话与任务、实时事件、REST 与 MCP 协同）。通过原生 MCP 协议与 AI 智能体，支持从对话指令到漏洞发现、攻击链分析、知识检索与结果可视化的全流程自动化，为安全团队提供可审计、可追溯、可协作的专业测试环境。
+CyberStrikeAI-EV 是一款 **AI 原生安全测试平台**，基于 Go 构建，集成了 100+ 安全工具、智能编排引擎、角色化测试与预设安全测试角色、Skills 技能系统与专业测试技能、完整的测试生命周期管理能力，以及面向 **授权场景** 的 **内置轻量 C2（Command & Control，指挥与控制）** 能力（监听器、加密通信、会话与任务、实时事件、REST 与 MCP 协同）。通过原生 MCP 协议与 AI 智能体，支持从对话指令到漏洞发现、攻击链分析、知识检索与结果可视化的全流程自动化，为安全团队提供可审计、可追溯、可协作的专业测试环境。
 
 ## 界面与集成预览
 
@@ -118,7 +120,7 @@ CyberStrikeAI 是一款 **AI 原生安全测试平台**，基于 Go 构建，集
 - 🧩 **Agent 编排（CloudWeGo Eino）**：**单代理** `POST /api/eino-agent/stream`（Eino ADK）；**多代理** `POST /api/multi-agent/stream`，`orchestration` 选 **`deep`** / **`plan_execute`** / **`supervisor`**。ADK **Summarization** 在上下文过长时压缩历史；压缩前将可恢复 **转录** 写入 `data/conversation_artifacts/<会话ID>/summarization/transcript.txt`（保留完整 user/assistant/tool 轮次，省略静态 system）。`agents/` 下主代理与子代理 Markdown 见 [多代理说明](docs/MULTI_AGENT_EINO.md)
 - 🖼️ **视觉分析（`analyze_image`）**：独立 Vision 模型（如 `qwen-vl-max`），MCP 工具分析本地截图/验证码/UI；图片仅在单次 VL 调用中出现，对话上下文只保留文字摘要。配置见 `config.yaml` → `vision` 与 [视觉分析说明](docs/VISION.md)
 - 🎯 **Skills（面向 Eino 重构）**：技能包放在 **`skills_dir`**，遵循 **Agent Skills** 目录规范（`SKILL.md` + 可选文件）；**多代理** 下通过 Eino 官方 **`skill`** 工具 **渐进式披露**（按 name 加载）。**`multi_agent.eino_skills`** 控制是否启用、本机文件/Shell 工具、工具名覆盖；**`eino_middleware`** 可选 patch、tool_search、**plantask**（`TaskCreate` / `TaskList` 任务板，落在 `skills_dir/.eino/plantask/`）、reduction、文件型 **checkpoint**（`checkpoint_dir`）、ChatModel **重试**、会话 **输出键** 及 Deep 调参。20+ 领域示例仍可绑定角色
-- 📱 **机器人**：支持钉钉、飞书长连接，在手机端与 CyberStrikeAI 对话（配置与命令详见 [机器人使用说明](docs/robot.md)）
+- 📱 **机器人**：支持钉钉、飞书长连接，在手机端与 CyberStrikeAI-EV 对话（配置与命令详见 [机器人使用说明](docs/robot.md)）
 - 🧑‍⚖️ **人机协同（HITL）**：对话页侧栏配置协同模式与免审批工具白名单；全局列表在 `config.yaml` 的 `hitl.tool_whitelist`；点「应用」可将新增工具合并写入配置文件且**无需重启**即可生效；导航 **人机协同** 页处理待审批工具调用
 - 🐚 **WebShell 管理**：添加与管理 WebShell 连接（兼容冰蝎/蚁剑等），通过虚拟终端执行命令、内置文件管理进行文件操作，并提供按连接维度保存历史的 AI 助手标签页；支持 PHP/ASP/ASPX/JSP 及自定义类型，可配置请求方法与命令参数。
 - 📡 **内置 C2**：面向 AI 协同的轻量 **C2**——**多种监听器**（TCP 反向、HTTP/HTTPS Beacon、WebSocket）、**加密** Beacon 信道、**会话与任务**队列及持久化、**Payload** 辅助（一键命令 / 构建 / 下载）、**SSE** 实时事件、REST（`/api/c2/*`）及智能体侧 **一组 C2 MCP 工具**（如 `c2_listener`、`c2_session`、**`c2_task`**、`c2_task_manage`、`c2_payload`、`c2_event`、`c2_profile`、`c2_file`）；敏感操作可对接 **人机协同（HITL）**，并支持 OPSEC 类规则（如命令拒绝正则）。**仅限授权测试。**
@@ -162,7 +164,7 @@ CyberStrikeAI 是一款 **AI 原生安全测试平台**，基于 Go 构建，集
 **一条命令部署：**
 ```bash
 git clone https://github.com/Ed1s0nZ/CyberStrikeAI.git
-cd CyberStrikeAI
+cd CyberStrikeAI-EV
 chmod +x run.sh && ./run.sh
 ```
 
@@ -218,7 +220,7 @@ go build -o cyberstrike-ai cmd/server/main.go
 
 **说明：** Python 虚拟环境（`venv/`）由 `run.sh` 自动创建和管理。需要 Python 的工具（如 `api-fuzzer`、`http-framework-test` 等）会自动使用该环境。
 
-### CyberStrikeAI 版本更新（无兼容性问题）
+### CyberStrikeAI-EV 版本更新（无兼容性问题）
 
 1. （首次使用）启用脚本：`chmod +x upgrade.sh`
 2. 一键升级默认 `master` 分支：`./upgrade.sh`（可选参数：`--branch <分支>`、`--tag vX.Y.Z`、`--no-venv`、`--yes`）。本地 `tools/` 始终保留；如需保留本地 `roles/` 和 `skills/` 修改，请使用 `--no-sync-roles-skills`。
@@ -341,7 +343,7 @@ go build -o cyberstrike-ai cmd/server/main.go
 - **Web 模式**：自带 HTTP MCP 服务供前端调用。
 - **MCP stdio 模式**：`go run cmd/mcp-stdio/main.go` 可接入 Cursor/命令行。
 - **外部 MCP 联邦**：在设置中注册第三方 MCP（HTTP/stdio/SSE），按需启停并实时查看调用统计与健康度。
-- **可选 MCP 服务**：项目中的 [`mcp-servers/`](mcp-servers/README_CN.md) 目录提供独立 MCP（如反向 Shell），采用标准 MCP stdio，可在 CyberStrikeAI（设置 → 外部 MCP）、Cursor、VS Code 等任意支持 MCP 的客户端中使用。
+- **可选 MCP 服务**：项目中的 [`mcp-servers/`](mcp-servers/README_CN.md) 目录提供独立 MCP（如反向 Shell），采用标准 MCP stdio，可在 CyberStrikeAI-EV（设置 → 外部 MCP）、Cursor、VS Code 等任意支持 MCP 的客户端中使用。
 
 #### MCP stdio 快速集成
 1. **编译可执行文件**（在项目根目录执行）：
@@ -394,7 +396,7 @@ HTTP MCP 服务在独立端口（默认 `8081`）运行，支持 **Header 鉴权
 若不配置 `auth_header` / `auth_header_value`，则端点不鉴权（仅适合本机或可信网络）。
 
 #### 外部 MCP 联邦（HTTP/stdio/SSE）
-CyberStrikeAI 支持通过三种传输模式连接外部 MCP 服务器：
+CyberStrikeAI-EV 支持通过三种传输模式连接外部 MCP 服务器：
 - **HTTP 模式** – 通过 HTTP POST 进行传统的请求/响应通信
 - **stdio 模式** – 通过标准输入/输出进行进程间通信
 - **SSE 模式** – 通过 Server-Sent Events 实现实时流式通信
@@ -460,7 +462,7 @@ CyberStrikeAI 支持通过三种传输模式连接外部 MCP 服务器：
 **快速开始（使用预构建知识库）：**
 1. **下载知识数据库**：从 [GitHub Releases](https://github.com/Ed1s0nZ/CyberStrikeAI/releases) 下载预构建的知识数据库文件。
 2. **解压并放置**：将下载的知识数据库文件（`knowledge.db`）解压后放到项目的 `data/` 目录下。
-3. **重启服务**：重启 CyberStrikeAI 服务，知识库即可直接使用，无需重新构建索引。
+3. **重启服务**：重启 CyberStrikeAI-EV 服务，知识库即可直接使用，无需重新构建索引。
 
 **知识库配置步骤：**
 1. **启用功能**：在 `config.yaml` 中设置 `knowledge.enabled: true`：
@@ -598,12 +600,12 @@ enabled: true
 ## 相关文档
 
 - [多代理模式（Eino）](docs/MULTI_AGENT_EINO.md)：**Deep**、**Plan-Execute**、**Supervisor**、`agents/*.md`、`eino_skills` / `eino_middleware`、接口与流式说明。
-- [机器人使用说明（钉钉 / 飞书）](docs/robot.md)：在手机端通过钉钉、飞书与 CyberStrikeAI 对话的完整配置步骤、命令与排查说明，**建议按该文档操作以避免走弯路**。
+- [机器人使用说明（钉钉 / 飞书）](docs/robot.md)：在手机端通过钉钉、飞书与 CyberStrikeAI-EV 对话的完整配置步骤、命令与排查说明，**建议按该文档操作以避免走弯路**。
 
 ## 项目结构
 
 ```
-CyberStrikeAI/
+CyberStrikeAI-EV/
 ├── cmd/                 # Web 服务、MCP stdio 入口及辅助工具
 ├── internal/            # Agent、MCP 核心、路由、C2（`internal/c2`）与执行器
 ├── web/                 # 前端静态资源与模板
@@ -640,7 +642,7 @@ CyberStrikeAI/
 ## 404星链计划 
 <img src="./images/404StarLinkLogo.png" width="30%">
 
-CyberStrikeAI 现已加入 [404星链计划](https://github.com/knownsec/404StarLink)
+CyberStrikeAI-EV 现已加入 [404星链计划](https://github.com/knownsec/404StarLink)
 
 ## TCH Top-Ranked Intelligent Pentest Project  
 <div align="left">
@@ -656,7 +658,7 @@ CyberStrikeAI 现已加入 [404星链计划](https://github.com/knownsec/404Star
 
 ## 许可证
 
-CyberStrikeAI 采用 **Apache License 2.0** 开源许可。  
+CyberStrikeAI-EV 采用 **Apache License 2.0** 开源许可。  
 完整条款见仓库根目录 [LICENSE](LICENSE) 文件。
 
 ---
@@ -665,7 +667,7 @@ CyberStrikeAI 采用 **Apache License 2.0** 开源许可。
 
 **本工具仅供教育和授权测试使用！**
 
-CyberStrikeAI 是一个专业的安全测试平台，旨在帮助安全研究人员、渗透测试人员和IT专业人员在**获得明确授权**的情况下进行安全评估和漏洞研究。
+CyberStrikeAI-EV 是一个专业的安全测试平台，旨在帮助安全研究人员、渗透测试人员和IT专业人员在**获得明确授权**的情况下进行安全评估和漏洞研究。
 
 **使用本工具即表示您同意：**
 - 仅在您拥有明确书面授权的系统上使用此工具

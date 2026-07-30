@@ -9,15 +9,15 @@ import (
 	"strings"
 	"sync"
 
-	"cyberstrike-ai/internal/agent"
-	"cyberstrike-ai/internal/agents"
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/einomcp"
-	"cyberstrike-ai/internal/openai"
-	"cyberstrike-ai/internal/project"
-	"cyberstrike-ai/internal/reasoning"
-	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai-ev/internal/agent"
+	"cyberstrike-ai-ev/internal/agents"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/database"
+	"cyberstrike-ai-ev/internal/einomcp"
+	"cyberstrike-ai-ev/internal/openai"
+	"cyberstrike-ai-ev/internal/project"
+	"cyberstrike-ai-ev/internal/reasoning"
+	"cyberstrike-ai-ev/internal/security"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
@@ -179,7 +179,7 @@ func RunDeepAgent(
 			}
 			instr := strings.TrimSpace(sub.Instruction)
 			if instr == "" {
-				instr = "你是 CyberStrikeAI 中的专业子代理，在授权渗透测试场景下协助完成用户委托的子任务。优先使用可用工具获取证据，回答简洁专业。"
+				instr = "你是 CyberStrikeAI-EV 中的专业子代理，在授权渗透测试场景下协助完成用户委托的子任务。优先使用可用工具获取证据，回答简洁专业。"
 			}
 
 			roleTools := sub.RoleTools

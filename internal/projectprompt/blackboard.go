@@ -5,7 +5,7 @@ package projectprompt
 import (
 	"strings"
 
-	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai-ev/internal/mcp/builtin"
 )
 
 const (

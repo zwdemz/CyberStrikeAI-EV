@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"cyberstrike-ai/internal/config"
-	"cyberstrike-ai/internal/openai"
+	"cyberstrike-ai-ev/internal/config"
+	"cyberstrike-ai-ev/internal/openai"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/schema"

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"cyberstrike-ai/internal/einomcp"
-	"cyberstrike-ai/internal/mcp"
-	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai-ev/internal/einomcp"
+	"cyberstrike-ai-ev/internal/mcp"
+	"cyberstrike-ai-ev/internal/security"
 
 	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/compose"
