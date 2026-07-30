@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	clientName    = "CyberStrikeAI-EV"
+	clientName    = "CyberStrikeAI"
 	clientVersion = "1.0.0"
 )
 

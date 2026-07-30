@@ -33,12 +33,12 @@ type einoSingleExecutionMiddleware struct {
 }
 
 type einoSingleDeadlineModel struct {
-	base       model.BaseModel[*schema.Message]
+	base       model.BaseChatModel
 	callLimit  time.Duration
 	streamIdle time.Duration
 }
 
-func (m *einoSingleExecutionMiddleware) WrapModel(_ context.Context, base model.BaseModel[*schema.Message], _ *adk.ModelContext) (model.BaseModel[*schema.Message], error) {
+func (m *einoSingleExecutionMiddleware) WrapModel(_ context.Context, base model.BaseChatModel, _ *adk.ModelContext) (model.BaseChatModel, error) {
 	if base == nil || (m.modelTimeout <= 0 && m.modelStreamIdle <= 0) {
 		return base, nil
 	}

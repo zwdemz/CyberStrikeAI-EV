@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -18,61 +17,6 @@ import (
 
 	"go.uber.org/zap"
 )
-
-// Transport-level timeout knobs shared by all chat-completion HTTP clients.
-//
-// Timeouts are intentionally split:
-//   - Dial: fail fast when the gateway is unreachable (was 300s -> felt like a 5‑minute hang).
-//   - ResponseHeaderTimeout: if the peer accepts TCP but never sends headers, abort soon
-//     (was 60m -> UI long-poll idle with no events after tool results). The streaming path
-//     sends headers almost immediately, so a tight value fails fast on dead peers without
-//     affecting healthy streams.
-//   - Client.Timeout: still allows long streaming generations after headers arrive.
-//
-// Note: if the stream sends headers then stalls (only SSE comments / no data), the overall
-// Client.Timeout still applies; idle-body timeout would need a custom reader.
-//
-// summaryResponseHeaderTimeout is deliberately larger: summarization uses a non-streaming
-// Generate, whose response headers arrive only after the model finishes the whole summary.
-// For a large context summary the streaming-path 3m value aborts healthy requests with
-// "http2: timeout awaiting response headers". isEinoTransientRunError + run_retry_max_attempts
-// still retry true stalls, and Client.Timeout (30m) still bounds the overall call.
-const (
-	llmClientTimeout             = 30 * time.Minute
-	llmDialTimeout               = 30 * time.Second
-	llmTLSHandshakeTimeout       = 15 * time.Second
-	llmResponseHeaderTimeout     = 3 * time.Minute
-	summaryResponseHeaderTimeout = 10 * time.Minute
-)
-
-// NewLLMHTTPClient returns an http.Client for streaming chat completions (Eino / legacy OpenAI path).
-func NewLLMHTTPClient() *http.Client {
-	return newLLMHTTPClient(llmResponseHeaderTimeout)
-}
-
-// NewSummaryLLMHTTPClient returns an http.Client for non-streaming summarization Generate.
-// Identical to NewLLMHTTPClient except for a longer ResponseHeaderTimeout.
-func NewSummaryLLMHTTPClient() *http.Client {
-	return newLLMHTTPClient(summaryResponseHeaderTimeout)
-}
-
-func newLLMHTTPClient(headerTimeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: llmClientTimeout,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   llmDialTimeout,
-				KeepAlive: 60 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   llmTLSHandshakeTimeout,
-			ResponseHeaderTimeout: headerTimeout,
-			ForceAttemptHTTP2:     true,
-		},
-	}
-}
 
 // Client 统一封装与OpenAI兼容模型交互的HTTP客户端。
 type Client struct {

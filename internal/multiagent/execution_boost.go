@@ -82,11 +82,6 @@ func mergeAlwaysVisibleToolNamesWithBoost(configured []string, executionBoost bo
 	return resolveAlwaysVisibleToolNames(configured, configured, 0)
 }
 
-// mergeAlwaysVisibleToolNames 兼容旧名：仅配置列表自身去重（不注入框架硬编码）。
-func mergeAlwaysVisibleToolNames(configured []string) []string {
-	return mergeAlwaysVisibleToolNamesWithBoost(configured, true)
-}
-
 // mergeReductionClearExclude 合并 reduction 不清空列表。
 // 仅：用户配置 + 框架元工具 + 本轮已绑定工具名（角色来源），禁止额外硬编码 MCP 工具名。
 func mergeReductionClearExclude(configured []string, boundToolNames []string) []string {

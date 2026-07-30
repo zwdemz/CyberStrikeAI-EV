@@ -69,7 +69,7 @@ func (h *MonitorHandler) SetAgentHandler(ah *AgentHandler) {
 	h.agentHandler = ah
 }
 
-const monitorPageTopTools = 6
+const monitorPageTopTools = 3
 
 // MonitorStatsSummary 工具调用汇总
 type MonitorStatsSummary struct {
@@ -120,9 +120,22 @@ func (h *MonitorHandler) Monitor(c *gin.Context) {
 	// 解析工具筛选参数（兼容 mcp__tool 与内部 mcp::tool）
 	toolName := normalizeToolNameFilter(c.Query("tool"))
 
-	executions, total := h.loadExecutionListWithPagination(page, pageSize, status, toolName)
+	access := notificationAccessFromContext(c)
+	executions, total := h.loadExecutionListWithPagination(page, pageSize, status, toolName, access)
 	h.enrichExecutionsConversationID(executions)
-	summary, topTools := h.loadStatsSummary(monitorPageTopTools)
+	var summary *MonitorStatsSummary
+	var topTools []*mcp.ToolStats
+	if access.Scope == database.RBACScopeAll {
+		summary, topTools = h.loadStatsSummary(monitorPageTopTools)
+	} else if h.db != nil {
+		if scoped, err := h.db.LoadToolStatsSummaryForAccess(monitorPageTopTools, access); err == nil {
+			summary, topTools = dbStatsSummaryToMonitor(scoped), scoped.TopTools
+		} else {
+			summary, topTools = summarizeAccessibleExecutionPage(executions, monitorPageTopTools)
+		}
+	} else {
+		summary, topTools = summarizeAccessibleExecutionPage(executions, monitorPageTopTools)
+	}
 
 	totalPages := (total + pageSize - 1) / pageSize
 	if totalPages == 0 {
@@ -142,6 +155,40 @@ func (h *MonitorHandler) Monitor(c *gin.Context) {
 	})
 }
 
+func summarizeAccessibleExecutionPage(executions []*mcp.ToolExecution, topN int) (*MonitorStatsSummary, []*mcp.ToolStats) {
+	stats := map[string]*mcp.ToolStats{}
+	for _, exec := range executions {
+		if exec == nil {
+			continue
+		}
+		stat := stats[exec.ToolName]
+		if stat == nil {
+			stat = &mcp.ToolStats{ToolName: exec.ToolName}
+			stats[exec.ToolName] = stat
+		}
+		stat.TotalCalls++
+		if monitorStatusCountsAsFailed(exec.Status) {
+			stat.FailedCalls++
+		} else if exec.Status == "completed" {
+			stat.SuccessCalls++
+		}
+		started := exec.StartTime
+		if stat.LastCallTime == nil || started.After(*stat.LastCallTime) {
+			stat.LastCallTime = &started
+		}
+	}
+	return summarizeToolStats(stats, topN)
+}
+
+func monitorStatusCountsAsFailed(status string) bool {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "failed", "hard_timeout", "orphaned":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *MonitorHandler) monitorRetentionDays() int {
 	if h.monitorRetention != nil {
 		return h.monitorRetention.RetentionDays()
@@ -154,9 +201,9 @@ func (h *MonitorHandler) loadExecutions() []*mcp.ToolExecution {
 	return executions
 }
 
-func (h *MonitorHandler) loadExecutionListWithPagination(page, pageSize int, status, toolName string) ([]*mcp.ToolExecution, int) {
+func (h *MonitorHandler) loadExecutionListWithPagination(page, pageSize int, status, toolName string, access database.RBACListAccess) ([]*mcp.ToolExecution, int) {
 	if h.db == nil {
-		allExecutions := h.mcpServer.GetAllExecutions()
+		allExecutions := filterToolExecutionsForAccess(h.mcpServer.GetAllExecutions(), access, h.db)
 		if status != "" || toolName != "" {
 			filtered := make([]*mcp.ToolExecution, 0)
 			for _, exec := range allExecutions {
@@ -189,13 +236,13 @@ func (h *MonitorHandler) loadExecutionListWithPagination(page, pageSize int, sta
 	}
 
 	offset := (page - 1) * pageSize
-	executions, err := h.db.LoadToolExecutionListPage(offset, pageSize, status, toolName)
+	executions, err := h.db.LoadToolExecutionListPageForAccess(offset, pageSize, status, toolName, access)
 	if err != nil {
 		h.logger.Warn("从数据库加载执行记录列表失败，回退到内存数据", zap.Error(err))
-		return h.loadExecutionListWithPaginationFromMemory(page, pageSize, status, toolName)
+		return h.loadExecutionListWithPaginationFromMemory(page, pageSize, status, toolName, access)
 	}
 
-	total, err := h.db.CountToolExecutions(status, toolName)
+	total, err := h.db.CountToolExecutionsForAccess(status, toolName, access)
 	if err != nil {
 		h.logger.Warn("获取执行记录总数失败", zap.Error(err))
 		total = offset + len(executions)
@@ -207,8 +254,8 @@ func (h *MonitorHandler) loadExecutionListWithPagination(page, pageSize int, sta
 	return executions, total
 }
 
-func (h *MonitorHandler) loadExecutionListWithPaginationFromMemory(page, pageSize int, status, toolName string) ([]*mcp.ToolExecution, int) {
-	allExecutions := h.mcpServer.GetAllExecutions()
+func (h *MonitorHandler) loadExecutionListWithPaginationFromMemory(page, pageSize int, status, toolName string, access database.RBACListAccess) ([]*mcp.ToolExecution, int) {
+	allExecutions := filterToolExecutionsForAccess(h.mcpServer.GetAllExecutions(), access, h.db)
 	if status != "" || toolName != "" {
 		filtered := make([]*mcp.ToolExecution, 0)
 		for _, exec := range allExecutions {
@@ -258,6 +305,50 @@ func slimToolExecution(exec *mcp.ToolExecution) *mcp.ToolExecution {
 		slim.Duration = exec.Duration
 	}
 	return slim
+}
+
+func filterToolExecutionsForAccess(executions []*mcp.ToolExecution, access database.RBACListAccess, db *database.DB) []*mcp.ToolExecution {
+	if access.Scope == database.RBACScopeAll {
+		return executions
+	}
+	out := make([]*mcp.ToolExecution, 0, len(executions))
+	for _, exec := range executions {
+		if toolExecutionVisible(exec, access, db) {
+			out = append(out, exec)
+		}
+	}
+	return out
+}
+
+func toolExecutionVisible(exec *mcp.ToolExecution, access database.RBACListAccess, db *database.DB) bool {
+	if exec == nil || strings.TrimSpace(access.UserID) == "" {
+		return false
+	}
+	if access.Scope == database.RBACScopeAll || strings.TrimSpace(exec.OwnerUserID) == strings.TrimSpace(access.UserID) {
+		return true
+	}
+	conversationID := strings.TrimSpace(exec.ConversationID)
+	return conversationID != "" && db != nil && db.UserCanAccessResource(access.UserID, access.Scope, "conversation", conversationID)
+}
+
+func (h *MonitorHandler) monitorExecutionAllowed(c *gin.Context, id string) bool {
+	access := notificationAccessFromContext(c)
+	if access.Scope == database.RBACScopeAll {
+		return true
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	if exec, ok := h.mcpServer.GetExecution(id); ok {
+		return toolExecutionVisible(exec, access, h.db)
+	}
+	if h.externalMCPMgr != nil {
+		if exec, ok := h.externalMCPMgr.GetExecution(id); ok {
+			return toolExecutionVisible(exec, access, h.db)
+		}
+	}
+	return h.db != nil && h.db.UserCanAccessToolExecution(access.UserID, access.Scope, id)
 }
 
 func (h *MonitorHandler) loadExecutionsWithPagination(page, pageSize int, status, toolName string) ([]*mcp.ToolExecution, int) {
@@ -453,6 +544,10 @@ func (h *MonitorHandler) loadStatsMap() map[string]*mcp.ToolStats {
 // GetExecution 获取特定执行记录
 func (h *MonitorHandler) GetExecution(c *gin.Context) {
 	id := c.Param("id")
+	if !h.monitorExecutionAllowed(c, id) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该资源"})
+		return
+	}
 
 	// 先从内部MCP服务器查找
 	exec, exists := h.mcpServer.GetExecution(id)
@@ -491,6 +586,10 @@ func (h *MonitorHandler) CancelExecution(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "执行记录ID不能为空"})
+		return
+	}
+	if !h.monitorExecutionAllowed(c, id) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该资源"})
 		return
 	}
 	note := ""
@@ -575,7 +674,7 @@ func (h *MonitorHandler) lookupExecution(id string) *mcp.ToolExecution {
 	return nil
 }
 
-// BatchGetToolNames 批量获取工具执行的工具名称（消除前端 N+1 请求）
+// BatchGetToolNames 批量获取工具执行摘要（消除前端 N+1 请求）
 func (h *MonitorHandler) BatchGetToolNames(c *gin.Context) {
 	var req struct {
 		IDs []string `json:"ids"`
@@ -585,24 +684,32 @@ func (h *MonitorHandler) BatchGetToolNames(c *gin.Context) {
 		return
 	}
 
-	result := make(map[string]string, len(req.IDs))
+	type executionSummary struct {
+		ToolName string `json:"toolName"`
+		Status   string `json:"status"`
+	}
+
+	result := make(map[string]executionSummary, len(req.IDs))
 	for _, id := range req.IDs {
+		if !h.monitorExecutionAllowed(c, id) {
+			continue
+		}
 		// 先从内部MCP服务器查找
 		if exec, exists := h.mcpServer.GetExecution(id); exists {
-			result[id] = exec.ToolName
+			result[id] = executionSummary{ToolName: exec.ToolName, Status: exec.Status}
 			continue
 		}
 		// 再从外部MCP管理器查找
 		if h.externalMCPMgr != nil {
 			if exec, exists := h.externalMCPMgr.GetExecution(id); exists {
-				result[id] = exec.ToolName
+				result[id] = executionSummary{ToolName: exec.ToolName, Status: exec.Status}
 				continue
 			}
 		}
 		// 最后从数据库查找
 		if h.db != nil {
 			if exec, err := h.db.GetToolExecution(id); err == nil && exec != nil {
-				result[id] = exec.ToolName
+				result[id] = executionSummary{ToolName: exec.ToolName, Status: exec.Status}
 			}
 		}
 	}
@@ -715,7 +822,7 @@ func (h *MonitorHandler) loadCallsTimeline(cfg callsTimelineConfig) []CallsTimel
 		key := truncateToBucket(exec.StartTime, cfg.bucketSize, cfg.dailyBuckets)
 		entry := bucketMap[key]
 		entry.total++
-		if exec.Status == "failed" || exec.Status == "cancelled" {
+		if monitorStatusCountsAsFailed(exec.Status) {
 			entry.failed++
 		}
 		bucketMap[key] = entry
@@ -750,6 +857,10 @@ func (h *MonitorHandler) DeleteExecution(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "执行记录ID不能为空"})
 		return
 	}
+	if !h.monitorExecutionAllowed(c, id) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该资源"})
+		return
+	}
 
 	// 如果使用数据库，先获取执行记录信息，然后删除并更新统计
 	if h.db != nil {
@@ -774,7 +885,7 @@ func (h *MonitorHandler) DeleteExecution(c *gin.Context) {
 		totalCalls := 1
 		successCalls := 0
 		failedCalls := 0
-		if exec.Status == "failed" || exec.Status == "cancelled" {
+		if monitorStatusCountsAsFailed(exec.Status) {
 			failedCalls = 1
 		} else if exec.Status == "completed" {
 			successCalls = 1
@@ -818,6 +929,12 @@ func (h *MonitorHandler) DeleteExecutions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "执行记录ID列表不能为空"})
 		return
 	}
+	for _, id := range request.IDs {
+		if !h.monitorExecutionAllowed(c, id) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权访问一个或多个执行记录"})
+			return
+		}
+	}
 
 	// 如果使用数据库，先获取执行记录信息，然后删除并更新统计
 	if h.db != nil {
@@ -843,7 +960,7 @@ func (h *MonitorHandler) DeleteExecutions(c *gin.Context) {
 
 			stats := toolStats[exec.ToolName]
 			stats.totalCalls++
-			if exec.Status == "failed" || exec.Status == "cancelled" {
+			if monitorStatusCountsAsFailed(exec.Status) {
 				stats.failedCalls++
 			} else if exec.Status == "completed" {
 				stats.successCalls++

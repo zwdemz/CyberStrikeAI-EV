@@ -21,13 +21,10 @@ import (
 type PlanExecuteRootArgs struct {
 	MainToolCallingModel *openai.ChatModel
 	ExecModel            *openai.ChatModel
-	// SummaryModel 是专用于 summarization Generate 的独立 ChatModel（放宽 ResponseHeaderTimeout）。
-	// 为空时回退到 ExecModel，保持向后兼容。主/子代理路径在 runner.go 内统一构建并注入。
-	SummaryModel    *openai.ChatModel
-	OrchInstruction string
-	ToolsCfg        adk.ToolsConfig
-	ExecMaxIter     int
-	LoopMaxIter     int
+	OrchInstruction      string
+	ToolsCfg             adk.ToolsConfig
+	ExecMaxIter          int
+	LoopMaxIter          int
 	// AppCfg / Logger 非空时为 Executor 挂载与 Deep/Supervisor 一致的 Eino summarization 中间件。
 	AppCfg *config.Config
 	MwCfg  *config.MultiAgentEinoMiddlewareConfig
@@ -49,6 +46,8 @@ type PlanExecuteRootArgs struct {
 	PlannerReplannerRewriteHandlers []adk.ChatModelAgentMiddleware
 	// ModelFacingTrace 可选：由 Executor Handlers 链末尾写入，供 last_react 与 summarization 后上下文对齐。
 	ModelFacingTrace *modelFacingTraceHolder
+	// SummaryModel 可选：独立于 ExecModel 的 summarization 模型，非空时替代 ExecModel 用于历史压缩。
+	SummaryModel *openai.ChatModel
 }
 
 // NewPlanExecuteRoot 返回 plan → execute → replan 预置编排根节点（与 Deep / Supervisor 并列）。
@@ -83,39 +82,9 @@ func NewPlanExecuteRoot(ctx context.Context, a *PlanExecuteRootArgs) (adk.Resuma
 		return nil, fmt.Errorf("plan_execute replanner: %w", err)
 	}
 
-	// 组装 executor handler 栈，顺序与 Deep/Supervisor 主代理一致（outermost first）。
-	var execHandlers []adk.ChatModelAgentMiddleware
-	// 1. patchtoolcalls, reduction, toolsearch, plantask（来自 prependEinoMiddlewares）
-	if len(a.ExecPreMiddlewares) > 0 {
-		execHandlers = append(execHandlers, a.ExecPreMiddlewares...)
-	}
-	// 2. filesystem 中间件（可选）
-	if a.FilesystemMiddleware != nil {
-		execHandlers = append(execHandlers, a.FilesystemMiddleware)
-	}
-	// 3. skill 中间件（可选）
-	if a.SkillMiddleware != nil {
-		execHandlers = append(execHandlers, a.SkillMiddleware)
-	}
-	// 4. pre-summarization normalize + continuation dedup, then summarization (与 Deep/Supervisor 一致)
-	if a.AppCfg != nil {
-		// 优先使用专用摘要模型（放宽头超时）；未注入时回退到执行器模型，保持向后兼容。
-		summaryModel := a.SummaryModel
-		if summaryModel == nil {
-			summaryModel = a.ExecModel
-		}
-		sumMw, sumErr := newEinoSummarizationMiddleware(ctx, summaryModel, a.AppCfg, a.MwCfg, a.ConversationID, a.DB, a.ProjectID, a.Logger)
-		if sumErr != nil {
-			return nil, fmt.Errorf("plan_execute executor summarization: %w", sumErr)
-		}
-		execHandlers = appendEinoChatModelTailMiddlewares(execHandlers, einoChatModelTailConfig{
-			logger:         a.Logger,
-			phase:          "plan_execute_executor",
-			summarization:  sumMw,
-			modelName:      a.ModelName,
-			conversationID: a.ConversationID,
-			trace:          a.ModelFacingTrace,
-		})
+	execHandlers, err := buildPlanExecuteExecutorHandlers(ctx, a)
+	if err != nil {
+		return nil, err
 	}
 	executor, err := newPlanExecuteExecutor(ctx, &planexecute.ExecutorConfig{
 		Model:         a.ExecModel,
@@ -136,6 +105,42 @@ func NewPlanExecuteRoot(ctx context.Context, a *PlanExecuteRootArgs) (adk.Resuma
 		Replanner:     replanner,
 		MaxIterations: loopMax,
 	})
+}
+
+// buildPlanExecuteExecutorHandlers 组装 Executor 中间件栈（outermost first），与 Deep/Supervisor 主代理对齐：
+// ExecPreMiddlewares（patch / reduction / toolsearch / plantask）→ filesystem → skill → summarization tail。
+func buildPlanExecuteExecutorHandlers(ctx context.Context, a *PlanExecuteRootArgs) ([]adk.ChatModelAgentMiddleware, error) {
+	if a == nil {
+		return nil, fmt.Errorf("plan_execute: args 为空")
+	}
+	var execHandlers []adk.ChatModelAgentMiddleware
+	if len(a.ExecPreMiddlewares) > 0 {
+		execHandlers = append(execHandlers, a.ExecPreMiddlewares...)
+	}
+	if a.FilesystemMiddleware != nil {
+		execHandlers = append(execHandlers, a.FilesystemMiddleware)
+	}
+	if a.SkillMiddleware != nil {
+		execHandlers = append(execHandlers, a.SkillMiddleware)
+	}
+	if a.AppCfg != nil {
+		sumMw, sumErr := newEinoSummarizationMiddleware(ctx, a.ExecModel, a.AppCfg, a.MwCfg, a.ConversationID, a.DB, a.ProjectID, a.Logger)
+		if sumErr != nil {
+			return nil, fmt.Errorf("plan_execute executor summarization: %w", sumErr)
+		}
+		execHandlers = appendEinoChatModelTailMiddlewares(execHandlers, einoChatModelTailConfig{
+			logger:           a.Logger,
+			phase:            "plan_execute_executor",
+			summarization:    sumMw,
+			modelName:        a.ModelName,
+			maxTotalTokens:   a.AppCfg.OpenAI.MaxTotalTokens,
+			toolMaxBytes:     toolMaxBytesFromMW(a.MwCfg),
+			conversationID:   a.ConversationID,
+			trace:            a.ModelFacingTrace,
+			middlewareConfig: a.MwCfg,
+		})
+	}
+	return execHandlers, nil
 }
 
 // planExecutePlannerGenInput 将 orchestrator instruction 作为 SystemMessage 注入 planner 输入。

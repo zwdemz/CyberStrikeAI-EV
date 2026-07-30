@@ -43,11 +43,19 @@ func (db *DB) SaveToolExecution(exec *mcp.ToolExecution) error {
 	if exec.Duration > 0 {
 		durationMs = sql.NullInt64{Int64: exec.Duration.Milliseconds(), Valid: true}
 	}
+	var partialUpdatedAt sql.NullTime
+	if exec.PartialOutputUpdatedAt != nil {
+		partialUpdatedAt = sql.NullTime{Time: *exec.PartialOutputUpdatedAt, Valid: true}
+	}
+	partialTruncated := 0
+	if exec.PartialOutputTruncated {
+		partialTruncated = 1
+	}
 
 	query := `
 		INSERT OR REPLACE INTO tool_executions 
-		(id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, partial_output, partial_output_bytes, partial_output_truncated, partial_output_updated_at, owner_user_id, conversation_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = db.Exec(query,
@@ -60,6 +68,12 @@ func (db *DB) SaveToolExecution(exec *mcp.ToolExecution) error {
 		exec.StartTime,
 		endTime,
 		durationMs,
+		sqlNullString(exec.PartialOutput),
+		exec.PartialOutputBytes,
+		partialTruncated,
+		partialUpdatedAt,
+		strings.TrimSpace(exec.OwnerUserID),
+		strings.TrimSpace(exec.ConversationID),
 		time.Now(),
 	)
 
@@ -88,8 +102,19 @@ func (db *DB) UpdateToolExecutionResult(id string, result *mcp.ToolResult) error
 	return err
 }
 
+func sqlNullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
 // CountToolExecutions 统计工具执行记录总数
 func (db *DB) CountToolExecutions(status, toolName string) (int, error) {
+	return db.CountToolExecutionsForAccess(status, toolName, RBACListAccess{Scope: RBACScopeAll})
+}
+
+func (db *DB) CountToolExecutionsForAccess(status, toolName string, access RBACListAccess) (int, error) {
 	query := `SELECT COUNT(*) FROM tool_executions`
 	args := []interface{}{}
 	conditions := []string{}
@@ -108,6 +133,7 @@ func (db *DB) CountToolExecutions(status, toolName string) (int, error) {
 			query += ` AND ` + conditions[i]
 		}
 	}
+	query, args = appendToolExecutionAccessSQL(query, args, access, len(conditions) > 0)
 	var count int
 	err := db.QueryRow(query, args...).Scan(&count)
 	if err != nil {
@@ -135,7 +161,7 @@ func (db *DB) LoadToolExecutionsWithPagination(offset, limit int, status, toolNa
 	}
 
 	query := `
-		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms
+		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, COALESCE(owner_user_id, ''), COALESCE(conversation_id, '')
 		FROM tool_executions
 	`
 	args := []interface{}{}
@@ -183,6 +209,8 @@ func (db *DB) LoadToolExecutionsWithPagination(offset, limit int, status, toolNa
 			&exec.StartTime,
 			&endTime,
 			&durationMs,
+			&exec.OwnerUserID,
+			&exec.ConversationID,
 		)
 		if err != nil {
 			db.logger.Warn("加载执行记录失败", zap.Error(err))
@@ -258,7 +286,8 @@ type ToolStatsSummaryResult struct {
 	TopTools []*mcp.ToolStats
 }
 
-// LoadToolStatsSummary 聚合统计信息，仅返回汇总与 Top N 工具（避免全量 map 传输）
+// LoadToolStatsSummary 聚合统计信息，仅返回汇总与 Top N 工具（避免全量 map 传输）。
+// 监控页的失败口径只包含真实失败/异常终止；用户主动取消的 cancelled 保留在总调用中，不计入失败。
 func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 	if topN <= 0 {
 		topN = 6
@@ -273,19 +302,19 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 
 	summaryQuery := `
 		SELECT COUNT(*),
-			COALESCE(SUM(total_calls), 0),
-			COALESCE(SUM(success_calls), 0),
-			COALESCE(SUM(failed_calls), 0),
-			MAX(last_call_time)
-		FROM tool_stats
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END), 0),
+			MAX(start_time),
+			COUNT(DISTINCT tool_name)
+		FROM tool_executions
 	`
 	var lastCallRaw sql.NullString
 	err := db.QueryRow(summaryQuery).Scan(
-		&result.Summary.ToolCount,
 		&result.Summary.TotalCalls,
 		&result.Summary.SuccessCalls,
 		&result.Summary.FailedCalls,
 		&lastCallRaw,
+		&result.Summary.ToolCount,
 	)
 	if err != nil {
 		return nil, err
@@ -301,9 +330,13 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 	}
 
 	topQuery := `
-		SELECT tool_name, total_calls, success_calls, failed_calls, last_call_time
-		FROM tool_stats
-		WHERE total_calls > 0
+		SELECT tool_name,
+			COUNT(*) AS total_calls,
+			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS success_calls,
+			SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END) AS failed_calls,
+			MAX(start_time) AS last_call_time
+		FROM tool_executions
+		GROUP BY tool_name
 		ORDER BY total_calls DESC, tool_name ASC
 		LIMIT ?
 	`
@@ -315,7 +348,7 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 
 	for rows.Next() {
 		var stat mcp.ToolStats
-		var lastCallTime sql.NullTime
+		var lastCallTime sql.NullString
 		if err := rows.Scan(
 			&stat.ToolName,
 			&stat.TotalCalls,
@@ -327,7 +360,8 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 			continue
 		}
 		if lastCallTime.Valid {
-			stat.LastCallTime = &lastCallTime.Time
+			parsed := parseDBTime(lastCallTime.String)
+			stat.LastCallTime = &parsed
 		}
 		result.TopTools = append(result.TopTools, &stat)
 	}
@@ -335,8 +369,62 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 	return result, nil
 }
 
+func (db *DB) LoadToolStatsSummaryForAccess(topN int, access RBACListAccess) (*ToolStatsSummaryResult, error) {
+	if access.Scope == RBACScopeAll {
+		return db.LoadToolStatsSummary(topN)
+	}
+	if topN <= 0 {
+		topN = 6
+	}
+	if topN > 100 {
+		topN = 100
+	}
+	result := &ToolStatsSummaryResult{TopTools: make([]*mcp.ToolStats, 0, topN)}
+	fromSQL, args := appendToolExecutionAccessSQL(` FROM tool_executions`, nil, access, false)
+	var lastCall sql.NullString
+	err := db.QueryRow(`SELECT COUNT(*),
+		COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END), 0),
+		MAX(start_time), COUNT(DISTINCT tool_name)`+fromSQL, args...).Scan(
+		&result.Summary.TotalCalls, &result.Summary.SuccessCalls, &result.Summary.FailedCalls,
+		&lastCall, &result.Summary.ToolCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if lastCall.Valid {
+		parsed := parseDBTime(lastCall.String)
+		result.Summary.LastCallTime = &parsed
+	}
+	rows, err := db.Query(`SELECT tool_name, COUNT(*),
+		SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END), MAX(start_time)`+
+		fromSQL+` GROUP BY tool_name ORDER BY COUNT(*) DESC, tool_name ASC LIMIT ?`, append(args, topN)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var stat mcp.ToolStats
+		var last sql.NullString
+		if err := rows.Scan(&stat.ToolName, &stat.TotalCalls, &stat.SuccessCalls, &stat.FailedCalls, &last); err != nil {
+			return nil, err
+		}
+		if last.Valid {
+			parsed := parseDBTime(last.String)
+			stat.LastCallTime = &parsed
+		}
+		result.TopTools = append(result.TopTools, &stat)
+	}
+	return result, rows.Err()
+}
+
 // LoadToolExecutionListPage 分页加载执行记录列表（不含 arguments/result，供监控列表使用）
 func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName string) ([]*mcp.ToolExecution, error) {
+	return db.LoadToolExecutionListPageForAccess(offset, limit, status, toolName, RBACListAccess{Scope: RBACScopeAll})
+}
+
+func (db *DB) LoadToolExecutionListPageForAccess(offset, limit int, status, toolName string, access RBACListAccess) ([]*mcp.ToolExecution, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -345,11 +433,13 @@ func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName stri
 	}
 
 	query := `
-		SELECT id, tool_name, status, start_time, end_time, duration_ms
+		SELECT id, tool_name, status, start_time, end_time, duration_ms, COALESCE(owner_user_id, ''), COALESCE(conversation_id, '')
 		FROM tool_executions
 	`
 	whereSQL, args := toolExecutionsFilterSQL(status, toolName)
-	query += whereSQL + ` ORDER BY start_time DESC LIMIT ? OFFSET ?`
+	query += whereSQL
+	query, args = appendToolExecutionAccessSQL(query, args, access, whereSQL != "")
+	query += ` ORDER BY start_time DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
 	rows, err := db.Query(query, args...)
@@ -371,6 +461,8 @@ func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName stri
 			&exec.StartTime,
 			&endTime,
 			&durationMs,
+			&exec.OwnerUserID,
+			&exec.ConversationID,
 		); err != nil {
 			db.logger.Warn("加载执行记录列表失败", zap.Error(err))
 			continue
@@ -387,10 +479,37 @@ func (db *DB) LoadToolExecutionListPage(offset, limit int, status, toolName stri
 	return executions, nil
 }
 
+func appendToolExecutionAccessSQL(query string, args []interface{}, access RBACListAccess, hasWhere bool) (string, []interface{}) {
+	if access.Scope == RBACScopeAll {
+		return query, args
+	}
+	userID := strings.TrimSpace(access.UserID)
+	joiner := " WHERE "
+	if hasWhere {
+		joiner = " AND "
+	}
+	if userID == "" {
+		return query + joiner + "1=0", args
+	}
+	query += joiner + `(
+		owner_user_id = ?
+		OR (conversation_id IS NOT NULL AND conversation_id <> '' AND (
+			EXISTS (SELECT 1 FROM conversations c WHERE c.id = tool_executions.conversation_id AND c.owner_user_id = ?)
+			OR EXISTS (SELECT 1 FROM rbac_resource_assignments ra WHERE ra.user_id = ? AND ra.resource_type = 'conversation' AND ra.resource_id = tool_executions.conversation_id)
+			OR EXISTS (SELECT 1 FROM conversations c JOIN projects p ON p.id = c.project_id WHERE c.id = tool_executions.conversation_id AND p.owner_user_id = ?)
+			OR EXISTS (SELECT 1 FROM conversations c JOIN rbac_resource_assignments pra ON pra.resource_id = c.project_id WHERE c.id = tool_executions.conversation_id AND pra.user_id = ? AND pra.resource_type = 'project')
+		))
+	)`
+	args = append(args, userID, userID, userID, userID, userID)
+	return query, args
+}
+
 // GetToolExecution 根据ID获取单条工具执行记录
 func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 	query := `
-		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms
+		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms,
+		       COALESCE(partial_output, ''), COALESCE(partial_output_bytes, 0), COALESCE(partial_output_truncated, 0), partial_output_updated_at,
+		       COALESCE(owner_user_id, ''), COALESCE(conversation_id, '')
 		FROM tool_executions
 		WHERE id = ?
 	`
@@ -403,6 +522,8 @@ func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 	var errorText sql.NullString
 	var endTime sql.NullTime
 	var durationMs sql.NullInt64
+	var partialTruncated int
+	var partialUpdatedAt sql.NullTime
 
 	err := row.Scan(
 		&exec.ID,
@@ -414,6 +535,12 @@ func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 		&exec.StartTime,
 		&endTime,
 		&durationMs,
+		&exec.PartialOutput,
+		&exec.PartialOutputBytes,
+		&partialTruncated,
+		&partialUpdatedAt,
+		&exec.OwnerUserID,
+		&exec.ConversationID,
 	)
 	if err != nil {
 		return nil, err
@@ -444,11 +571,38 @@ func (db *DB) GetToolExecution(id string) (*mcp.ToolExecution, error) {
 	if durationMs.Valid {
 		exec.Duration = time.Duration(durationMs.Int64) * time.Millisecond
 	}
+	exec.PartialOutputTruncated = partialTruncated != 0
+	if partialUpdatedAt.Valid {
+		exec.PartialOutputUpdatedAt = &partialUpdatedAt.Time
+	}
 
 	return &exec, nil
 }
 
-// CancelOrphanedRunningToolExecutions 将仍为 running 的记录批量标记为 cancelled（如进程重启后无对应执行协程）。
+// UserCanAccessToolExecution enforces ownership for monitor detail and mutation
+// endpoints. Legacy records without an owner or conversation fail closed for
+// non-global users.
+func (db *DB) UserCanAccessToolExecution(userID, scope, executionID string) bool {
+	userID = strings.TrimSpace(userID)
+	executionID = strings.TrimSpace(executionID)
+	if userID == "" || executionID == "" {
+		return false
+	}
+	if scope == RBACScopeAll {
+		return true
+	}
+	var ownerUserID, conversationID sql.NullString
+	if err := db.QueryRow(`SELECT owner_user_id, conversation_id FROM tool_executions WHERE id = ?`, executionID).Scan(&ownerUserID, &conversationID); err != nil {
+		return false
+	}
+	if strings.TrimSpace(ownerUserID.String) == userID {
+		return true
+	}
+	conversation := strings.TrimSpace(conversationID.String)
+	return conversation != "" && db.UserCanAccessResource(userID, scope, "conversation", conversation)
+}
+
+// CancelOrphanedRunningToolExecutions 将仍为 running 的记录批量标记为 orphaned（如进程重启后无对应执行协程）。
 func (db *DB) CancelOrphanedRunningToolExecutions(endTime time.Time, errMsg string) (int64, error) {
 	errMsg = strings.TrimSpace(errMsg)
 	if errMsg == "" {
@@ -456,7 +610,7 @@ func (db *DB) CancelOrphanedRunningToolExecutions(endTime time.Time, errMsg stri
 	}
 	query := `
 		UPDATE tool_executions
-		SET status = 'cancelled',
+		SET status = 'orphaned',
 		    error = ?,
 		    end_time = ?,
 		    duration_ms = MAX(0, CAST((julianday(?) - julianday(start_time)) * 86400000 AS INTEGER))
@@ -469,7 +623,7 @@ func (db *DB) CancelOrphanedRunningToolExecutions(endTime time.Time, errMsg stri
 	return res.RowsAffected()
 }
 
-// FinalizeStaleRunningToolExecutions 将「非活跃且超过 minAge」的 running 记录标记为 cancelled。
+// FinalizeStaleRunningToolExecutions 将「非活跃且超过 minAge」的 running 记录标记为 orphaned。
 // activeIDs 为当前进程内仍登记 cancel 的 executionId；不在集合内且已超时的视为孤儿记录。
 func (db *DB) FinalizeStaleRunningToolExecutions(endTime time.Time, minAge time.Duration, activeIDs map[string]struct{}, errMsg string) (int64, error) {
 	errMsg = strings.TrimSpace(errMsg)
@@ -522,7 +676,7 @@ func (db *DB) FinalizeStaleRunningToolExecutions(endTime time.Time, minAge time.
 		}
 		res, err := db.Exec(`
 			UPDATE tool_executions
-			SET status = 'cancelled', error = ?, end_time = ?, duration_ms = ?
+			SET status = 'orphaned', error = ?, end_time = ?, duration_ms = ?
 			WHERE id = ? AND status = 'running'
 		`, errMsg, endTime, durationMs, row.id)
 		if err != nil {
@@ -584,7 +738,7 @@ func (db *DB) GetToolExecutionsByIds(ids []string) ([]*mcp.ToolExecution, error)
 	}
 
 	query := `
-		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms
+		SELECT id, tool_name, arguments, status, result, error, start_time, end_time, duration_ms, COALESCE(owner_user_id, ''), COALESCE(conversation_id, '')
 		FROM tool_executions
 		WHERE id IN (` + strings.Join(placeholders, ",") + `)
 	`
@@ -614,6 +768,8 @@ func (db *DB) GetToolExecutionsByIds(ids []string) ([]*mcp.ToolExecution, error)
 			&exec.StartTime,
 			&endTime,
 			&durationMs,
+			&exec.OwnerUserID,
+			&exec.ConversationID,
 		)
 		if err != nil {
 			db.logger.Warn("加载执行记录失败", zap.Error(err))
@@ -696,7 +852,7 @@ func (db *DB) PurgeToolExecutionsBefore(cutoff time.Time) (int64, error) {
 		}
 		delta.totalCalls += count
 		switch status {
-		case "failed", "cancelled":
+		case "failed", "hard_timeout", "orphaned":
 			delta.failedCalls += count
 		case "completed":
 			delta.successCalls += count
@@ -852,7 +1008,7 @@ func (db *DB) LoadCallsTimeline(since time.Time, dailyBuckets bool) ([]CallsTime
 		query = `
 			SELECT date(start_time, 'localtime') AS bucket,
 				COUNT(*) AS total,
-				SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) AS failed
+				SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END) AS failed
 			FROM tool_executions
 			WHERE start_time >= ?
 			GROUP BY bucket
@@ -862,7 +1018,7 @@ func (db *DB) LoadCallsTimeline(since time.Time, dailyBuckets bool) ([]CallsTime
 		query = `
 			SELECT strftime('%Y-%m-%d %H:00:00', start_time, 'localtime') AS bucket,
 				COUNT(*) AS total,
-				SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) AS failed
+				SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END) AS failed
 			FROM tool_executions
 			WHERE start_time >= ?
 			GROUP BY bucket

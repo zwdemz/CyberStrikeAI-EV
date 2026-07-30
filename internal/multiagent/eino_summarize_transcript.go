@@ -12,14 +12,14 @@ import (
 )
 
 const (
-	transcriptFileHeader = `# CyberStrikeAI-EV summarization transcript
+	transcriptFileHeader = `# CyberStrikeAI summarization transcript
 # Pre-compaction session record for read_file after context compression.
 # Omits static system/tool-index/skills boilerplate; full user/assistant/tool turns below.
 
 `
 	transcriptStaticSystemOmitNote = "[static system prompt omitted — unchanged in live context after compaction]"
-	transcriptToolIndexStartMarker   = "以下是当前会话绑定的工具名称索引"
-	transcriptPersonaStartMarker     = "你是CyberStrikeAI-EV"
+	transcriptToolIndexStartMarker = "以下是当前会话绑定的工具名称索引"
+	transcriptPersonaStartMarker   = "你是CyberStrikeAI"
 	// ADK LanguageChinese injects skill middleware prompt with this header (see eino adk/middlewares/skill/prompt.go).
 	transcriptSkillsSystemMarker        = "# Skill 系统"
 	transcriptSkillsSystemMarkerEnglish = "# Skills System"
@@ -58,6 +58,23 @@ func formatSummarizationTranscript(msgs []adk.Message) string {
 			appendTranscriptMessage(&sb, msg)
 			wrote = true
 		}
+	}
+	return sb.String()
+}
+
+// formatSummarizationModelContext serializes conversation history as inert text
+// for the summary model. Unlike formatSummarizationTranscript it omits the file
+// header and never emits native assistant/tool protocol messages.
+func formatSummarizationModelContext(msgs []adk.Message) string {
+	var sb strings.Builder
+	for _, msg := range msgs {
+		if msg == nil || msg.Role == schema.System {
+			continue
+		}
+		if sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		appendTranscriptMessage(&sb, msg)
 	}
 	return sb.String()
 }

@@ -18,7 +18,7 @@ import (
 const (
 	DefaultBaseURL       = "https://ilinkai.weixin.qq.com"
 	DefaultBotType       = "3"
-	DefaultBotAgent      = "CyberStrikeAI-EV/1.0"
+	DefaultBotAgent      = "CyberStrikeAI/1.0"
 	ILinkAppID           = "bot"
 	QRLongPollTimeout    = 35 * time.Second
 	APIDefaultTimeout    = 15 * time.Second

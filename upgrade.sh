@@ -24,7 +24,7 @@ KNOWLEDGE_BASE_DIR="$ROOT_DIR/knowledge_base"
 
 BACKUP_BASE_DIR="$ROOT_DIR/.upgrade-backup"
 
-GITHUB_REPO="langbyyi/CyberStrikeAI-SRC"
+GITHUB_REPO="zwdemz/CyberStrikeAI-EV"
 
 TAG=""
 PRESERVE_VENV=1

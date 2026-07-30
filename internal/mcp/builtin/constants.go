@@ -4,20 +4,17 @@ package builtin
 // 所有代码中使用内置工具名称的地方都应该使用这些常量，而不是硬编码字符串
 const (
 	// 漏洞管理工具
-	ToolRecordVulnerability          = "record_vulnerability"
-	ToolRecordVulnerabilityCandidate = "record_vulnerability_candidate" // L1 探索候选（宽松门槛）
-	ToolListVulnerabilities          = "list_vulnerabilities"
-	ToolGetVulnerability             = "get_vulnerability"
-	ToolUpdateVulnerability          = "update_vulnerability" // 按 ID 更新已落库记录
-	ToolDeleteVulnerability          = "delete_vulnerability" // 按 ID 删除已落库记录
+	ToolRecordVulnerability = "record_vulnerability"
+	ToolListVulnerabilities = "list_vulnerabilities"
+	ToolGetVulnerability    = "get_vulnerability"
 
-	// 执行覆盖 / 门闩（会话级，不靠 system prompt 约束结束）
-	ToolUpsertExecutionCoverage  = "upsert_execution_coverage"
-	ToolGetExecutionCoverage     = "get_execution_coverage"
-	ToolShouldContinueExecution  = "should_continue_execution"
-
-	// 业务逻辑轨：差分探针（双身份 / 参数篡改 / 跳步 / 并行）
-	ToolLogicProbeDiff = "logic_probe_diff"
+	// 资产管理工具
+	ToolCreateAsset       = "create_asset"
+	ToolGetAsset          = "get_asset"
+	ToolQueryAssets       = "query_assets"
+	ToolUpdateAsset       = "update_asset"
+	ToolDeleteAsset       = "delete_asset"
+	ToolCompleteAssetScan = "complete_asset_scan"
 
 	// 项目黑板（事实）工具
 	ToolUpsertProjectFact    = "upsert_project_fact"
@@ -33,6 +30,11 @@ const (
 
 	// 视觉分析（本地图片 → VL 模型 → 文本摘要）
 	ToolAnalyzeImage = "analyze_image"
+
+	// 长耗时工具执行控制（后台 execution 查询/等待/取消）
+	ToolGetToolExecution    = "get_tool_execution"
+	ToolWaitToolExecution   = "wait_tool_execution"
+	ToolCancelToolExecution = "cancel_tool_execution"
 
 	// WebShell 助手工具（AI 在 WebShell 管理 - AI 助手 中使用）
 	ToolWebshellExec      = "webshell_exec"
@@ -71,21 +73,28 @@ const (
 	ToolC2Event      = "c2_event"       // 事件查询
 	ToolC2Profile    = "c2_profile"     // Malleable Profile 管理（list/get/create/update/delete）
 	ToolC2File       = "c2_file"        // 文件管理（list/get_result）
+
+	// 执行覆盖工具
+	ToolUpsertExecutionCoverage    = "upsert_execution_coverage"
+	ToolGetExecutionCoverage       = "get_execution_coverage"
+	ToolShouldContinueExecution    = "should_continue_execution"
+
+	// 逻辑探针工具
+	ToolLogicProbeDiff             = "logic_probe_diff"
 )
 
 // IsBuiltinTool 检查工具名称是否是内置工具
 func IsBuiltinTool(toolName string) bool {
 	switch toolName {
 	case ToolRecordVulnerability,
-		ToolRecordVulnerabilityCandidate,
 		ToolListVulnerabilities,
 		ToolGetVulnerability,
-		ToolUpdateVulnerability,
-		ToolDeleteVulnerability,
-		ToolUpsertExecutionCoverage,
-		ToolGetExecutionCoverage,
-		ToolShouldContinueExecution,
-		ToolLogicProbeDiff,
+		ToolCreateAsset,
+		ToolGetAsset,
+		ToolQueryAssets,
+		ToolUpdateAsset,
+		ToolDeleteAsset,
+		ToolCompleteAssetScan,
 		ToolUpsertProjectFact,
 		ToolGetProjectFact,
 		ToolListProjectFacts,
@@ -95,65 +104,9 @@ func IsBuiltinTool(toolName string) bool {
 		ToolListKnowledgeRiskTypes,
 		ToolSearchKnowledgeBase,
 		ToolAnalyzeImage,
-		ToolWebshellExec,
-		ToolWebshellFileList,
-		ToolWebshellFileRead,
-		ToolWebshellFileWrite,
-		ToolManageWebshellList,
-		ToolManageWebshellAdd,
-		ToolManageWebshellUpdate,
-		ToolManageWebshellDelete,
-		ToolManageWebshellTest,
-		ToolBatchTaskList,
-		ToolBatchTaskGet,
-		ToolBatchTaskCreate,
-		ToolBatchTaskStart,
-		ToolBatchTaskRerun,
-		ToolBatchTaskPause,
-		ToolBatchTaskDelete,
-		ToolBatchTaskUpdateMetadata,
-		ToolBatchTaskUpdateSchedule,
-		ToolBatchTaskScheduleEnabled,
-		ToolBatchTaskAdd,
-		ToolBatchTaskUpdate,
-		ToolBatchTaskRemove,
-		// C2 工具
-		ToolC2Listener,
-		ToolC2Session,
-		ToolC2Task,
-		ToolC2TaskManage,
-		ToolC2Payload,
-		ToolC2Event,
-		ToolC2Profile,
-		ToolC2File:
-		return true
-	default:
-		return false
-	}
-}
-
-// GetAllBuiltinTools 返回所有内置工具名称列表
-func GetAllBuiltinTools() []string {
-	return []string{
-		ToolRecordVulnerability,
-		ToolRecordVulnerabilityCandidate,
-		ToolListVulnerabilities,
-		ToolGetVulnerability,
-		ToolUpdateVulnerability,
-		ToolDeleteVulnerability,
-		ToolUpsertExecutionCoverage,
-		ToolGetExecutionCoverage,
-		ToolShouldContinueExecution,
-		ToolLogicProbeDiff,
-		ToolUpsertProjectFact,
-		ToolGetProjectFact,
-		ToolListProjectFacts,
-		ToolSearchProjectFacts,
-		ToolDeprecateProjectFact,
-		ToolRestoreProjectFact,
-		ToolListKnowledgeRiskTypes,
-		ToolSearchKnowledgeBase,
-		ToolAnalyzeImage,
+		ToolGetToolExecution,
+		ToolWaitToolExecution,
+		ToolCancelToolExecution,
 		ToolWebshellExec,
 		ToolWebshellFileList,
 		ToolWebshellFileRead,
@@ -185,5 +138,78 @@ func GetAllBuiltinTools() []string {
 		ToolC2Event,
 		ToolC2Profile,
 		ToolC2File,
+		// 执行覆盖工具
+		ToolUpsertExecutionCoverage,
+		ToolGetExecutionCoverage,
+		ToolShouldContinueExecution,
+		// 逻辑探针工具
+		ToolLogicProbeDiff:
+		return true
+	default:
+		return false
+	}
+}
+
+// GetAllBuiltinTools 返回所有内置工具名称列表
+func GetAllBuiltinTools() []string {
+	return []string{
+		ToolRecordVulnerability,
+		ToolListVulnerabilities,
+		ToolGetVulnerability,
+		ToolCreateAsset,
+		ToolGetAsset,
+		ToolQueryAssets,
+		ToolUpdateAsset,
+		ToolDeleteAsset,
+		ToolCompleteAssetScan,
+		ToolUpsertProjectFact,
+		ToolGetProjectFact,
+		ToolListProjectFacts,
+		ToolSearchProjectFacts,
+		ToolDeprecateProjectFact,
+		ToolRestoreProjectFact,
+		ToolListKnowledgeRiskTypes,
+		ToolSearchKnowledgeBase,
+		ToolAnalyzeImage,
+		ToolGetToolExecution,
+		ToolWaitToolExecution,
+		ToolCancelToolExecution,
+		ToolWebshellExec,
+		ToolWebshellFileList,
+		ToolWebshellFileRead,
+		ToolWebshellFileWrite,
+		ToolManageWebshellList,
+		ToolManageWebshellAdd,
+		ToolManageWebshellUpdate,
+		ToolManageWebshellDelete,
+		ToolManageWebshellTest,
+		ToolBatchTaskList,
+		ToolBatchTaskGet,
+		ToolBatchTaskCreate,
+		ToolBatchTaskStart,
+		ToolBatchTaskRerun,
+		ToolBatchTaskPause,
+		ToolBatchTaskDelete,
+		ToolBatchTaskUpdateMetadata,
+		ToolBatchTaskUpdateSchedule,
+		ToolBatchTaskScheduleEnabled,
+		ToolBatchTaskAdd,
+		ToolBatchTaskUpdate,
+		ToolBatchTaskRemove,
+		// C2 工具
+		ToolC2Listener,
+		ToolC2Session,
+		ToolC2Task,
+		ToolC2TaskManage,
+		ToolC2Payload,
+		ToolC2Event,
+		ToolC2Profile,
+		ToolC2File,
+		// 执行覆盖工具
+		ToolUpsertExecutionCoverage,
+		ToolGetExecutionCoverage,
+		ToolShouldContinueExecution,
+		// 逻辑探针工具
+		ToolLogicProbeDiff,
 	}
 }

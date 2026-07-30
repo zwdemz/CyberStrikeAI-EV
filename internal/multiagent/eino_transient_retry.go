@@ -4,19 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"cyberstrike-ai-ev/internal/config"
 
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
 
 const (
-	defaultEinoRunRetryMaxAttempts = 10
+	defaultEinoRunRetryMaxAttempts = 4
 	defaultEinoRunRetryMaxBackoff  = 30 * time.Second
 )
+
+var httpStatusInErrorPattern = regexp.MustCompile(`(?i)(?:http|status(?:\s+code)?|upstream\s+returned)\s*[:=]?\s*(\d{3})\b`)
 
 // isEinoTransientRunError 是 Eino 运行期「可退避重试 vs 直接失败」的唯一判据。
 // 429/5xx/网络抖动等返回 true；用户取消、超时、迭代上限、鉴权失败等返回 false。
@@ -31,18 +37,22 @@ func isEinoTransientRunError(err error) bool {
 	if isEinoIterationLimitError(err) {
 		return false
 	}
+	var apiErr *einoopenai.APIError
+	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode > 0 {
+		return isRetryableHTTPStatus(apiErr.HTTPStatusCode)
+	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	if msg == "" {
 		return false
 	}
+	if status := httpStatusFromErrorText(msg); status > 0 {
+		return isRetryableHTTPStatus(status)
+	}
 	transientMarkers := []string{
-		"406",
-		"429",
 		"too many requests",
 		"rate limit",
 		"rate_limit",
 		"ratelimit",
-		"quota exceeded",
 		"overloaded",
 		"capacity",
 		"temporarily unavailable",
@@ -50,6 +60,7 @@ func isEinoTransientRunError(err error) bool {
 		"bad gateway",
 		"gateway timeout",
 		"internal server error",
+		"unexpected internal error",
 		"connection reset",
 		"connection refused",
 		"connection closed",
@@ -62,17 +73,12 @@ func isEinoTransientRunError(err error) bool {
 		"dial tcp",
 		"tls handshake timeout",
 		"stream error",
-		"goaway",                            // http2: server sent GOAWAY and closed the connection
-		"timeout awaiting response headers", // http2/http1 ResponseHeaderTimeout: net.Error with Timeout()==true, Temporary()==true
+		"failed to receive stream chunk",
+		"goaway", // http2: server sent GOAWAY and closed the connection
 		"unexpected eof",
 		`": eof`, // net/http: Post "url": EOF (often wraps io.EOF)
 		"unexpected end of json",
-		"status code: 406",
-		"status code: 502",
-		"502",
-		"503",
-		"504",
-		"500",
+		"timeout awaiting response headers",
 	}
 	for _, m := range transientMarkers {
 		if strings.Contains(msg, m) {
@@ -80,6 +86,104 @@ func isEinoTransientRunError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isRetryableHTTPStatus(status int) bool {
+	switch status {
+	case 408, 409, 425, 429:
+		return true
+	default:
+		return status >= 500 && status <= 599
+	}
+}
+
+func einoTransientRunErrorUserDetail(err error) (kind, summary string) {
+	if err == nil {
+		return "", ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	lower := strings.ToLower(msg)
+	if status := httpStatusFromErrorText(lower); status > 0 {
+		switch {
+		case status == 429:
+			kind = "rate_limit"
+		case status == 408 || status == 409 || status == 425:
+			kind = "retryable_http"
+		case status >= 500 && status <= 599:
+			kind = "upstream_server"
+		default:
+			kind = "http_error"
+		}
+	} else {
+		var apiErr *einoopenai.APIError
+		if errors.As(err, &apiErr) && apiErr.HTTPStatusCode > 0 {
+			switch {
+			case apiErr.HTTPStatusCode == 429:
+				kind = "rate_limit"
+			case apiErr.HTTPStatusCode == 408 || apiErr.HTTPStatusCode == 409 || apiErr.HTTPStatusCode == 425:
+				kind = "retryable_http"
+			case apiErr.HTTPStatusCode >= 500 && apiErr.HTTPStatusCode <= 599:
+				kind = "upstream_server"
+			default:
+				kind = "http_error"
+			}
+		}
+	}
+	if kind == "" {
+		switch {
+		case strings.Contains(lower, "too many requests") ||
+			strings.Contains(lower, "rate limit") ||
+			strings.Contains(lower, "rate_limit") ||
+			strings.Contains(lower, "ratelimit"):
+			kind = "rate_limit"
+		case strings.Contains(lower, "overloaded") ||
+			strings.Contains(lower, "capacity") ||
+			strings.Contains(lower, "temporarily unavailable") ||
+			strings.Contains(lower, "service unavailable") ||
+			strings.Contains(lower, "unexpected internal error"):
+			kind = "upstream_busy"
+		case strings.Contains(lower, "connection reset") ||
+			strings.Contains(lower, "connection refused") ||
+			strings.Contains(lower, "connection closed") ||
+			strings.Contains(lower, "i/o timeout") ||
+			strings.Contains(lower, "no such host") ||
+			strings.Contains(lower, "network is unreachable") ||
+			strings.Contains(lower, "broken pipe") ||
+			strings.Contains(lower, "read tcp") ||
+			strings.Contains(lower, "write tcp") ||
+			strings.Contains(lower, "dial tcp") ||
+			strings.Contains(lower, "tls handshake timeout") ||
+			strings.Contains(lower, "goaway") ||
+			strings.Contains(lower, "unexpected eof"):
+			kind = "network"
+		case strings.Contains(lower, "stream error") ||
+			strings.Contains(lower, "failed to receive stream chunk") ||
+			strings.Contains(lower, "unexpected end of json"):
+			kind = "stream"
+		default:
+			kind = "transient"
+		}
+	}
+	return kind, einoTrimRetryErrorSummary(msg)
+}
+
+func einoTrimRetryErrorSummary(msg string) string {
+	msg = strings.Join(strings.Fields(strings.TrimSpace(msg)), " ")
+	const maxRunes = 500
+	runes := []rune(msg)
+	if len(runes) <= maxRunes {
+		return msg
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func httpStatusFromErrorText(msg string) int {
+	match := httpStatusInErrorPattern.FindStringSubmatch(msg)
+	if len(match) != 2 {
+		return 0
+	}
+	status, _ := strconv.Atoi(match[1])
+	return status
 }
 
 type einoTransientRunRetryPolicy struct {
@@ -181,7 +285,7 @@ const (
 // einoMessagesForRunRestart 在退避后重新 Run 时选用最完整的上下文：
 // 1) ModelFacingTrace（与模型实际入参一致） 2) 事件流累积的 runAccumulatedMsgs 3) 初始 msgs。
 func einoMessagesForRunRestart(args *einoADKRunLoopArgs, baseMsgs, accumulated []adk.Message, baseCount int) ([]adk.Message, einoRunRestartContextSource) {
-	if trace := persistTraceSource(args, nil); len(trace) > 0 {
+	if trace := modelFacingTraceSnapshot(args); len(trace) > 0 {
 		// modelFacingTrace includes prior Instruction system message(s); genModelInput will prepend again.
 		return stripADKSystemMessages(trace), einoRestartContextModelTrace
 	}
@@ -218,14 +322,22 @@ func appendUserMessageIfNeeded(msgs []adk.Message, userMessage string) []adk.Mes
 	return append(msgs, schema.UserMessage(userMessage))
 }
 
-// einoTransientRetryBackoff 指数退避：2s, 4s, 8s… capped by maxBackoff。
+// einoTransientRetryBackoff uses equal-jitter exponential backoff. Jitter avoids
+// synchronized retries when many conversations hit the same provider limit.
 func einoTransientRetryBackoff(attempt int, maxBackoff time.Duration) time.Duration {
 	if attempt < 0 {
 		attempt = 0
 	}
-	backoff := time.Duration(1<<uint(attempt+1)) * time.Second
-	if maxBackoff > 0 && backoff > maxBackoff {
-		backoff = maxBackoff
+	if attempt > 30 {
+		attempt = 30
 	}
-	return backoff
+	ceiling := time.Duration(1<<uint(attempt+1)) * time.Second
+	if maxBackoff > 0 && ceiling > maxBackoff {
+		ceiling = maxBackoff
+	}
+	if ceiling <= 1 {
+		return ceiling
+	}
+	half := ceiling / 2
+	return half + time.Duration(rand.Int64N(int64(ceiling-half)+1))
 }
