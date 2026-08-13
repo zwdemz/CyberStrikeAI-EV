@@ -1,0 +1,11 @@
+.gitattributes text eol=lf
+
+# Linux deployment scripts must never use CRLF.
+*.sh text eol=lf
+
+# Agent role files are read on both Windows and Linux hosts.
+roles/*.yaml text eol=lf
+roles/*.yml text eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf

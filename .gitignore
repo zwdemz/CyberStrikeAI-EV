@@ -1,0 +1,63 @@
+# Runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local configuration and secrets
+config.yaml
+config.local.yaml
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Build outputs
+cyberstrike-ai
+cyberstrike-ai-ev
+cyberstrike-ai-rbac
+server.exe
+bin/
+dist/
+build/
+
+# Local smoke-test configuration
+config.smoketest.yaml
+
+# Locally cloned security-tool repositories
+skills/
+tools/GraphQLmap/
+tools/ParamSpider/
+tools/dnsenum/
+tools/dotdotpwn/
+tools/jwt_tool/
+tools/scripts/GraphQLmap/
+tools/scripts/ParamSpider/
+tools/scripts/jwt_tool/
+tools/scripts/nikto/
+tools/scripts/xsser/
+coverage.out
+coverage.html
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Go
+vendor/
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/
