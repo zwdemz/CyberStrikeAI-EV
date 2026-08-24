@@ -229,7 +229,8 @@ func RunEinoSingleChatModelAgent(
 		SnapshotMCPIDs:          snapshotMCPIDs,
 		StreamsMainAssistant:    streamsMainAssistant,
 		EinoRoleTag:             einoRoleTag,
-		CheckpointDir:           ma.EinoMiddleware.CheckpointDir,
+		// 聊天历史恢复统一走 last_react_*，避免旧 ADK checkpoint 抢先恢复 stale context。
+		CheckpointDir:           "",
 		RunRetryMaxAttempts:     ma.EinoMiddleware.RunRetryMaxAttempts,
 		RunRetryMaxBackoffSec:   ma.EinoMiddleware.RunRetryMaxBackoffSec,
 		McpIDsMu:                &mcpIDsMu,

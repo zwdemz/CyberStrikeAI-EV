@@ -1349,6 +1349,7 @@ func (db *DB) AddProcessDetailWithID(messageID, conversationID, eventType, messa
 	if err != nil {
 		return "", fmt.Errorf("添加过程详情失败: %w", err)
 	}
+	db.maybeRecordModelTokenUsage(messageID, conversationID, id, eventType, data)
 
 	return id, nil
 }

@@ -10,7 +10,7 @@
 # ============================================
 
 # 前端显示的版本号（可选，不填则显示默认版本）
-version: "v1.7.12"
+version: "v1.7.17"
 # 服务器配置
 server:
   host: 0.0.0.0 # 监听地址，0.0.0.0 表示监听所有网络接口
@@ -299,7 +299,7 @@ multi_agent:
     plan_execute_executed_steps_budget_ratio: 0.2 # plan_execute 中 executed_steps 预算比例
     plan_execute_max_step_result_runes: 4000 # plan_execute 每步结果最大字符数（超出截断）
     plan_execute_keep_last_steps: 8 # plan_execute 仅保留最近 N 步正文，早期步骤折叠为标题
-    checkpoint_dir: data/eino-checkpoints # P0：进程崩溃/OOM 后同会话自动 ADK Resume；正常结束会删 .ckpt；与「中断并继续」(last_react_*) 是两套机制
+    checkpoint_dir: "" # 聊天链路不再使用 ADK checkpoint；跨轮模型态统一走 conversations.last_react_*
     run_retry_max_attempts: 0 # 408/409/425/429/5xx/网络抖动时可退避重试次数；0=默认 4（永久性 4xx 不重试）
     run_retry_max_backoff_sec: 0 # 单次退避上限秒数；0=默认 30
     empty_response_continue_max_attempts: 0 # Run 成功但未捕获助手正文（含流式中断）时 Handler 退避续跑次数；0=默认 5
