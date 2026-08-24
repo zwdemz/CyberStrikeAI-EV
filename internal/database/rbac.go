@@ -889,46 +889,62 @@ func (db *DB) lookupRBACResourceOptionsByIDs(resourceType string, ids []string) 
 		return out, nil
 	}
 
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
-	args := make([]interface{}, 0, len(unique))
-	for _, id := range unique {
-		args = append(args, id)
-	}
+	// SQLite limits the number of bound variables per statement. The platform
+	// permission page can contain thousands of assignments, so resolve labels
+	// in bounded chunks instead of building one oversized IN clause.
+	const chunkSize = 400
+	for start := 0; start < len(unique); start += chunkSize {
+		end := start + chunkSize
+		if end > len(unique) {
+			end = len(unique)
+		}
+		chunk := unique[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]interface{}, 0, len(chunk))
+		for _, id := range chunk {
+			args = append(args, id)
+		}
 
-	var query string
-	switch resourceType {
-	case "project":
-		query = `SELECT id, name, status FROM projects WHERE id IN (` + placeholders + `)`
-	case "conversation":
-		query = `SELECT id, COALESCE(NULLIF(TRIM(title), ''), '未命名对话'), COALESCE(project_id, '') FROM conversations WHERE id IN (` + placeholders + `)`
-	case "vulnerability":
-		query = `SELECT id, title, severity FROM vulnerabilities WHERE id IN (` + placeholders + `)`
-	case "asset":
-		query = `SELECT id, COALESCE(NULLIF(host,''),NULLIF(domain,''),NULLIF(ip,''),id), protocol || CASE WHEN port>0 THEN ':' || port ELSE '' END FROM assets WHERE id IN (` + placeholders + `)`
-	case "webshell":
-		query = `SELECT id, COALESCE(NULLIF(remark, ''), url), type FROM webshell_connections WHERE id IN (` + placeholders + `)`
-	case "batch_task":
-		query = `SELECT id, COALESCE(NULLIF(title, ''), id), status FROM batch_task_queues WHERE id IN (` + placeholders + `)`
-	case "c2_listener":
-		query = `SELECT id, name, type || ' · ' || status FROM c2_listeners WHERE id IN (` + placeholders + `)`
-	default:
-		return out, nil
-	}
+		var query string
+		switch resourceType {
+		case "project":
+			query = `SELECT id, name, status FROM projects WHERE id IN (` + placeholders + `)`
+		case "conversation":
+			query = `SELECT id, COALESCE(NULLIF(TRIM(title), ''), '未命名对话'), COALESCE(project_id, '') FROM conversations WHERE id IN (` + placeholders + `)`
+		case "vulnerability":
+			query = `SELECT id, title, severity FROM vulnerabilities WHERE id IN (` + placeholders + `)`
+		case "asset":
+			query = `SELECT id, COALESCE(NULLIF(host,''),NULLIF(domain,''),NULLIF(ip,''),id), protocol || CASE WHEN port>0 THEN ':' || port ELSE '' END FROM assets WHERE id IN (` + placeholders + `)`
+		case "webshell":
+			query = `SELECT id, COALESCE(NULLIF(remark, ''), url), type FROM webshell_connections WHERE id IN (` + placeholders + `)`
+		case "batch_task":
+			query = `SELECT id, COALESCE(NULLIF(title, ''), id), status FROM batch_task_queues WHERE id IN (` + placeholders + `)`
+		case "c2_listener":
+			query = `SELECT id, name, type || ' · ' || status FROM c2_listeners WHERE id IN (` + placeholders + `)`
+		default:
+			return out, nil
+		}
 
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var option RBACResourceOption
-		if err := rows.Scan(&option.ID, &option.Label, &option.Detail); err != nil {
+		rows, err := db.Query(query, args...)
+		if err != nil {
 			return nil, err
 		}
-		option.Label = normalizeRBACResourceLabel(option.Label, option.ID)
-		out[option.ID] = option
+		for rows.Next() {
+			var option RBACResourceOption
+			if err := rows.Scan(&option.ID, &option.Label, &option.Detail); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			option.Label = normalizeRBACResourceLabel(option.Label, option.ID)
+			out[option.ID] = option
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func enrichRBACAssignmentLabels(rows []RBACResourceAssignment, lookup func(resourceType string, ids []string) (map[string]RBACResourceOption, error)) error {
