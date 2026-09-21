@@ -33,6 +33,7 @@ import (
 	"cyberstrike-ai/internal/robot"
 	"cyberstrike-ai/internal/security"
 	"cyberstrike-ai/internal/skillpackage"
+	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -146,6 +147,11 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 
 	// 创建MCP服务器（带数据库持久化）
 	mcpServer := mcp.NewServerWithStorage(log.Logger, db)
+	toolGuard, err := toolguard.NewManager(cfg.EffectiveToolGuard())
+	if err != nil {
+		return nil, fmt.Errorf("初始化工具调用安全规则失败: %w", err)
+	}
+	mcpServer.SetToolGuard(toolGuard)
 	mcpServer.SetToolAuthorizer(mcpToolAuthorizer(db))
 	mcpServer.ConfigureHTTPToolCallTimeoutFromAgentMinutes(cfg.Agent.ToolTimeoutMinutes)
 	mcpServer.ConfigureToolWaitTimeoutSeconds(cfg.Agent.ToolWaitTimeoutSeconds)

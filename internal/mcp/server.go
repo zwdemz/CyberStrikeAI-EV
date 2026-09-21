@@ -16,6 +16,7 @@ import (
 
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/mcp/builtin"
+	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -53,6 +54,7 @@ type Server struct {
 	httpToolTimeoutMinutes *int
 	httpToolTimeoutMu      sync.RWMutex
 	toolAuthorizer         func(context.Context, string, map[string]interface{}) error
+	toolGuard              *toolguard.Manager
 	executionService       *ExecutionService
 	toolWaitTimeout        time.Duration
 	toolResultMaxBytes     int
@@ -70,6 +72,23 @@ func (s *Server) SetToolAuthorizer(authorizer func(context.Context, string, map[
 	s.mu.Lock()
 	s.toolAuthorizer = authorizer
 	s.mu.Unlock()
+}
+
+// SetToolGuard installs the runtime safety rules shared by HTTP and internal calls.
+func (s *Server) SetToolGuard(guard *toolguard.Manager) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.toolGuard = guard
+	s.mu.Unlock()
+}
+
+func (s *Server) checkToolGuard(toolName string, args map[string]interface{}) *ToolResult {
+	s.mu.RLock()
+	guard := s.toolGuard
+	s.mu.RUnlock()
+	return toolGuardBlockedResult(guard, toolName, args)
 }
 
 type sseClient struct {
@@ -590,7 +609,11 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		zap.Any("arguments", req.Arguments),
 	)
 
-	result, err := handler(execCtx, req.Arguments)
+	result := s.checkToolGuard(req.Name, req.Arguments)
+	var err error
+	if result == nil {
+		result, err = handler(execCtx, req.Arguments)
+	}
 	cancelledWithUserNote := s.applyAbortUserNoteToCancelledToolResult(executionID, &result, &err)
 	now := time.Now()
 	var failed bool
@@ -683,6 +706,8 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		errorResult, _ := json.Marshal(CallToolResponse{
 			Content: finalResult.Content,
 			IsError: true,
+			Blocked: finalResult.Blocked,
+			Meta:    toolResultProtocolMeta(finalResult),
 		})
 		return &Message{
 			ID:      msg.ID,
@@ -924,6 +949,9 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 			}
 			if !exists {
 				return nil, fmt.Errorf("工具 %s 未找到", toolName)
+			}
+			if blocked := s.checkToolGuard(toolName, args); blocked != nil {
+				return blocked, nil
 			}
 			return handler(runCtx, args)
 		},

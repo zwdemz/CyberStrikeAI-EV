@@ -116,6 +116,7 @@ type ToolCall struct {
 type ToolResult struct {
 	Content []Content `json:"content"`
 	IsError bool      `json:"isError,omitempty"`
+	Blocked bool      `json:"blocked,omitempty"`
 }
 
 // Content 表示内容
@@ -186,6 +187,8 @@ type CallToolRequest struct {
 type CallToolResponse struct {
 	Content []Content `json:"content"`
 	IsError bool      `json:"isError,omitempty"`
+	Blocked bool                   `json:"blocked,omitempty"`
+	Meta    map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ToolExecution 工具执行记录
