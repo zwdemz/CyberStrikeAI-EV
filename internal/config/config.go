@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"cyberstrike-ai/internal/toolguard"
 	"cyberstrike-ai/internal/termout"
 
 	"gopkg.in/yaml.v3"
@@ -45,6 +46,7 @@ type Config struct {
 	MultiAgent  MultiAgentConfig      `yaml:"multi_agent,omitempty" json:"multi_agent,omitempty"`
 	Project     ProjectConfig         `yaml:"project,omitempty" json:"project,omitempty"`
 	Vision      VisionConfig          `yaml:"vision,omitempty" json:"vision,omitempty"`
+	ToolGuard   *toolguard.Config     `yaml:"tool_guard,omitempty" json:"tool_guard,omitempty"`
 }
 
 type EnsureLocalConfigResult struct {
@@ -1395,6 +1397,12 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	if err := validateToolGuardYAML(data); err != nil {
+		return nil, fmt.Errorf("解析 tool_guard 配置失败: %w", err)
+	}
+	if _, err := toolguard.Compile(cfg.EffectiveToolGuard()); err != nil {
+		return nil, fmt.Errorf("校验 tool_guard 配置失败: %w", err)
 	}
 
 	if cfg.Auth.SessionDurationHours <= 0 {
