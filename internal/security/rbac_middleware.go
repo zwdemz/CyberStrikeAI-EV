@@ -131,6 +131,10 @@ func permissionForRequest(method, fullPath string) string {
 		return "notification:write"
 	case strings.HasPrefix(path, "/config"):
 		return crudPermission(method, "config")
+	case strings.HasPrefix(path, "/tool-guard"):
+		return crudPermission(method, "config")
+	case strings.HasPrefix(path, "/usage/tokens"):
+		return "dashboard:read"
 	case strings.HasPrefix(path, "/terminal"):
 		return "terminal:execute"
 	case strings.HasPrefix(path, "/audit"):
@@ -262,6 +266,7 @@ func isMutationMethod(method string) bool {
 
 func isProcessGlobalMutationPath(path string) bool {
 	if strings.HasPrefix(path, "/roles") || strings.HasPrefix(path, "/skills") ||
+		strings.HasPrefix(path, "/tool-guard") ||
 		strings.HasPrefix(path, "/external-mcp") || strings.HasPrefix(path, "/robot") {
 		return true
 	}

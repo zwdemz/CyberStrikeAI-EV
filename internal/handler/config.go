@@ -22,6 +22,7 @@ import (
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
 	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -93,6 +94,7 @@ type ConfigHandler struct {
 	db                         *database.DB
 	logger                     *zap.Logger
 	mu                         sync.RWMutex
+	toolGuard                  *toolguard.Manager
 	lastEmbeddingConfig        *config.EmbeddingConfig // 上一次的嵌入模型配置（用于检测变更）
 }
 
@@ -1709,6 +1711,7 @@ func (h *ConfigHandler) saveConfig() error {
 	updateC2Config(root, h.config.C2)
 	updateRobotsConfig(root, h.config.Robots)
 	updateHitlConfig(root, h.config.Hitl)
+	updateToolGuardConfig(root, h.config.ToolGuard)
 	updateMultiAgentConfig(root, h.config.MultiAgent)
 	// 更新外部MCP配置（使用external_mcp.go中的函数，同一包中可直接调用）
 	updateExternalMCPConfig(root, h.config.ExternalMCP)
@@ -1756,6 +1759,18 @@ func (h *ConfigHandler) saveConfig() error {
 
 	h.logger.Info("配置已保存", zap.String("path", h.configPath))
 	return nil
+}
+
+func updateToolGuardConfig(root *yaml.Node, cfg *toolguard.Config) {
+	if cfg == nil {
+		return
+	}
+	var node yaml.Node
+	if err := node.Encode(cfg); err != nil {
+		return
+	}
+	_, value := ensureKeyValue(root, "tool_guard")
+	*value = node
 }
 
 func loadYAMLDocument(path string) (*yaml.Node, error) {
@@ -2085,10 +2100,33 @@ func updateHitlConfig(doc *yaml.Node, cfg config.HitlConfig) {
 	setStringInMap(auditModelNode, "model", cfg.AuditModel.Model)
 	// flow 样式 [a, b, c] 单行展示，工具多时比块序列省行数
 	setFlowStringSliceInMap(hitlNode, "tool_whitelist", cfg.ToolWhitelist)
+	setStringInMap(hitlNode, "default_mode", cfg.EffectiveDefaultMode())
 	setStringInMap(hitlNode, "default_reviewer", cfg.EffectiveDefaultReviewer())
+	setIntInMap(hitlNode, "default_timeout_seconds", cfg.EffectiveDefaultTimeoutSeconds())
 	setIntInMap(hitlNode, "retention_days", cfg.RetentionDaysEffective())
 	setStringInMap(hitlNode, "audit_agent_prompt", cfg.AuditAgentPrompt)
 	setStringInMap(hitlNode, "audit_agent_prompt_review_edit", cfg.AuditAgentPromptReviewEdit)
+}
+
+// UpdateHitlDefaultConfig 更新全局默认人机协同配置并写入 config.yaml。
+func (h *ConfigHandler) UpdateHitlDefaultConfig(mode, reviewer string, timeoutSeconds int) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.config.Hitl.DefaultMode = config.HitlConfig{DefaultMode: mode}.EffectiveDefaultMode()
+	h.config.Hitl.DefaultReviewer = config.HitlConfig{DefaultReviewer: reviewer}.EffectiveDefaultReviewer()
+	if timeoutSeconds < 0 {
+		timeoutSeconds = 0
+	}
+	h.config.Hitl.DefaultTimeoutSeconds = &timeoutSeconds
+	if err := h.saveConfig(); err != nil {
+		return err
+	}
+	h.logger.Info("HITL 全局默认配置已写入配置文件",
+		zap.String("default_mode", h.config.Hitl.DefaultMode),
+		zap.String("default_reviewer", h.config.Hitl.DefaultReviewer),
+		zap.Int("default_timeout_seconds", timeoutSeconds),
+	)
+	return nil
 }
 
 // UpdateHitlDefaultReviewer 更新全局默认审批方并写入 config.yaml。

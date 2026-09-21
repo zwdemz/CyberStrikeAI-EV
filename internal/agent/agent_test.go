@@ -146,6 +146,22 @@ func TestBuildToolFailureMessageUnknownKeepsGenericFallback(t *testing.T) {
 	}
 }
 
+func TestBuildToolFailureMessageSuggestsPythonFallbackForMissingBinary(t *testing.T) {
+	msg := buildToolFailureMessage("nmap", "nmap: command not found", errors.New("nmap: command not found"))
+	for _, want := range []string{"execute-python-script", "不要重复调用原工具", "未安装"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing fallback hint %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestBuildToolFailureMessageDoesNotSuggestPythonForNetworkFailure(t *testing.T) {
+	msg := buildToolFailureMessage("nmap", "dial tcp: connection refused", errors.New("dial tcp: connection refused"))
+	if strings.Contains(msg, "execute-python-script") {
+		t.Fatalf("network failure should not trigger dependency fallback:\n%s", msg)
+	}
+}
+
 func TestAgentCancelRunningMCPToolsForConversation(t *testing.T) {
 	ag := setupTestAgent(t)
 	ag.mcpServer.ConfigureToolWaitTimeoutSeconds(1)

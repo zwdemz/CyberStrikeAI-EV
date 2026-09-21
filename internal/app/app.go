@@ -33,6 +33,7 @@ import (
 	"cyberstrike-ai/internal/robot"
 	"cyberstrike-ai/internal/security"
 	"cyberstrike-ai/internal/skillpackage"
+	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -146,6 +147,11 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 
 	// 创建MCP服务器（带数据库持久化）
 	mcpServer := mcp.NewServerWithStorage(log.Logger, db)
+	toolGuard, err := toolguard.NewManager(cfg.EffectiveToolGuard())
+	if err != nil {
+		return nil, fmt.Errorf("初始化工具调用安全规则失败: %w", err)
+	}
+	mcpServer.SetToolGuard(toolGuard)
 	mcpServer.SetToolAuthorizer(mcpToolAuthorizer(db))
 	mcpServer.ConfigureHTTPToolCallTimeoutFromAgentMinutes(cfg.Agent.ToolTimeoutMinutes)
 	mcpServer.ConfigureToolWaitTimeoutSeconds(cfg.Agent.ToolWaitTimeoutSeconds)
@@ -160,6 +166,14 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 
 	// 注册工具
 	executor.RegisterTools(mcpServer)
+	for _, missing := range config.CheckToolAvailability(cfg.Security.Tools) {
+		log.Logger.Warn("启用的本地工具依赖缺失",
+			zap.String("tool", missing.Name),
+			zap.String("command", missing.Command),
+			zap.String("reason", missing.Reason),
+			zap.String("fallback", "execute-python-script"),
+		)
+	}
 
 	// 注册漏洞记录工具
 	registerVulnerabilityTools(mcpServer, db, log.Logger)
@@ -413,6 +427,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	registerWebshellManagementTools(mcpServer, db, webshellHandler, log.Logger)
 	configHandler := handler.NewConfigHandler(configPath, cfg, mcpServer, executor, agent, attackChainHandler, externalMCPMgr, log.Logger)
 	configHandler.SetDB(db)
+	configHandler.SetToolGuard(toolGuard)
 	configHandler.SetAudit(auditSvc)
 	agentHandler.SetHitlToolWhitelistSaver(configHandler)
 	agentHandler.SetHitlAuditStrategySaver(configHandler)
@@ -971,6 +986,8 @@ func setupRoutes(
 		protected.GET("/hitl/tool-whitelist", agentHandler.GetHITLGlobalToolWhitelist)
 		protected.PUT("/hitl/tool-whitelist", agentHandler.SetHITLGlobalToolWhitelist)
 		protected.POST("/hitl/tool-whitelist", agentHandler.MergeHITLGlobalToolWhitelist)
+		protected.GET("/hitl/default-config", agentHandler.GetHITLDefaultConfig)
+		protected.PUT("/hitl/default-config", agentHandler.UpdateHITLDefaultConfig)
 		protected.GET("/hitl/default-reviewer", agentHandler.GetHITLDefaultReviewer)
 		protected.PUT("/hitl/default-reviewer", agentHandler.UpdateHITLDefaultReviewer)
 		protected.GET("/hitl/audit-strategy", agentHandler.GetHITLAuditStrategy)
@@ -1066,6 +1083,9 @@ func setupRoutes(
 
 		// 配置管理
 		protected.GET("/config", configHandler.GetConfig)
+		protected.GET("/tool-guard", configHandler.GetToolGuard)
+		protected.PUT("/tool-guard", configHandler.UpdateToolGuard)
+		protected.POST("/tool-guard/test", configHandler.TestToolGuard)
 		protected.GET("/config/tools", configHandler.GetTools)
 		protected.GET("/config/tools/:name/schema", configHandler.GetToolSchema)
 		protected.PUT("/config", configHandler.UpdateConfig)

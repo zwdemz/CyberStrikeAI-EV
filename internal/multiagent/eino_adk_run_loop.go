@@ -1392,7 +1392,10 @@ func buildEinoRunResultFromAccumulated(
 			cleaned = UnwrapPlanExecuteUserText(cleaned)
 		}
 	}
-	if cleaned == "" {
+	// exit.final_result 是正式交付物，即使助手正文只是过渡语，也要优先合并展示。
+	if exitFinal := strings.TrimSpace(einoExtractExitDeliverableFromMsgs(runAccumulatedMsgs)); exitFinal != "" {
+		cleaned = einoMergeAssistantIntroWithExitFinal(cleaned, exitFinal)
+	} else if cleaned == "" {
 		if fb := strings.TrimSpace(einoExtractFallbackAssistantFromMsgs(runAccumulatedMsgs)); fb != "" {
 			cleaned = fb
 		}
@@ -1440,6 +1443,9 @@ func markModelFacingTraceForPersistence(msgs []adk.Message) []adk.Message {
 //
 // 优先级：最后一次 exit 工具输出 → 最后一条含 exit 的助手 tool_calls 参数中的 final_result。
 func einoExtractFallbackAssistantFromMsgs(msgs []adk.Message) string {
+	if s := einoExtractExitDeliverableFromMsgs(msgs); s != "" {
+		return s
+	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
 		if m == nil || m.Role != schema.Tool {
@@ -1464,6 +1470,63 @@ func einoExtractFallbackAssistantFromMsgs(msgs []adk.Message) string {
 		}
 	}
 	return ""
+}
+
+func einoExtractExitDeliverableFromMsgs(msgs []adk.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m == nil {
+			continue
+		}
+		switch m.Role {
+		case schema.Tool:
+			if !strings.EqualFold(strings.TrimSpace(m.ToolName), adk.ToolInfoExit.Name) {
+				return ""
+			}
+			content := strings.TrimSpace(m.Content)
+			if content != "" && !strings.HasPrefix(content, einomcp.ToolErrorPrefix) {
+				return content
+			}
+		case schema.Assistant:
+			if s := einoExtractExitFinalFromAssistantToolCalls(m); s != "" {
+				return s
+			}
+			if einoAssistantHasNonExitToolCall(m) {
+				return ""
+			}
+		}
+	}
+	return ""
+}
+
+func einoAssistantHasNonExitToolCall(msg *schema.Message) bool {
+	if msg == nil {
+		return false
+	}
+	for _, tc := range msg.ToolCalls {
+		if !strings.EqualFold(strings.TrimSpace(tc.Function.Name), adk.ToolInfoExit.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func einoMergeAssistantIntroWithExitFinal(assistant, exitFinal string) string {
+	assistant = strings.TrimSpace(assistant)
+	exitFinal = strings.TrimSpace(exitFinal)
+	if exitFinal == "" {
+		return assistant
+	}
+	if assistant == "" || assistant == exitFinal {
+		return exitFinal
+	}
+	if strings.Contains(exitFinal, assistant) || strings.Contains(assistant, exitFinal) {
+		if strings.Contains(exitFinal, assistant) {
+			return exitFinal
+		}
+		return assistant
+	}
+	return assistant + "\n\n" + exitFinal
 }
 
 func einoExtractExitFinalFromAssistantToolCalls(msg *schema.Message) string {

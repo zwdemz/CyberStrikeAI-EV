@@ -289,6 +289,18 @@ func normalizeHitlMode(mode string) string {
 	}
 }
 
+func normalizeHitlDefaultMode(mode string) string {
+	v := strings.ToLower(strings.TrimSpace(mode))
+	switch v {
+	case "feedback", "followup":
+		return "approval"
+	case "approval", "review_edit":
+		return v
+	default:
+		return "off"
+	}
+}
+
 func (m *HITLManager) ActivateConversation(conversationID string, req *HITLRequest) {
 	if req == nil || !req.Enabled {
 		m.DeactivateConversation(conversationID)
@@ -629,7 +641,7 @@ func (h *AgentHandler) loadHITLConversationConfig(conversationID string) (*HITLR
 		return nil, err
 	}
 	if !has {
-		cfg.Reviewer = h.hitlEffectiveDefaultReviewer()
+		return h.hitlEffectiveDefaultRequest(), nil
 	}
 	return cfg, nil
 }
@@ -994,7 +1006,9 @@ func (h *AgentHandler) GetHITLConversationConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"conversationId":          conversationID,
 		"hitl":                    cfg,
+		"defaultMode":             h.hitlEffectiveDefaultMode(),
 		"defaultReviewer":         h.hitlEffectiveDefaultReviewer(),
+		"defaultTimeoutSeconds":   h.hitlEffectiveDefaultTimeoutSeconds(),
 		"hitlGlobalToolWhitelist": h.hitlConfigGlobalToolWhitelist(),
 	})
 }
@@ -1049,6 +1063,55 @@ func (h *AgentHandler) GetHITLGlobalToolWhitelist(c *gin.Context) {
 
 type setHitlDefaultReviewerReq struct {
 	Reviewer string `json:"reviewer"`
+}
+
+type setHitlDefaultConfigReq struct {
+	Mode           string `json:"mode"`
+	Reviewer       string `json:"reviewer"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
+}
+
+func (h *AgentHandler) hitlDefaultConfigResponse() gin.H {
+	return gin.H{
+		"defaultMode":             h.hitlEffectiveDefaultMode(),
+		"defaultReviewer":         h.hitlEffectiveDefaultReviewer(),
+		"defaultTimeoutSeconds":   h.hitlEffectiveDefaultTimeoutSeconds(),
+		"hitlGlobalToolWhitelist": h.hitlConfigGlobalToolWhitelist(),
+	}
+}
+
+// GetHITLDefaultConfig 返回全局默认人机协同配置。
+func (h *AgentHandler) GetHITLDefaultConfig(c *gin.Context) {
+	c.JSON(http.StatusOK, h.hitlDefaultConfigResponse())
+}
+
+// UpdateHITLDefaultConfig 将全局默认人机协同配置写入 config.yaml。
+func (h *AgentHandler) UpdateHITLDefaultConfig(c *gin.Context) {
+	if h.hitlDefaultReviewerSaver == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "HITL 配置持久化不可用"})
+		return
+	}
+	var req setHitlDefaultConfigReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	mode := normalizeHitlDefaultMode(req.Mode)
+	reviewer := normalizeHitlReviewer(req.Reviewer)
+	if err := h.hitlDefaultReviewerSaver.UpdateHitlDefaultConfig(mode, reviewer, req.TimeoutSeconds); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if h.config != nil {
+		h.config.Hitl.DefaultMode = mode
+		h.config.Hitl.DefaultReviewer = reviewer
+		timeout := req.TimeoutSeconds
+		if timeout < 0 {
+			timeout = 0
+		}
+		h.config.Hitl.DefaultTimeoutSeconds = &timeout
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // GetHITLDefaultReviewer 返回 config.yaml 中的全局默认审批方。

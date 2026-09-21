@@ -519,7 +519,33 @@ func buildToolFailureMessage(toolName, detail string, err error) string {
 	fmt.Fprintf(&b, "工具调用失败\n\n")
 	fmt.Fprintf(&b, "工具名称: %s\n", toolName)
 	fmt.Fprintf(&b, "错误详情: %s", detail)
+	if isMissingToolDependency(detail) {
+		b.WriteString("\n\n降级建议：检测到该工具的本地可执行文件未安装或不在 PATH。不要重复调用原工具；请优先使用 execute-python-script，使用 Python 标准库或已安装依赖实现等价操作，并保留原目标、授权范围和参数约束。若无法安全等价实现，再向用户说明需要安装的依赖。\n")
+	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func isMissingToolDependency(detail string) bool {
+	message := strings.ToLower(strings.TrimSpace(detail))
+	if message == "" {
+		return false
+	}
+	markers := []string{
+		"not installed",
+		"not in path",
+		"command not found",
+		"executable file not found",
+		"no such file or directory",
+		"未安装",
+		"不在 path",
+		"找不到可执行文件",
+	}
+	for _, marker := range markers {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // executeToolViaMCP 通过MCP执行工具
