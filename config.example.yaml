@@ -122,17 +122,28 @@ agent:
   # system_prompt_path: prompts/single-agent.md # 可选：单代理系统提示文件（相对本配置文件所在目录）；非空且可读时替换内置提示
 
   system_prompt_path: ""
+
+# 调用拦截：在工具执行前按规则检查工具名称与参数，默认保护政府域名。
+tool_guard:
+  enabled: true
+  rules:
+    - id: government-domains
+      name: 政府网站保护
+      enabled: true
+      pattern: '(?i)(?:^|[^[:alnum:]_.-])(?P<match>(?:(?:[[:alnum:]_*-]+\.)+gov(?:\.[[:alnum:]_*-]+)*|gov(?:\.[[:alnum:]_*-]+)+|\.gov(?:\.[[:alnum:]_*-]+)*)\.?)($|[^[:alnum:]_.-])'
+      message: '识别到 {match}，禁止攻击政府网站。请检查目标与授权范围。'
+
 # 人机协同（HITL）全局白名单：此处列出的工具始终免审批，与对话页「白名单工具（免审批，逗号分隔）」合并为并集；侧栏「应用」可合并写入本列表并立即生效。
 # 非白名单工具在审批方=审计 Agent 时，按会话 HITL 模式选用提示词：
 #   approval → audit_agent_prompt
 #   review_edit → audit_agent_prompt_review_edit（可改参后放行）
 hitl:
-	# 全局默认人机协同模式：off=关闭，approval=审批模式，review_edit=审查编辑
-	default_mode: off
+  # 全局默认人机协同模式：off=关闭，approval=审批模式，review_edit=审查编辑
+  default_mode: off
   # 全局默认审批方：human=人工审批，audit_agent=审计 Agent；未选会话时切换会写入本项，重启后仍生效
   default_reviewer: human
-	# 全局默认审批等待时限（秒）：300=5分钟，0=不限时
-	default_timeout_seconds: 300
+  # 全局默认审批等待时限（秒）：300=5分钟，0=不限时
+  default_timeout_seconds: 300
   # 审计 Agent 专用模型；字段留空则复用上方 openai 配置。建议 model 填小模型，用于降低审批成本。
   audit_model:
     provider: "" # openai / claude；留空跟随 openai.provider
