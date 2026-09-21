@@ -291,6 +291,10 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 
 	// 重新构建索引（以防配置更新）
 	e.buildToolIndex()
+	missingTools := make(map[string]config.ToolAvailability)
+	for _, missing := range config.CheckToolAvailability(e.config.Tools) {
+		missingTools[missing.Name] = missing
+	}
 
 	for i, toolConfig := range e.config.Tools {
 		if !toolConfig.Enabled {
@@ -329,6 +333,15 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 			Description:      toolConfigCopy.Description,
 			ShortDescription: shortDesc,
 			InputSchema:      e.buildInputSchema(&toolConfigCopy),
+		}
+		if missing, ok := missingTools[toolName]; ok {
+			hint := fmt.Sprintf("当前不可用：依赖命令 %q %s。请勿重复调用；可尝试使用 execute-python-script 实现等价操作。", missing.Command, missing.Reason)
+			tool.Description = hint + "\n\n" + tool.Description
+			if tool.ShortDescription == "" {
+				tool.ShortDescription = hint
+			} else {
+				tool.ShortDescription = "[不可用] " + tool.ShortDescription
+			}
 		}
 
 		handler := func(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {
