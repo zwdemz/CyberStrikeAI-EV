@@ -166,6 +166,14 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 
 	// 注册工具
 	executor.RegisterTools(mcpServer)
+	for _, missing := range config.CheckToolAvailability(cfg.Security.Tools) {
+		log.Logger.Warn("启用的本地工具依赖缺失",
+			zap.String("tool", missing.Name),
+			zap.String("command", missing.Command),
+			zap.String("reason", missing.Reason),
+			zap.String("fallback", "execute-python-script"),
+		)
+	}
 
 	// 注册漏洞记录工具
 	registerVulnerabilityTools(mcpServer, db, log.Logger)
