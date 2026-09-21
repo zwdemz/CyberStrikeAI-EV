@@ -22,6 +22,7 @@ import (
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
 	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -93,6 +94,7 @@ type ConfigHandler struct {
 	db                         *database.DB
 	logger                     *zap.Logger
 	mu                         sync.RWMutex
+	toolGuard                  *toolguard.Manager
 	lastEmbeddingConfig        *config.EmbeddingConfig // 上一次的嵌入模型配置（用于检测变更）
 }
 
@@ -1709,6 +1711,7 @@ func (h *ConfigHandler) saveConfig() error {
 	updateC2Config(root, h.config.C2)
 	updateRobotsConfig(root, h.config.Robots)
 	updateHitlConfig(root, h.config.Hitl)
+	updateToolGuardConfig(root, h.config.ToolGuard)
 	updateMultiAgentConfig(root, h.config.MultiAgent)
 	// 更新外部MCP配置（使用external_mcp.go中的函数，同一包中可直接调用）
 	updateExternalMCPConfig(root, h.config.ExternalMCP)
@@ -1756,6 +1759,18 @@ func (h *ConfigHandler) saveConfig() error {
 
 	h.logger.Info("配置已保存", zap.String("path", h.configPath))
 	return nil
+}
+
+func updateToolGuardConfig(root *yaml.Node, cfg *toolguard.Config) {
+	if cfg == nil {
+		return
+	}
+	var node yaml.Node
+	if err := node.Encode(cfg); err != nil {
+		return
+	}
+	_, value := ensureKeyValue(root, "tool_guard")
+	*value = node
 }
 
 func loadYAMLDocument(path string) (*yaml.Node, error) {

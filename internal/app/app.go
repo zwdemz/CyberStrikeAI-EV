@@ -419,6 +419,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	registerWebshellManagementTools(mcpServer, db, webshellHandler, log.Logger)
 	configHandler := handler.NewConfigHandler(configPath, cfg, mcpServer, executor, agent, attackChainHandler, externalMCPMgr, log.Logger)
 	configHandler.SetDB(db)
+	configHandler.SetToolGuard(toolGuard)
 	configHandler.SetAudit(auditSvc)
 	agentHandler.SetHitlToolWhitelistSaver(configHandler)
 	agentHandler.SetHitlAuditStrategySaver(configHandler)
@@ -1074,6 +1075,9 @@ func setupRoutes(
 
 		// 配置管理
 		protected.GET("/config", configHandler.GetConfig)
+		protected.GET("/tool-guard", configHandler.GetToolGuard)
+		protected.PUT("/tool-guard", configHandler.UpdateToolGuard)
+		protected.POST("/tool-guard/test", configHandler.TestToolGuard)
 		protected.GET("/config/tools", configHandler.GetTools)
 		protected.GET("/config/tools/:name/schema", configHandler.GetToolSchema)
 		protected.PUT("/config", configHandler.UpdateConfig)
