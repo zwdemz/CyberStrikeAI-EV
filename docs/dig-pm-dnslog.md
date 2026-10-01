@@ -52,7 +52,7 @@
 
 ## 构建、部署与回滚
 
-1. 使用项目要求的 Go 版本运行 `go build -o cyberstrike-ai ./cmd/server`（Windows 输出名为 `cyberstrike-ai.exe`）。现有 Dockerfile 已复制 tools 目录并编译此模块。
+1. 使用 Go 1.26.8 或更新的受支持补丁版本运行 `go build -o cyberstrike-ai ./cmd/server`（Windows 输出名为 `cyberstrike-ai.exe`）。现有 Dockerfile 已复制 tools 目录并编译此模块。
 2. 备份现有程序，部署新程序及 `tools/dig-pm-dnslog.yaml`，沿用原配置/数据库。
 3. 重启服务以载入新内部实现；只有 YAML 热加载不能升级旧程序。确认工具列表出现新工具后，在许可角色中申请会话。
 4. 回滚时恢复旧程序，将新工具 YAML 的 `enabled` 改为 `false` 并重新加载/重启。内存会话随进程退出丢失，无数据库迁移。
