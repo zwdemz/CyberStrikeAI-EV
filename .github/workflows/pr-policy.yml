@@ -1,0 +1,19 @@
+name: PR policy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review, closed]
+
+permissions:
+  contents: read
+
+jobs:
+  policy-tests:
+    name: PR policy tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: node --test tests/ci/pr-route.test.cjs
