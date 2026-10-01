@@ -53,9 +53,10 @@ func TestInstalledSRCTools(t *testing.T) {
 	executor := security.NewExecutor(&config.SecurityConfig{Tools: installed}, server, zap.NewNop())
 	executor.RegisterTools(server)
 	ag := agent.NewAgent(&config.OpenAIConfig{}, &config.AgentConfig{}, server, nil, zap.NewNop(), 5)
-	ctx, cancel := context.WithTimeout(restricted(t, 3), 90*time.Second)
+	documentRoot := t.TempDir()
+	ctx, cancel := context.WithTimeout(restricted(t, 3, documentRoot), 90*time.Second)
 	defer cancel()
-	document := filepath.Join(t.TempDir(), "openapi.yaml")
+	document := filepath.Join(documentRoot, "openapi.yaml")
 	if err := os.WriteFile(document, []byte("openapi: 3.0.3\ninfo:\n  title: Fixture\n  version: 1.0.0\npaths: {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

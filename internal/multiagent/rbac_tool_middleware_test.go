@@ -2,13 +2,51 @@ package multiagent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai/internal/project"
 	"cyberstrike-ai/internal/rolepolicy"
 	"github.com/cloudwego/eino/compose"
+	"go.uber.org/zap"
 )
+
+func TestConversationRolePolicyBindsDocumentDirectory(t *testing.T) {
+	root := t.TempDir()
+	db, err := database.NewDB(filepath.Join(root, "fixture.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	conversation, err := db.CreateConversation("fixture", database.ConversationCreateMeta{RoleName: "src"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Agent: config.AgentConfig{WorkspaceRootDir: root}, Roles: map[string]config.RoleConfig{
+		"src": {Name: "src", Tools: []string{"api-schema-analyzer"}, ToolPolicy: config.RoleToolPolicy{Profile: "src-low-impact"}},
+	}}
+	directory := project.WorkspaceRootDir(root, "", conversation.ID)
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	document := filepath.Join(directory, "spec.yaml")
+	if err := os.WriteFile(document, []byte("openapi: 3.0.3\npaths: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := bindConversationRolePolicy(context.Background(), cfg, db, conversation.ID)
+	if err != nil || !rolepolicy.Active(ctx) {
+		t.Fatalf("role was not bound: %v", err)
+	}
+	_, cleanup, err := rolepolicy.Prepare(ctx, "api-schema-analyzer", map[string]interface{}{"schema_url": document})
+	defer cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestLocalToolPermissionIsSeparateFromAgentExecution(t *testing.T) {
 	agentOnly := authctx.WithPrincipal(context.Background(), authctx.NewPrincipal("robot:u1", "robot", "own", map[string]bool{"agent:execute": true}))

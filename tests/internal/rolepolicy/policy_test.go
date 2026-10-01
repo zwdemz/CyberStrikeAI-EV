@@ -13,9 +13,9 @@ import (
 	"cyberstrike-ai/internal/rolepolicy"
 )
 
-func restricted(t *testing.T, limit int) context.Context {
+func restricted(t *testing.T, limit int, documentRoots ...string) context.Context {
 	t.Helper()
-	ctx, err := rolepolicy.With(context.Background(), config.RoleToolPolicy{Profile: "src-low-impact", MaxNetworkCalls: limit}, []string{"http-framework-test", "nmap", "jwt-analyzer", "api-schema-analyzer", "waybackurls", "record_vulnerability"})
+	ctx, err := rolepolicy.With(context.Background(), config.RoleToolPolicy{Profile: "src-low-impact", MaxNetworkCalls: limit}, []string{"http-framework-test", "nmap", "jwt-analyzer", "api-schema-analyzer", "waybackurls", "record_vulnerability"}, documentRoots...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,12 +149,70 @@ func TestOfflineInspectionRejectsRemoteReferencesAndJWTAttacks(t *testing.T) {
 		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
-		_, done, err := rolepolicy.Prepare(restricted(t, 1), "api-schema-analyzer", map[string]interface{}{"schema_url": path})
+		_, done, err := rolepolicy.Prepare(restricted(t, 1, filepath.Dir(path)), "api-schema-analyzer", map[string]interface{}{"schema_url": path})
 		done()
 		if (err == nil) != (index == 0) {
 			t.Fatalf("schema result=%v", err)
 		}
 	}
+}
+
+func TestSchemaReadsStayWithinSessionAndUseValidatedSnapshot(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	valid := []byte("openapi: 3.0.3\ninfo: {title: fixture, version: 1.0.0}\npaths: {}\n")
+	insideFile, outsideFile := filepath.Join(root, "spec.yaml"), filepath.Join(outside, "spec.yaml")
+	for _, path := range []string{insideFile, outsideFile} {
+		if err := os.WriteFile(path, valid, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := restricted(t, 1, root)
+	child, err := rolepolicy.With(ctx, config.RoleToolPolicy{}, nil, outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{outsideFile, "../spec.yaml"} {
+		_, cleanup, err := rolepolicy.Prepare(child, "api-schema-analyzer", map[string]interface{}{"schema_url": path})
+		cleanup()
+		if err == nil {
+			t.Fatalf("outside document accepted: %s", path)
+		}
+	}
+	if _, cleanup, err := rolepolicy.Prepare(restricted(t, 1), "api-schema-analyzer", map[string]interface{}{"schema_url": insideFile}); err == nil {
+		cleanup()
+		t.Fatal("missing trusted roots allowed a file read")
+	}
+	args, cleanup, err := rolepolicy.Prepare(ctx, "api-schema-analyzer", map[string]interface{}{"schema_url": "spec.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	snapshot := args["schema_url"].(string)
+	if snapshot == insideFile {
+		t.Fatal("tool would reopen user-selected path")
+	}
+	if err := os.WriteFile(insideFile, []byte("changed after validation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(snapshot)
+	if err != nil || string(content) != string(valid) {
+		t.Fatalf("snapshot changed: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(snapshot); !os.IsNotExist(err) {
+		t.Fatal("snapshot was not removed")
+	}
+	t.Run("symlink escape", func(t *testing.T) {
+		link := filepath.Join(root, "link.yaml")
+		if err := os.Symlink(outsideFile, link); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		_, cleanup, err := rolepolicy.Prepare(ctx, "api-schema-analyzer", map[string]interface{}{"schema_url": link})
+		cleanup()
+		if err == nil {
+			t.Fatal("symlink escaped document root")
+		}
+	})
 }
 
 func TestBundledSRCRolesUseValidatedToolPolicy(t *testing.T) {

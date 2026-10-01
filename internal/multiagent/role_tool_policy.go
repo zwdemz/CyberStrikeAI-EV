@@ -6,6 +6,7 @@ import (
 
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
+	"cyberstrike-ai/internal/project"
 	"cyberstrike-ai/internal/rolepolicy"
 )
 
@@ -24,5 +25,5 @@ func bindConversationRolePolicy(ctx context.Context, cfg *config.Config, db *dat
 	if !exists {
 		return ctx, nil
 	}
-	return rolepolicy.With(ctx, role.ToolPolicy, role.Tools)
+	return rolepolicy.With(ctx, role.ToolPolicy, role.Tools, project.AnalysisDocumentRoots(cfg.Agent.WorkspaceRootDir, conversation.ProjectID, conversation.ID)...)
 }

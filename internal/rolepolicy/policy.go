@@ -21,14 +21,15 @@ import (
 
 type contextKey struct{}
 type state struct {
-	policy  config.RoleToolPolicy
-	tools   []string
-	allowed map[string]bool
-	gate    chan struct{}
-	mu      sync.Mutex
-	host    string
-	calls   int
-	next    time.Time
+	policy        config.RoleToolPolicy
+	tools         []string
+	allowed       map[string]bool
+	documentRoots []string
+	gate          chan struct{}
+	mu            sync.Mutex
+	host          string
+	calls         int
+	next          time.Time
 }
 
 var safeTools = map[string]bool{
@@ -41,8 +42,9 @@ var safeTools = map[string]bool{
 
 // With binds a validated policy and explicit tool list to a run. Nested callers
 // inherit the original bounds, preventing a child agent from widening its scope.
+// Document roots must come from trusted session metadata, never tool arguments.
 // Empty profiles leave the context unchanged; invalid tool lists fail closed.
-func With(ctx context.Context, policy config.RoleToolPolicy, tools []string) (context.Context, error) {
+func With(ctx context.Context, policy config.RoleToolPolicy, tools []string, documentRoots ...string) (context.Context, error) {
 	if current(ctx) != nil {
 		return ctx, nil
 	}
@@ -63,7 +65,15 @@ func With(ctx context.Context, policy config.RoleToolPolicy, tools []string) (co
 		}
 		allowed[name] = true
 	}
-	return context.WithValue(ctx, contextKey{}, &state{policy: effective, tools: append([]string(nil), tools...), allowed: allowed, gate: make(chan struct{}, 1)}), nil
+	roots := make([]string, 0, len(documentRoots))
+	for _, root := range documentRoots {
+		absolute, err := filepath.Abs(root)
+		if err != nil {
+			return ctx, fmt.Errorf("cannot resolve trusted document directory")
+		}
+		roots = append(roots, absolute)
+	}
+	return context.WithValue(ctx, contextKey{}, &state{policy: effective, tools: append([]string(nil), tools...), allowed: allowed, documentRoots: roots, gate: make(chan struct{}, 1)}), nil
 }
 
 func current(ctx context.Context) *state {
@@ -151,7 +161,8 @@ func Prepare(ctx context.Context, name string, arguments map[string]interface{})
 			err = fmt.Errorf("provide a single bounded test JWT for offline inspection")
 		}
 	case "api-schema-analyzer":
-		err = validateSchema(args)
+		cleanup, err := prepareSchema(args, value.documentRoots)
+		return args, cleanup, err
 	}
 	if err != nil {
 		return nil, noop, err
@@ -294,34 +305,34 @@ func prepareNmap(args map[string]interface{}, maxPorts int) (string, error) {
 	return host, nil
 }
 
-// validateSchema limits Spectral to a bounded local OpenAPI document and internal
-// references, preventing remote/file references or executable custom rules.
-func validateSchema(args map[string]interface{}) error {
+// prepareSchema limits Spectral to a root-confined OpenAPI document and internal
+// references, returning snapshot cleanup to run after tool completion.
+func prepareSchema(args map[string]interface{}, roots []string) (func(), error) {
+	noop := func() {}
 	if err := onlyKeys(args, "schema_url"); err != nil {
-		return err
+		return noop, err
 	}
-	path := textArg(args, "schema_url")
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 2*1024*1024 {
-		return fmt.Errorf("provide a local OpenAPI document no larger than 2 MiB")
-	}
-	file, err := os.Open(path)
+	file, err := openSchemaInRoots(textArg(args, "schema_url"), roots)
 	if err != nil {
-		return fmt.Errorf("cannot read local OpenAPI document")
+		return noop, err
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 2*1024*1024 {
+		return noop, fmt.Errorf("provide a local OpenAPI document no larger than 2 MiB")
+	}
 	body, err := io.ReadAll(io.LimitReader(file, 2*1024*1024+1))
 	if err != nil || len(body) > 2*1024*1024 {
-		return fmt.Errorf("cannot read bounded local OpenAPI document")
+		return noop, fmt.Errorf("cannot read bounded local OpenAPI document")
 	}
 	var document map[string]interface{}
 	decoder := yaml.NewDecoder(bytes.NewReader(body))
 	if decoder.Decode(&document) != nil || document == nil || document["openapi"] == nil && document["swagger"] == nil {
-		return fmt.Errorf("provide a valid local OpenAPI document")
+		return noop, fmt.Errorf("provide a valid local OpenAPI document")
 	}
 	var extra interface{}
 	if decoder.Decode(&extra) != io.EOF {
-		return fmt.Errorf("provide exactly one OpenAPI document")
+		return noop, fmt.Errorf("provide exactly one OpenAPI document")
 	}
 	var check func(interface{}) bool
 	check = func(node interface{}) bool {
@@ -351,12 +362,49 @@ func validateSchema(args map[string]interface{}) error {
 		return true
 	}
 	if !check(document) {
-		return fmt.Errorf("SRC schema inspection only permits document-local references")
+		return noop, fmt.Errorf("SRC schema inspection only permits document-local references")
 	}
-	absPath, err := filepath.Abs(path)
+	// Spectral consumes a private snapshot of the validated bytes. It never reopens
+	// the user-selected pathname, which could change after the root-confined read.
+	snapshot, err := os.CreateTemp("", "cyberstrike-src-schema-*.yaml")
 	if err != nil {
-		return fmt.Errorf("cannot resolve local OpenAPI document")
+		return noop, fmt.Errorf("cannot prepare OpenAPI snapshot")
 	}
-	args["schema_url"] = absPath
-	return nil
+	cleanup := func() { _ = os.Remove(snapshot.Name()) }
+	_, writeErr := snapshot.Write(body)
+	closeErr := snapshot.Close()
+	if writeErr != nil || closeErr != nil {
+		cleanup()
+		return noop, fmt.Errorf("cannot write OpenAPI snapshot")
+	}
+	args["schema_url"] = snapshot.Name()
+	return cleanup, nil
+}
+
+// openSchemaInRoots confines the read at the OS layer, including symlink races.
+// The roots come from server session metadata; relative names are rooted there.
+func openSchemaInRoots(path string, roots []string) (*os.File, error) {
+	for _, directory := range roots {
+		relative := path
+		if filepath.IsAbs(path) {
+			var err error
+			relative, err = filepath.Rel(directory, path)
+			if err != nil {
+				continue
+			}
+		}
+		if !filepath.IsLocal(relative) {
+			continue
+		}
+		root, err := os.OpenRoot(directory)
+		if err != nil {
+			continue
+		}
+		file, openErr := root.Open(relative)
+		_ = root.Close()
+		if openErr == nil {
+			return file, nil
+		}
+	}
+	return nil, fmt.Errorf("OpenAPI document must be inside this session's workspace or conversation uploads")
 }

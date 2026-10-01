@@ -154,7 +154,8 @@ func ResumeWorkflowRun(ctx context.Context, args RunArgs, runID string, approved
 		}
 		args.Role = role
 	}
-	ctx, err = rolepolicy.With(ctx, args.Role.ToolPolicy, args.Role.Tools)
+	args.ConversationID, args.ProjectID = run.ConversationID, run.ProjectID
+	ctx, err = bindWorkflowRolePolicy(ctx, args)
 	if err != nil {
 		return nil, err
 	}
