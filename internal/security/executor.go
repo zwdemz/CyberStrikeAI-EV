@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/dnslog"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/tooloutput"
 
@@ -39,6 +40,9 @@ type Executor struct {
 	shellNoOutputTimeoutSec int // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
 	toolOutputMaxBytes      int
 	spillRootDir            string
+	digPMOnce               sync.Once
+	digPM                   *dnslog.Client
+	digPMError              error
 }
 
 // NewExecutor 创建新的执行器
@@ -1397,6 +1401,9 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 // executeInternalTool 执行内部工具（不执行外部命令）
 func (e *Executor) executeInternalTool(ctx context.Context, toolName string, command string, args map[string]interface{}) (*mcp.ToolResult, error) {
 	internalToolType := strings.TrimPrefix(command, "internal:")
+	if internalToolType == "dig_pm_dnslog" {
+		return e.executeDigPM(ctx, args)
+	}
 	e.logger.Warn("未知的内部工具",
 		zap.String("toolName", toolName),
 		zap.String("internalToolType", internalToolType),

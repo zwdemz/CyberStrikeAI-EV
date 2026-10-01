@@ -1,9 +1,9 @@
 name: Process isolation
 on:
   push:
-    paths: ['internal/processguard/**', 'internal/runlease/**', 'internal/security/**', 'internal/handler/task*', 'internal/handler/config.go', 'internal/handler/hitl_audit_agent*', 'internal/mcp/**', 'internal/rolepolicy/**', 'internal/config/**', 'internal/agent/**', 'internal/multiagent/**', 'internal/workflow/**', 'roles/**', 'tests/internal/rolepolicy/**', 'tests/internal/config/**', 'internal/typesafe/**', 'tests/internal/typesafe/**', 'tests/internal/handler/**', 'go.mod', 'go.sum', '.github/workflows/process-isolation.yml']
+    paths: ['internal/processguard/**', 'internal/runlease/**', 'internal/security/**', 'internal/dnslog/**', 'tests/internal/dnslog/**', 'tests/internal/security/dnslog_tool_test.go', 'tools/dig-pm-dnslog.yaml', 'internal/handler/task*', 'internal/handler/config.go', 'internal/handler/hitl_audit_agent*', 'internal/mcp/**', 'internal/rolepolicy/**', 'internal/config/**', 'internal/agent/**', 'internal/multiagent/**', 'internal/workflow/**', 'roles/**', 'tests/internal/rolepolicy/**', 'tests/internal/config/**', 'internal/typesafe/**', 'tests/internal/typesafe/**', 'tests/internal/handler/**', 'go.mod', 'go.sum', '.github/workflows/process-isolation.yml']
   pull_request:
-    paths: ['internal/processguard/**', 'internal/runlease/**', 'internal/security/**', 'internal/handler/task*', 'internal/handler/config.go', 'internal/handler/hitl_audit_agent*', 'internal/mcp/**', 'internal/rolepolicy/**', 'internal/config/**', 'internal/agent/**', 'internal/multiagent/**', 'internal/workflow/**', 'roles/**', 'tests/internal/rolepolicy/**', 'tests/internal/config/**', 'internal/typesafe/**', 'tests/internal/typesafe/**', 'tests/internal/handler/**', 'go.mod', 'go.sum', '.github/workflows/process-isolation.yml']
+    paths: ['internal/processguard/**', 'internal/runlease/**', 'internal/security/**', 'internal/dnslog/**', 'tests/internal/dnslog/**', 'tests/internal/security/dnslog_tool_test.go', 'tools/dig-pm-dnslog.yaml', 'internal/handler/task*', 'internal/handler/config.go', 'internal/handler/hitl_audit_agent*', 'internal/mcp/**', 'internal/rolepolicy/**', 'internal/config/**', 'internal/agent/**', 'internal/multiagent/**', 'internal/workflow/**', 'roles/**', 'tests/internal/rolepolicy/**', 'tests/internal/config/**', 'internal/typesafe/**', 'tests/internal/typesafe/**', 'tests/internal/handler/**', 'go.mod', 'go.sum', '.github/workflows/process-isolation.yml']
 permissions:
   contents: read
 jobs:
@@ -18,6 +18,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -race ./internal/processguard ./internal/runlease
+      - run: go test -race ./tests/internal/dnslog
+      - run: go test ./tests/internal/security -run TestDigPM
       - name: Test Linux cgroup isolation
         if: runner.os == 'Linux'
         shell: bash

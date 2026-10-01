@@ -26,6 +26,7 @@ CyberStrikeAI documentation is organized by user journey. Start with deployment,
 
 ### 功能指南
 
+- [dig.pm DNSLog](dig-pm-dnslog.md)
 - [知识库](zh-CN/knowledge-base.md)
 - [RBAC 权限管理](zh-CN/rbac.md)
 - [机器人接入](zh-CN/robot.md)
