@@ -4,7 +4,20 @@
 
 This guide defines baseline expectations when adding features, APIs, tools, frontend pages, or docs.
 
-## Principles
+## Branch and Pull Request Workflow
+
+- Use `dev` as the ongoing integration branch. Start each change from the latest `origin/dev` on a separate `codex/<description>` branch.
+- Submit features, fixes, and documentation changes through a PR targeting `dev`. Do not push changes directly to `dev` or `main`.
+- Promote releases from `dev` to `main` through a separate PR.
+- `main` accepts only this repository's `dev` branch. Work branches such as `codex/*`, `feature/*`, and `fix/*` target `dev`; an external fork named `dev` cannot release to `main`.
+- Both integration branches require PRs, disallow force pushes and deletion, and apply protection to administrators. Required checks are `PR policy tests` and the target-specific `pr-route/dev` or `pr-route/main` from GitHub Actions.
+- Route checks use current PR metadata and trusted default-branch code after the read-only `PR policy` workflow completes. They also rerun on retargeting and reopening; wrong-target PRs remain open with a failed check so authors can correct the target.
+- Releases use a merge commit to preserve development ancestry. Keep `dev` and `main`; remove merged work branches only after verifying ancestry and obtaining cleanup authorization. Repository-wide automatic branch deletion stays disabled to retain `dev` after releases.
+- Use Conventional Commits, sign with the configured GPG key, and verify signatures before pushing.
+- Keep credentials, tokens, private environment details, and other sensitive information out of commit messages and PR titles, descriptions, and comments.
+- Complete checks appropriate to the change before merging. Preserve unrelated local changes; do not rewrite published history or delete branches without explicit authorization.
+
+## Change Requirements
 
 - New features need documentation.
 - New APIs need OpenAPI updates.
