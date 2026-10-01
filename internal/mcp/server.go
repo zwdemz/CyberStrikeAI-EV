@@ -933,6 +933,7 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 	handle, err := s.executionService.Submit(ctx, ExecutionRequest{
 		ToolName:       toolName,
 		Arguments:      args,
+		HardTimeout:    synchronousExecutionTimeout(ctx),
 		ConversationID: MCPConversationIDFromContext(ctx),
 		OwnerUserID:    ownerUserID,
 		Run: func(runCtx context.Context) (*ToolResult, error) {
@@ -969,7 +970,7 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 	s.mu.RLock()
 	waitTimeout := s.toolWaitTimeout
 	s.mu.RUnlock()
-	if isExecutionControlTool(toolName) {
+	if isExecutionControlTool(toolName) || synchronousExecutionTimeout(ctx) > 0 {
 		waitTimeout = 0
 	}
 	snapshot, waitErr := s.executionService.Wait(ctx, handle.ID, waitTimeout)
@@ -977,6 +978,9 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 		return internalMCPWaitTimeoutResult(snapshot, waitTimeout), handle.ID, nil
 	}
 	if waitErr != nil {
+		if synchronousExecutionTimeout(ctx) > 0 {
+			s.executionService.Cancel(handle.ID, "Synchronous tool caller stopped")
+		}
 		return nil, handle.ID, waitErr
 	}
 	if snapshot == nil || snapshot.Execution == nil {

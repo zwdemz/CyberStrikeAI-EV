@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"cyberstrike-ai/internal/rolepolicy"
+
 	"github.com/cloudwego/eino/compose"
 )
 
@@ -143,6 +145,20 @@ func ResumeWorkflowRun(ctx context.Context, args RunArgs, runID string, approved
 	if run == nil {
 		return nil, fmt.Errorf("工作流运行不存在")
 	}
+	// Resolve the persisted role when resuming; caller-supplied role data must not
+	// widen a restricted workflow after an approval pause.
+	if args.AppCfg != nil && run.RoleID != "" {
+		role, exists := args.AppCfg.Roles[run.RoleID]
+		if !exists {
+			return nil, fmt.Errorf("workflow role is no longer available")
+		}
+		args.Role = role
+	}
+	ctx, err = rolepolicy.With(ctx, args.Role.ToolPolicy, args.Role.Tools)
+	if err != nil {
+		return nil, err
+	}
+	args.RoleTools = rolepolicy.Filter(ctx, args.RoleTools)
 	if run.Status != "awaiting_hitl" {
 		return nil, fmt.Errorf("工作流运行不在等待审批状态: %s", run.Status)
 	}

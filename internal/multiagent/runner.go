@@ -18,6 +18,7 @@ import (
 	"cyberstrike-ai/internal/einomcp"
 	"cyberstrike-ai/internal/project"
 	"cyberstrike-ai/internal/reasoning"
+	"cyberstrike-ai/internal/rolepolicy"
 	"cyberstrike-ai/internal/security"
 
 	"github.com/cloudwego/eino/adk"
@@ -83,6 +84,12 @@ func RunDeepAgent(
 	if appCfg == nil || ma == nil || ag == nil {
 		return nil, fmt.Errorf("multiagent: 配置或 Agent 为空")
 	}
+	var policyErr error
+	ctx, policyErr = bindConversationRolePolicy(ctx, appCfg, db, conversationID)
+	if policyErr != nil {
+		return nil, policyErr
+	}
+	roleTools = rolepolicy.Filter(ctx, roleTools)
 
 	runtimeUserMessage := prepareLatestUserMessageForModel(userMessage, appCfg, &ma.EinoMiddleware, conversationID, logger)
 
@@ -209,7 +216,7 @@ func RunDeepAgent(
 				return nil, fmt.Errorf("子代理 %q AgenticModel: %w", id, err)
 			}
 
-			subDefs := ag.ToolsForRole(roleTools)
+			subDefs := ag.ToolsForRole(rolepolicy.Filter(ctx, roleTools))
 			subTools, err := einomcp.ToolsFromDefinitions(ag, holder, subDefs, recorder, nil, toolInvokeNotify, id)
 			if err != nil {
 				return nil, fmt.Errorf("子代理 %q 工具: %w", id, err)

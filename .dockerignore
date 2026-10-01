@@ -38,3 +38,4 @@ tools/scripts/ParamSpider
 tools/scripts/jwt_tool
 tools/scripts/nikto
 tools/scripts/xsser
+tools/runtime

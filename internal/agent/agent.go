@@ -18,6 +18,7 @@ import (
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
+	"cyberstrike-ai/internal/rolepolicy"
 
 	"go.uber.org/zap"
 )
@@ -521,9 +522,16 @@ func buildToolFailureMessage(toolName, detail string, err error) string {
 	fmt.Fprintf(&b, "工具名称: %s\n", toolName)
 	fmt.Fprintf(&b, "错误详情: %s", detail)
 	if isMissingToolDependency(detail) {
-		b.WriteString("\n\n降级建议：检测到该工具的本地可执行文件未安装或不在 PATH。不要重复调用原工具；请优先使用 execute-python-script，使用 Python 标准库或已安装依赖实现等价操作，并保留原目标、授权范围和参数约束。若无法安全等价实现，再向用户说明需要安装的依赖。\n")
+		b.WriteString("\n\n依赖处理：检测到该工具的本地可执行文件未安装或不在 PATH。不要重复调用原工具；先由维护流程安装到项目 tools/runtime 并重新加载。仅当角色允许 execute-python-script 且它本身可用时，才考虑使用 Python 标准库或已安装依赖完成等价操作，保留原目标、授权范围和参数约束；禁止通过脚本绕过权限拒绝或角色限制。\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func toolFailureForRole(ctx context.Context, toolName, detail string, err error) string {
+	if rolepolicy.Active(ctx) && isMissingToolDependency(detail) {
+		return "工具依赖不可用：请由部署维护流程安装到项目 tools/runtime，验证并重新加载后重试。当前角色禁止使用 Python、终端或其他代理绕过工具范围。"
+	}
+	return buildToolFailureMessage(toolName, detail, err)
 }
 
 func isMissingToolDependency(detail string) bool {
@@ -552,10 +560,13 @@ func isMissingToolDependency(detail string) bool {
 // executeToolViaMCP 通过MCP执行工具
 // 即使工具执行失败，也返回结果而不是错误，让AI能够处理错误情况
 func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map[string]interface{}) (*ToolExecutionResult, error) {
-	a.logger.Info("通过MCP执行工具",
-		zap.String("tool", toolName),
-		zap.Any("args", args),
-	)
+	preparedArgs, release, policyErr := rolepolicy.Prepare(ctx, toolName, args)
+	if policyErr != nil {
+		return &ToolExecutionResult{Result: policyErr.Error(), IsError: true, Blocked: true}, nil
+	}
+	defer release()
+	args = preparedArgs
+	a.logger.Info("通过MCP执行工具", zap.String("tool", toolName))
 
 	// 如果是record_vulnerability工具，自动添加conversation_id
 	if toolName == builtin.ToolRecordVulnerability {
@@ -587,6 +598,11 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}
 	// C2 危险任务 HITL 异步等待：须绑定整条 Agent 运行期 ctx，而非单次工具子 ctx（return 时会被 cancel）
 	toolCtx = c2.WithHITLRunContext(toolCtx, ctx)
+	if rolepolicy.Active(ctx) {
+		// Restricted runs must not free their shared network slot while a tool
+		// continues in the background after the MCP asynchronous wait timeout.
+		toolCtx = mcp.WithSynchronousToolExecution(toolCtx, time.Minute)
+	}
 
 	// 检查是否是外部MCP工具（通过工具名称映射）
 	a.mu.RLock()
@@ -606,6 +622,9 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}
 
 	// 如果调用失败（如工具不存在、超时），返回友好的错误信息而不是抛出异常
+	if err == nil && result == nil {
+		err = fmt.Errorf("tool returned no result")
+	}
 	if err != nil {
 		detail := err.Error()
 		timeoutMinutes := 10
@@ -617,7 +636,7 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			detail = fmt.Sprintf("工具执行超过 %d 分钟被自动终止（可在 config.yaml 的 agent.tool_timeout_minutes 中调整）", timeoutMinutes)
 		}
-		errorMsg := buildToolFailureMessage(toolName, detail, err)
+		errorMsg := toolFailureForRole(ctx, toolName, detail, err)
 
 		return &ToolExecutionResult{
 			Result:      errorMsg,
@@ -634,6 +653,9 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}
 
 	resultStr := resultText.String()
+	if result.IsError && !result.Blocked && isMissingToolDependency(resultStr) {
+		resultStr = toolFailureForRole(ctx, toolName, resultStr, nil)
+	}
 
 	return &ToolExecutionResult{
 		Result:      resultStr,

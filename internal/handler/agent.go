@@ -841,6 +841,7 @@ func (h *AgentHandler) ProcessMessageForRobot(ctx context.Context, platform stri
 			src = "robot:" + strings.TrimSpace(platform)
 		}
 		meta := audit.ConversationCreateMeta(src)
+		meta.RoleName = role
 		meta.ProjectID = effectiveProjectID(h.config, "")
 		if meta.ProjectID != "" && (!principal.HasPermission("project:read") || !h.db.UserCanAccessResource(ownerUserID, principal.ScopeFor("project:read"), "project", meta.ProjectID)) {
 			meta.ProjectID = ""
@@ -857,6 +858,9 @@ func (h *AgentHandler) ProcessMessageForRobot(ctx context.Context, platform stri
 		}
 	}
 
+	if err := h.db.SetConversationRoleName(conversationID, role); err != nil {
+		return "", "", fmt.Errorf("保存角色失败: %w", err)
+	}
 	agentHistoryMessages, err := h.loadHistoryFromAgentTrace(conversationID)
 	if err != nil {
 		historyMessages, getErr := h.db.GetMessages(conversationID)

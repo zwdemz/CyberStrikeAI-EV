@@ -1,8 +1,10 @@
 package config
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -27,8 +29,11 @@ func CheckToolAvailability(tools []ToolConfig) []ToolAvailability {
 			missing = append(missing, ToolAvailability{Name: tool.Name, Command: command, Reason: "未配置 command"})
 			continue
 		}
-		name := strings.Fields(command)[0]
-		_, err := exec.LookPath(name)
+		if strings.HasPrefix(command, "internal:") {
+			continue
+		}
+		name := command
+		_, err := ResolveToolCommand(tool)
 		if err != nil {
 			reason := "不在 PATH 中"
 			if filepath.IsAbs(name) {
@@ -39,4 +44,32 @@ func CheckToolAvailability(tools []ToolConfig) []ToolAvailability {
 		}
 	}
 	return missing
+}
+
+// ResolveToolCommand resolves a configured executable without executing it.
+// Absolute/explicit paths are preserved; bare names prefer this tool directory's
+// managed runtime/bin before system PATH. Embedded command arguments are rejected
+// naturally by LookPath, while executable paths containing spaces remain valid.
+func ResolveToolCommand(tool ToolConfig) (string, error) {
+	command := strings.TrimSpace(tool.Command)
+	if command == "" {
+		return "", exec.ErrNotFound
+	}
+	if strings.HasPrefix(command, "internal:") {
+		return command, nil
+	}
+	if filepath.IsAbs(command) || strings.ContainsAny(command, `/\`) {
+		return exec.LookPath(command)
+	}
+	if tool.RuntimeToolsDir != "" {
+		candidate := filepath.Join(tool.RuntimeToolsDir, "runtime", "bin", command)
+		if runtime.GOOS == "windows" && filepath.Ext(candidate) == "" {
+			candidate += ".exe"
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			// A broken managed entry is an installation error, not a reason to silently run a different binary.
+			return exec.LookPath(candidate)
+		}
+	}
+	return exec.LookPath(command)
 }

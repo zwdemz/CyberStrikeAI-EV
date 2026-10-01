@@ -1770,6 +1770,7 @@ async function saveRole() {
         icon: icon || undefined, // 如果为空字符串，则不发送该字段
         user_prompt: userPrompt,
         tools: tools, // 默认角色为空数组，表示使用所有工具
+        tool_policy: isEdit ? roles.find(role => role.name === name)?.tool_policy : undefined,
         enabled: enabled,
         workflow_id: workflowId || undefined,
         workflow_version: workflowId ? 'latest' : undefined,
