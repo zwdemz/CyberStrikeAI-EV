@@ -68,7 +68,7 @@ ai:
 | `ai.default_channel` | Default channel ID for new conversations and requests without an explicit channel. |
 | `ai.channels.<id>` | Channel config. IDs are normalized to lowercase letters, digits, and hyphens. |
 | `name` | Display name in the Web UI; falls back to the ID. |
-| `provider` | `openai_compatible` or `claude`. OpenAI-compatible channels map to runtime `openai`; Claude channels bridge to Anthropic Messages API. |
+| `provider` | `openai_compatible` or `claude`. OpenAI-compatible channels map to runtime `openai`; Claude channels use Eino's native Anthropic Messages API component. |
 | `base_url/api_key/model` | Required. Base URL usually includes a version path such as `/v1`. |
 | `max_total_tokens` | Shared context budget for compression, attack-chain generation, multi-agent summaries, and similar paths. |
 | `max_completion_tokens` | Per-response output cap; default is used when empty. |
@@ -103,7 +103,9 @@ Common Web UI operations:
 ## Fallback Relationships
 
 - `vision.api_key/base_url/provider` can inherit from the resolved default AI channel.
-- `hitl.audit_model` can inherit from the resolved default AI channel.
+- `hitl.audit_backend` chooses `openai` (default) or `typesafe` (TypeSafe Jev).
+- `hitl.audit_model` can inherit from the resolved default AI channel when `audit_backend` is `openai`. TypeSafe keys are never inherited.
+- `hitl.audit_agent_prompt` is a chat system prompt on `openai`, and a Jev `operatorPolicy` overlay on `typesafe`. The built-in default prompt is not copied into Jev state.
 - `knowledge.embedding.base_url/api_key` can inherit from model settings.
 - rerank config can inherit from embedding/openai.
 - `database.knowledge_db_path` can be separate or reuse the main DB.
@@ -143,3 +145,9 @@ After changing, validate the specific subsystem rather than trusting the save me
 - Config API and apply: `internal/handler/config.go`
 - Route registration: `internal/app/app.go`
 - C2 reconciliation: `internal/app/c2_lifecycle.go`
+
+## Diagnostic logs
+
+Alongside `log.output` (controlled by `log.level`), warnings and errors are saved as JSON Lines in `log/diagnostic-YYYY-MM-DD.log`, using the server’s local date. This independent warn-and-above output preserves existing context, caller information, and error stack traces; ordinary info/debug records are excluded and no extra request bodies or tool output are collected.
+
+Configure `log.diagnostic_dir` (default `log`, relative to the working directory), `log.diagnostic_retention_days` (default 14, including today; nonpositive values use the default), or `log.diagnostic_disabled: true` to disable it. Restart after changing these settings. Files are created only when a diagnostic record is written; the first write each day removes expired files matching `diagnostic-YYYY-MM-DD.log`. Cleanup does not run while no diagnostic records are written. Write failures are reported to stderr without interrupting the primary log output.

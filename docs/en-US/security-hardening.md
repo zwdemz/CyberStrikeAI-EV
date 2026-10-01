@@ -36,6 +36,32 @@ add_header Referrer-Policy no-referrer;
 add_header X-Frame-Options DENY;
 ```
 
+## HTTP Trust and Resource Limits
+
+Forwarding headers are ignored by default. Configure `server.trusted_proxies` with the actual reverse proxy IPs/CIDRs so IP rate limits identify clients correctly. An empty list supports direct access. Wildcards, catch-all CIDRs and hostnames are rejected. Restrict backend access to those proxies and overwrite client-supplied forwarding headers; for a single proxy use `proxy_set_header X-Forwarded-For $remote_addr;`.
+
+```yaml
+server:
+  trusted_proxies: ["127.0.0.1", "::1"] # Example only: a proxy on the same machine
+  read_header_timeout_seconds: 10
+  read_timeout_seconds: 300
+  idle_timeout_seconds: 120
+  webhook_max_body_bytes: 1048576
+```
+
+Omitted or zero limits select these defaults. Timeout values must be 0–86400 seconds and the WeCom callback body limit 0–67108864 bytes; invalid values fail startup. Both the main server and the standalone HTTP MCP listener receive read/idle deadlines. Global write deadlines remain disabled for streaming. Adjust the request-read deadline for upload size and bandwidth. Missing WeCom signature parameters are rejected without consuming the body, and oversized callbacks receive HTTP 413. Signature and replay checks remain required. Other uploads and callbacks retain their existing body limits. Restart after configuration changes.
+
+Access logs contain only method, route template, status, client IP and duration. Panic logs omit request dumps and panic values. Query-token authentication for SSE/WebSocket remains supported by the authentication middleware. Reverse proxies must also exclude query strings, Authorization and Cookie from logs. For Nginx, define this format in `http` and select it in the applicable `server` block; avoid `$request` and `$request_uri`:
+
+```nginx
+log_format cyberstrike_safe '$remote_addr $request_method $uri $status $body_bytes_sent';
+access_log /var/log/nginx/cyberstrike-access.log cyberstrike_safe;
+```
+
+Existing logs and sessions are unchanged. If historical logs contain valid tokens, preserve audit evidence and revoke affected sessions through the incident response process.
+
+Full external MCP configuration and connection diagnostics require global `mcp:write`. Read-only responses retain operational metadata but omit commands/arguments, mask environment/header values and reduce endpoint URLs to scheme and host.
+
 ## HITL Allowlist Baseline
 
 Minimal allowlist:

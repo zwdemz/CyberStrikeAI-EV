@@ -9,6 +9,7 @@
 Web 端进入 **系统设置 → 人机协同**，可配置：
 
 - 全局默认审批方：`human` 或 `audit_agent`
+- 审批引擎：`hitl.audit_backend`（`openai` 或 `typesafe`）
 - 审计 Agent 专用模型：`hitl.audit_model`
 - 已决策审计日志保留天数
 - 免审批工具白名单：`hitl.tool_whitelist`
@@ -19,16 +20,19 @@ Web 端进入 **系统设置 → 人机协同**，可配置：
 ```yaml
 hitl:
   default_reviewer: human
+  audit_backend: openai
   audit_model:
     provider: ""
     base_url: ""
     api_key: ""
     model: "" # 可填小模型；留空复用默认 AI 通道的模型
   retention_days: 90
-  tool_whitelist: [read_file, list_dir, glob, grep, tool_search]
+  tool_whitelist: [read_file, ls, glob, grep, tool_search, get_project_fact, list_project_facts, search_project_facts, list_vulnerabilities, get_vulnerability, get_asset, query_assets, list_knowledge_risk_types, get_tool_execution, wait_tool_execution, batch_task_list, batch_task_get, manage_webshell_list, c2_event, c2_file]
 ```
 
-`audit_model` 的字段可以只填一部分。空字段会自动继承默认 AI 通道解析后的模型配置，因此常见做法是只填 `model`，让审计 Agent 使用更便宜的小模型。
+`audit_backend` 为二选一：`openai`（默认）走兼容协议聊天模型，用提示词输出 JSON；`typesafe` 走 TypeSafe Jev。自定义审批策略会作为 `operatorPolicy` 编进结构化问题，内置破坏性规则仍是硬底线。Jev 不能改参，审查编辑模式下也只返回通过/拒绝。内置默认提示词与 Jev 问题重复，不会再复制进 state。
+
+`audit_model` 在 openai 后端可以只填一部分，空字段继承默认 AI 通道。typesafe 后端的 `api_key` 必填且**不会**复用主模型密钥；`base_url` 留空为 `https://api.typesafe.ai`，`model` 留空为 `jev-latest`。
 
 ## 推荐审批策略
 
@@ -86,15 +90,23 @@ hitl:
 审查编辑模式下，可将路径、目标、命令参数收窄后 approve，但不得扩大攻击面。
 ```
 
+OpenAI 协议后端把这段文字当聊天提示词。TypeSafe Jev 把它当作 `operatorPolicy` 编进结构化问题；内置破坏性规则仍是硬底线，Jev 不会改参。留空或等于内置默认时，Jev 只用内置问题，不再把长提示词复制进 state。
+
 ### 4. 白名单只放稳定低风险工具
 
 白名单工具会跳过审批，因此要保守维护。推荐放：
 
 - `read_file`
-- `list_dir`
+- `ls`
 - `glob`
 - `grep`
 - `tool_search`
+- 项目与漏洞查询：`get_project_fact`、`list_project_facts`、`search_project_facts`、`list_vulnerabilities`、`get_vulnerability`
+- 资产与知识元数据查询：`get_asset`、`query_assets`、`list_knowledge_risk_types`
+- 执行与任务状态查询：`get_tool_execution`、`wait_tool_execution`、`batch_task_list`、`batch_task_get`
+- 本地管理元数据查询：`manage_webshell_list`、`c2_event`、`c2_file`
+
+上述内置 MCP 查询仍受 RBAC 和资源范围约束；白名单只跳过 HITL 审批，不扩大访问权限。`list_dir` 仅在实际工具名为该值时有效；Eino 文件系统的目录列表工具名是 `ls`。
 
 不建议直接全局白名单：
 
@@ -102,6 +114,8 @@ hitl:
 - 文件写入/删除工具
 - C2 任务工具
 - WebShell 命令执行工具
+- 会向目标或外部服务发起请求的“只读”工具，例如 `webshell_file_read`、`webshell_file_list` 和 `search_knowledge_base`
+- 同一工具名同时包含读写 action 的复合工具，例如 `c2_session`、`c2_listener`、`c2_profile`、`c2_task_manage`
 
 ## 模式选择
 

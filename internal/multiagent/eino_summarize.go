@@ -124,11 +124,6 @@ func newEinoSummarizationMiddleware(
 			trigger = 4096
 		}
 	}
-	preserveMax := trigger / 3
-	if preserveMax < 2048 {
-		preserveMax = 2048
-	}
-
 	modelName := strings.TrimSpace(appCfg.OpenAI.Model)
 	if modelName == "" {
 		modelName = "gpt-4o"
@@ -169,27 +164,10 @@ func newEinoSummarizationMiddleware(
 	retryMax := retryPolicy.maxAttempts
 	var summaryOverflowRetries int
 
-	// ModelOptions apply only to summarization Generate (same ChatModel instance as the agent).
-	// Strip thinking/reasoning on this call path; mark requests for empty-choices diagnostics.
-	summaryModelOpts := []model.Option{
-		einoopenai.WithMaxCompletionTokens(outputReserve),
-		einoopenai.WithExtraHeader(map[string]string{
-			copenai.SummarizationRequestHeader: "1",
-		}),
-		einoopenai.WithRequestPayloadModifier(func(_ context.Context, in []*schema.Message, rawBody []byte) ([]byte, error) {
-			if logger != nil {
-				logger.Info("eino summarization generate request",
-					zap.Int("input_messages", len(in)),
-					zap.Int("payload_bytes", len(rawBody)),
-					zap.String("model", modelName),
-				)
-			}
-			return stripReasoningFromSummarizationPayload(rawBody)
-		}),
-	}
+	summaryModelOpts := newEinoSummarizationModelOptions(outputReserve, modelName, "classic", &appCfg.OpenAI, logger)
 
 	mw, err := summarization.New(ctx, &summarization.Config{
-		Model:        summaryModel,
+		Model:        newNonEmptySummaryChatModel(summaryModel),
 		ModelOptions: summaryModelOpts,
 		GenModelInput: func(ctx context.Context, sysInstruction, userInstruction adk.Message, originalMsgs []adk.Message) ([]adk.Message, error) {
 			if transcriptPath != "" && len(originalMsgs) > 0 {
@@ -238,10 +216,6 @@ func newEinoSummarizationMiddleware(
 		UserInstruction:    einoSummarizeUserInstruction,
 		EmitInternalEvents: emitInternalEvents,
 		TranscriptFilePath: transcriptPath,
-		PreserveUserMessages: &summarization.PreserveUserMessages{
-			Enabled:   true,
-			MaxTokens: preserveMax,
-		},
 		Retry: &summarization.RetryConfig{
 			MaxRetries: &retryMax,
 			ShouldRetry: func(_ context.Context, _ adk.Message, err error) bool {
@@ -265,9 +239,17 @@ func newEinoSummarizationMiddleware(
 			},
 		},
 		Finalize: func(ctx context.Context, originalMessages []adk.Message, summary adk.Message) ([]adk.Message, error) {
+			compactionMessages := stripOriginalUserIntentLedgerFromMessages(originalMessages)
+			defaultFinalized, derr := summarization.DefaultFinalize(ctx, compactionMessages, summary)
+			if derr != nil {
+				return nil, derr
+			}
+			if len(defaultFinalized) == 0 {
+				return nil, fmt.Errorf("summarization default finalize returned no messages")
+			}
+			summary = appendTranscriptPathToSummarizationMessage(defaultFinalized[len(defaultFinalized)-1], transcriptPath)
 			summary = stripAnalysisFromSummarizationMessage(summary)
 			userLedger := buildOriginalUserIntentLedgerMessage(originalMessages, userLedgerMaxRunes, userLedgerEntryMaxRunes)
-			compactionMessages := stripOriginalUserIntentLedgerFromMessages(originalMessages)
 			out, ferr := summarizeFinalizeWithRecentAssistantToolTrail(ctx, compactionMessages, summary, tokenCounter, recentTrailMax)
 			if ferr != nil {
 				return nil, ferr
@@ -307,6 +289,35 @@ func newEinoSummarizationMiddleware(
 		return nil, fmt.Errorf("summarization.New: %w", err)
 	}
 	return mw, nil
+}
+
+// newEinoSummarizationModelOptions applies only to summary requests (streamed
+// internally by the summary model guard while exposing Generate to Eino)
+// on the shared main model. Summary generation should be plain-text and cheap:
+// strip provider reasoning/thinking controls so DeepSeek/OpenAI-compatible
+// endpoints do not spend the reserved output budget on invisible reasoning.
+func newEinoSummarizationModelOptions(outputReserve int, modelName, kind string, oa *config.OpenAIConfig, logger *zap.Logger) []model.Option {
+	label := "eino summarization generate request"
+	if strings.TrimSpace(kind) != "" && kind != "classic" {
+		label = "eino " + kind + " summarization generate request"
+	}
+	return []model.Option{
+		model.WithMaxTokens(outputReserve),
+		einoopenai.WithMaxCompletionTokens(outputReserve),
+		einoopenai.WithExtraHeader(map[string]string{
+			copenai.SummarizationRequestHeader: "1",
+		}),
+		einoopenai.WithRequestPayloadModifier(func(_ context.Context, in []*schema.Message, rawBody []byte) ([]byte, error) {
+			if logger != nil {
+				logger.Info(label,
+					zap.Int("input_messages", len(in)),
+					zap.Int("payload_bytes", len(rawBody)),
+					zap.String("model", modelName),
+				)
+			}
+			return stripReasoningFromSummarizationPayload(rawBody, oa)
+		}),
+	}
 }
 
 // summarizationInputBudgetOpts controls spill/truncation behavior when a round alone exceeds budget.

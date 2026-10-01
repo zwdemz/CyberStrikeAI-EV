@@ -118,10 +118,10 @@ func permissionForRequest(method, fullPath string) string {
 		return "hitl:write"
 	case strings.HasPrefix(path, "/agent-loop"), strings.HasPrefix(path, "/batch-tasks"):
 		return crudPermission(method, "tasks")
+	case path == "/usage/tokens":
+		return "dashboard:read"
 	case strings.HasPrefix(path, "/conversations"), strings.HasPrefix(path, "/messages"), strings.HasPrefix(path, "/process-details"):
 		return crudPermission(method, "chat")
-	case strings.HasPrefix(path, "/groups"):
-		return crudPermission(method, "group")
 	case strings.HasPrefix(path, "/monitor"):
 		return crudPermission(method, "monitor")
 	case strings.HasPrefix(path, "/notifications"):
@@ -129,6 +129,10 @@ func permissionForRequest(method, fullPath string) string {
 			return "notification:read"
 		}
 		return "notification:write"
+	case path == "/tool-guard/test" && method == http.MethodPost:
+		return "config:read"
+	case path == "/tool-guard":
+		return crudPermission(method, "config")
 	case strings.HasPrefix(path, "/config"):
 		return crudPermission(method, "config")
 	case strings.HasPrefix(path, "/tool-guard"):
@@ -212,6 +216,8 @@ func resourceAllowed(c *gin.Context, db *database.DB) bool {
 	}
 	path := strings.TrimPrefix(c.FullPath(), "/api")
 	switch {
+	case path == "/tool-guard" && isMutationMethod(c.Request.Method):
+		return session.Scope == database.RBACScopeAll
 	case path == "/monitor/stats", path == "/monitor/calls-timeline":
 		// These APIs currently operate on process-global state. Until every MCP
 		// invocation and persisted execution record carries an immutable owner,
@@ -219,7 +225,7 @@ func resourceAllowed(c *gin.Context, db *database.DB) bool {
 		return session.Scope == database.RBACScopeAll
 	case strings.HasPrefix(path, "/c2/profiles") && c.Request.Method != http.MethodGet:
 		return session.Scope == database.RBACScopeAll
-	case (strings.HasPrefix(path, "/hitl/tool-whitelist") || strings.HasPrefix(path, "/hitl/default-reviewer") || strings.HasPrefix(path, "/hitl/audit-strategy")) && c.Request.Method != http.MethodGet:
+	case (strings.HasPrefix(path, "/hitl/tool-whitelist") || strings.HasPrefix(path, "/hitl/default-config") || strings.HasPrefix(path, "/hitl/default-reviewer") || strings.HasPrefix(path, "/hitl/audit-strategy")) && c.Request.Method != http.MethodGet:
 		return session.Scope == database.RBACScopeAll
 	case isMutationMethod(c.Request.Method) && isProcessGlobalMutationPath(path):
 		// These definitions/configurations are shared by every user and do not

@@ -62,7 +62,5 @@ func isDeepSeekToolChoiceCompatProfile(cfg *config.OpenAIConfig) bool {
 	if profile != "" && profile != "auto" {
 		return false
 	}
-	baseURL := strings.ToLower(cfg.BaseURL)
-	model := strings.ToLower(cfg.Model)
-	return strings.Contains(baseURL, "deepseek") || strings.Contains(model, "deepseek")
+	return cfg.IsDeepSeekEndpointOrModel()
 }

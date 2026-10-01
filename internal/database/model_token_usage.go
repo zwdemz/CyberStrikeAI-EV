@@ -221,28 +221,28 @@ func (db *DB) UpsertModelTokenUsage(usage ModelTokenUsage) error {
 		projectValue = strings.TrimSpace(projectID.String)
 	}
 	_, err := db.Exec(`
- INSERT INTO model_token_usage (
- 	id, process_detail_id, message_id, conversation_id, project_id,
- 	source, orchestration, reason, model, model_calls,
- 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
- 	created_at, updated_at
- ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
- ON CONFLICT(process_detail_id) DO UPDATE SET
- 	message_id = excluded.message_id,
- 	conversation_id = excluded.conversation_id,
- 	project_id = excluded.project_id,
- 	source = excluded.source,
- 	orchestration = excluded.orchestration,
- 	reason = excluded.reason,
- 	model = excluded.model,
- 	model_calls = excluded.model_calls,
- 	prompt_tokens = excluded.prompt_tokens,
- 	completion_tokens = excluded.completion_tokens,
- 	total_tokens = excluded.total_tokens,
- 	cached_tokens = excluded.cached_tokens,
- 	reasoning_tokens = excluded.reasoning_tokens,
- 	created_at = excluded.created_at,
- 	updated_at = excluded.updated_at`,
+INSERT INTO model_token_usage (
+	id, process_detail_id, message_id, conversation_id, project_id,
+	source, orchestration, reason, model, model_calls,
+	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
+	created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(process_detail_id) DO UPDATE SET
+	message_id = excluded.message_id,
+	conversation_id = excluded.conversation_id,
+	project_id = excluded.project_id,
+	source = excluded.source,
+	orchestration = excluded.orchestration,
+	reason = excluded.reason,
+	model = excluded.model,
+	model_calls = excluded.model_calls,
+	prompt_tokens = excluded.prompt_tokens,
+	completion_tokens = excluded.completion_tokens,
+	total_tokens = excluded.total_tokens,
+	cached_tokens = excluded.cached_tokens,
+	reasoning_tokens = excluded.reasoning_tokens,
+	created_at = excluded.created_at,
+	updated_at = excluded.updated_at`,
 		usage.ID, usage.ProcessDetailID, usage.MessageID, usage.ConversationID, projectValue,
 		usage.Source, usage.Orchestration, usage.Reason, usage.Model, usage.ModelCalls,
 		usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.CachedTokens, usage.ReasoningTokens,
@@ -260,11 +260,11 @@ func (db *DB) BackfillModelTokenUsageFromProcessDetails() error {
 		return nil
 	}
 	rows, err := db.Query(`
- SELECT pd.id, pd.message_id, pd.conversation_id, pd.data, pd.created_at
- FROM process_details pd
- LEFT JOIN model_token_usage mtu ON mtu.process_detail_id = pd.id
- WHERE pd.event_type = ?
- 	AND (mtu.id IS NULL OR mtu.created_at != pd.created_at)`, modelTokenUsageEventType)
+SELECT pd.id, pd.message_id, pd.conversation_id, pd.data, pd.created_at
+FROM process_details pd
+LEFT JOIN model_token_usage mtu ON mtu.process_detail_id = pd.id
+WHERE pd.event_type = ?
+	AND (mtu.id IS NULL OR mtu.created_at != pd.created_at)`, modelTokenUsageEventType)
 	if err != nil {
 		return fmt.Errorf("查询历史模型Token用量失败: %w", err)
 	}
@@ -358,12 +358,12 @@ func modelTokenUsageSummarySelect(alias string) string {
 		p = alias + "."
 	}
 	return fmt.Sprintf(`COUNT(%sid),
- COALESCE(SUM(%smodel_calls), 0),
- COALESCE(SUM(%sprompt_tokens), 0),
- COALESCE(SUM(%scompletion_tokens), 0),
- COALESCE(SUM(%stotal_tokens), 0),
- COALESCE(SUM(%scached_tokens), 0),
- COALESCE(SUM(%sreasoning_tokens), 0)`, p, p, p, p, p, p, p)
+COALESCE(SUM(%smodel_calls), 0),
+COALESCE(SUM(%sprompt_tokens), 0),
+COALESCE(SUM(%scompletion_tokens), 0),
+COALESCE(SUM(%stotal_tokens), 0),
+COALESCE(SUM(%scached_tokens), 0),
+COALESCE(SUM(%sreasoning_tokens), 0)`, p, p, p, p, p, p, p)
 }
 
 func buildModelTokenUsageWhere(filter ModelTokenUsageFilter, usageAlias, convAlias string) (string, []interface{}) {
@@ -435,14 +435,14 @@ func (db *DB) ListModelTokenUsage(filter ModelTokenUsageFilter) ([]ModelTokenUsa
 	where, args := buildModelTokenUsageWhere(filter, "mtu", "c")
 	args = append(args, filter.Limit)
 	rows, err := db.Query(`
- SELECT mtu.id, mtu.process_detail_id, mtu.message_id, mtu.conversation_id,
- 	COALESCE(mtu.project_id, ''), mtu.source, mtu.orchestration, mtu.reason, mtu.model,
- 	mtu.model_calls, mtu.prompt_tokens, mtu.completion_tokens, mtu.total_tokens,
- 	mtu.cached_tokens, mtu.reasoning_tokens, mtu.created_at, mtu.updated_at
- FROM model_token_usage mtu
- JOIN conversations c ON c.id = mtu.conversation_id`+where+`
- ORDER BY mtu.created_at DESC, mtu.rowid DESC
- LIMIT ?`, args...)
+SELECT mtu.id, mtu.process_detail_id, mtu.message_id, mtu.conversation_id,
+	COALESCE(mtu.project_id, ''), mtu.source, mtu.orchestration, mtu.reason, mtu.model,
+	mtu.model_calls, mtu.prompt_tokens, mtu.completion_tokens, mtu.total_tokens,
+	mtu.cached_tokens, mtu.reasoning_tokens, mtu.created_at, mtu.updated_at
+FROM model_token_usage mtu
+JOIN conversations c ON c.id = mtu.conversation_id`+where+`
+ORDER BY mtu.created_at DESC, mtu.rowid DESC
+LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询模型Token用量明细失败: %w", err)
 	}

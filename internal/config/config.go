@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"cyberstrike-ai/internal/toolguard"
 	"cyberstrike-ai/internal/termout"
+	"cyberstrike-ai/internal/toolguard"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +31,7 @@ type Config struct {
 	Shodan      SpaceSearchConfig     `yaml:"shodan,omitempty" json:"shodan,omitempty"`
 	Agent       AgentConfig           `yaml:"agent"`
 	Hitl        HitlConfig            `yaml:"hitl,omitempty" json:"hitl,omitempty"`
+	ToolGuard   *toolguard.Config     `yaml:"tool_guard,omitempty" json:"tool_guard,omitempty"`
 	Security    SecurityConfig        `yaml:"security"`
 	Database    DatabaseConfig        `yaml:"database"`
 	Auth        AuthConfig            `yaml:"auth"`
@@ -46,7 +48,6 @@ type Config struct {
 	MultiAgent  MultiAgentConfig      `yaml:"multi_agent,omitempty" json:"multi_agent,omitempty"`
 	Project     ProjectConfig         `yaml:"project,omitempty" json:"project,omitempty"`
 	Vision      VisionConfig          `yaml:"vision,omitempty" json:"vision,omitempty"`
-	ToolGuard   *toolguard.Config     `yaml:"tool_guard,omitempty" json:"tool_guard,omitempty"`
 }
 
 type EnsureLocalConfigResult struct {
@@ -56,9 +57,6 @@ type EnsureLocalConfigResult struct {
 
 const (
 	DefaultMaxCompletionTokens                        = 16384
-	DefaultMaxToolArgumentsBytes                      = 65536
-	DefaultMaxShellCommandBytes                       = 65536
-	DefaultModelOutputRepairMaxAttempts               = 1
 	DefaultSummarizationUserIntentLedgerMaxRunes      = 96000
 	DefaultSummarizationUserIntentLedgerEntryMaxRunes = 16000
 	DefaultLatestUserMessageMaxRunes                  = 48000
@@ -258,12 +256,6 @@ func (c MultiAgentEinoCallbacksConfig) EinoCallbacksMaxOutputSummaryRunes() int 
 
 // MultiAgentEinoMiddlewareConfig optional Eino ADK middleware and Deep / supervisor tuning.
 type MultiAgentEinoMiddlewareConfig struct {
-	// MaxToolArgumentsBytes hard-rejects oversized model-generated tool arguments before execution.
-	MaxToolArgumentsBytes int `yaml:"max_tool_arguments_bytes,omitempty" json:"max_tool_arguments_bytes,omitempty"`
-	// MaxShellCommandBytes applies a stricter limit to exec/execute command strings.
-	MaxShellCommandBytes int `yaml:"max_shell_command_bytes,omitempty" json:"max_shell_command_bytes,omitempty"`
-	// ModelOutputRepairMaxAttempts limits consecutive model-output repair attempts.
-	ModelOutputRepairMaxAttempts int `yaml:"model_output_repair_max_attempts,omitempty" json:"model_output_repair_max_attempts,omitempty"`
 	// PatchToolCalls inserts placeholder tool results for dangling assistant tool_calls (nil = enabled).
 	PatchToolCalls *bool `yaml:"patch_tool_calls,omitempty" json:"patch_tool_calls,omitempty"`
 	// ToolSearch enables dynamictool/toolsearch: hide tail tools until model calls tool_search (reduces prompt tools).
@@ -299,7 +291,7 @@ type MultiAgentEinoMiddlewareConfig struct {
 	LatestUserMessageHeadRunes int `yaml:"latest_user_message_head_runes,omitempty" json:"latest_user_message_head_runes,omitempty"`
 	// LatestUserMessageTailRunes keeps the tail preview for an oversized current user turn.
 	LatestUserMessageTailRunes int `yaml:"latest_user_message_tail_runes,omitempty" json:"latest_user_message_tail_runes,omitempty"`
-	// SummarizationRetryMaxAttempts 已废弃：summarization 与 run loop 共用 run_retry_max_attempts 及 isEinoTransientRunError。
+	// SummarizationRetryMaxAttempts 已废弃：summarization 与 Eino 原生 ModelRetry 共用 model_retry_max_retries 及 isEinoTransientRunError。
 	SummarizationRetryMaxAttempts int `yaml:"summarization_retry_max_attempts,omitempty" json:"summarization_retry_max_attempts,omitempty"`
 	// PlanExecuteUserInputBudgetRatio caps planner/replanner/executor userInput prompt budget ratio (default 0.35).
 	PlanExecuteUserInputBudgetRatio float64 `yaml:"plan_execute_user_input_budget_ratio,omitempty" json:"plan_execute_user_input_budget_ratio,omitempty"`
@@ -309,41 +301,29 @@ type MultiAgentEinoMiddlewareConfig struct {
 	PlanExecuteMaxStepResultRunes int `yaml:"plan_execute_max_step_result_runes,omitempty" json:"plan_execute_max_step_result_runes,omitempty"`
 	// PlanExecuteKeepLastSteps keeps only the tail steps in prompt view (default 8).
 	PlanExecuteKeepLastSteps int `yaml:"plan_execute_keep_last_steps,omitempty" json:"plan_execute_keep_last_steps,omitempty"`
-	// CheckpointDir when non-empty enables adk.Runner CheckPointStore (file-backed) for interrupt/resume persistence.
+	// CheckpointDir is retained for config compatibility. Chat agent runs do
+	// not consume it; cross-turn recovery is centralized in conversations.last_react_*.
 	CheckpointDir string `yaml:"checkpoint_dir,omitempty" json:"checkpoint_dir,omitempty"`
 	// DeepOutputKey passed to deep.Config OutputKey (session final text); empty = off.
 	DeepOutputKey string `yaml:"deep_output_key,omitempty" json:"deep_output_key,omitempty"`
-	// DeepModelRetryMaxRetries 已废弃：临时错误统一由 run loop 内 isEinoTransientRunError + run_retry_max_attempts 处理。
+	// DeepModelRetryMaxRetries 已废弃：请用 model_retry_max_retries；保留字段仅为兼容旧配置。
 	DeepModelRetryMaxRetries int `yaml:"deep_model_retry_max_retries,omitempty" json:"deep_model_retry_max_retries,omitempty"`
-	// RunRetryMaxAttempts > 0：408/409/425/429/5xx/网络抖动时可退避重试次数（run loop 与 summarization 共用）；0=默认 4。
+	// ModelRetryMaxRetries configures Eino ADK native ChatModel retry attempts; 0=default 4.
+	ModelRetryMaxRetries int `yaml:"model_retry_max_retries,omitempty" json:"model_retry_max_retries,omitempty"`
+	// ModelRetryMaxBackoffSec caps native model retry backoff seconds; 0=default 30.
+	ModelRetryMaxBackoffSec int `yaml:"model_retry_max_backoff_sec,omitempty" json:"model_retry_max_backoff_sec,omitempty"`
+	// ModelFailoverChannels lists ai.channels IDs to try after native model retry is exhausted.
+	ModelFailoverChannels []string `yaml:"model_failover_channels,omitempty" json:"model_failover_channels,omitempty"`
+	// ModelFailoverMaxRetries caps distinct failover channel attempts; 0=all configured failover channels.
+	ModelFailoverMaxRetries int `yaml:"model_failover_max_retries,omitempty" json:"model_failover_max_retries,omitempty"`
+	// RunRetryMaxAttempts 已废弃：模型临时错误由 Eino 原生 ModelRetry 处理；仅保留给非模型层 run loop 兜底与 summarization 旧字段。
 	RunRetryMaxAttempts int `yaml:"run_retry_max_attempts,omitempty" json:"run_retry_max_attempts,omitempty"`
-	// RunRetryMaxBackoffSec 单次退避上限秒数；0=默认 30。
+	// RunRetryMaxBackoffSec 已废弃：请用 model_retry_max_backoff_sec；仅保留给非模型层 run loop 兜底与 summarization 旧字段。
 	RunRetryMaxBackoffSec int `yaml:"run_retry_max_backoff_sec,omitempty" json:"run_retry_max_backoff_sec,omitempty"`
 	// EmptyResponseContinueMaxAttempts Run 成功但未捕获助手正文时 Handler 层退避续跑次数；0=默认 5。
 	EmptyResponseContinueMaxAttempts int `yaml:"empty_response_continue_max_attempts,omitempty" json:"empty_response_continue_max_attempts,omitempty"`
 	// TaskToolDescriptionPrefix when non-empty sets deep.Config TaskToolDescriptionGenerator (sub-agent names appended).
 	TaskToolDescriptionPrefix string `yaml:"task_tool_description_prefix,omitempty" json:"task_tool_description_prefix,omitempty"`
-}
-
-func (c MultiAgentEinoMiddlewareConfig) MaxToolArgumentsBytesEffective() int {
-	if c.MaxToolArgumentsBytes > 0 {
-		return c.MaxToolArgumentsBytes
-	}
-	return DefaultMaxToolArgumentsBytes
-}
-
-func (c MultiAgentEinoMiddlewareConfig) MaxShellCommandBytesEffective() int {
-	if c.MaxShellCommandBytes > 0 {
-		return c.MaxShellCommandBytes
-	}
-	return DefaultMaxShellCommandBytes
-}
-
-func (c MultiAgentEinoMiddlewareConfig) ModelOutputRepairMaxAttemptsEffective() int {
-	if c.ModelOutputRepairMaxAttempts > 0 {
-		return c.ModelOutputRepairMaxAttempts
-	}
-	return DefaultModelOutputRepairMaxAttempts
 }
 
 func (c MultiAgentEinoMiddlewareConfig) SummarizationTriggerRatioEffective() float64 {
@@ -516,6 +496,10 @@ type MultiAgentPublic struct {
 	LatestUserMessageMaxRunes                  int      `json:"latest_user_message_max_runes"`
 	LatestUserMessageHeadRunes                 int      `json:"latest_user_message_head_runes"`
 	LatestUserMessageTailRunes                 int      `json:"latest_user_message_tail_runes"`
+	ModelRetryMaxRetries                       int      `json:"model_retry_max_retries"`
+	ModelRetryMaxBackoffSec                    int      `json:"model_retry_max_backoff_sec"`
+	ModelFailoverChannels                      []string `json:"model_failover_channels,omitempty"`
+	ModelFailoverMaxRetries                    int      `json:"model_failover_max_retries"`
 	ToolSearchAlwaysVisibleTools               []string `json:"tool_search_always_visible_tools,omitempty"`
 	ToolSearchAlwaysVisibleEffectiveTools      []string `json:"tool_search_always_visible_effective_tools,omitempty"`
 }
@@ -557,15 +541,19 @@ func NormalizeMultiAgentOrchestration(s string) string {
 
 // MultiAgentAPIUpdate 设置页/API 仅更新多代理标量字段；写入 YAML 时不覆盖 sub_agents 等块。
 type MultiAgentAPIUpdate struct {
-	Enabled                                    bool   `json:"enabled"`
-	RobotDefaultAgentMode                      string `json:"robot_default_agent_mode,omitempty"`
-	BatchUseMultiAgent                         bool   `json:"batch_use_multi_agent"`
-	PlanExecuteLoopMaxIterations               *int   `json:"plan_execute_loop_max_iterations,omitempty"`
-	SummarizationUserIntentLedgerMaxRunes      *int   `json:"summarization_user_intent_ledger_max_runes,omitempty"`
-	SummarizationUserIntentLedgerEntryMaxRunes *int   `json:"summarization_user_intent_ledger_entry_max_runes,omitempty"`
-	LatestUserMessageMaxRunes                  *int   `json:"latest_user_message_max_runes,omitempty"`
-	LatestUserMessageHeadRunes                 *int   `json:"latest_user_message_head_runes,omitempty"`
-	LatestUserMessageTailRunes                 *int   `json:"latest_user_message_tail_runes,omitempty"`
+	Enabled                                    bool      `json:"enabled"`
+	RobotDefaultAgentMode                      string    `json:"robot_default_agent_mode,omitempty"`
+	BatchUseMultiAgent                         bool      `json:"batch_use_multi_agent"`
+	PlanExecuteLoopMaxIterations               *int      `json:"plan_execute_loop_max_iterations,omitempty"`
+	SummarizationUserIntentLedgerMaxRunes      *int      `json:"summarization_user_intent_ledger_max_runes,omitempty"`
+	SummarizationUserIntentLedgerEntryMaxRunes *int      `json:"summarization_user_intent_ledger_entry_max_runes,omitempty"`
+	LatestUserMessageMaxRunes                  *int      `json:"latest_user_message_max_runes,omitempty"`
+	LatestUserMessageHeadRunes                 *int      `json:"latest_user_message_head_runes,omitempty"`
+	LatestUserMessageTailRunes                 *int      `json:"latest_user_message_tail_runes,omitempty"`
+	ModelRetryMaxRetries                       *int      `json:"model_retry_max_retries,omitempty"`
+	ModelRetryMaxBackoffSec                    *int      `json:"model_retry_max_backoff_sec,omitempty"`
+	ModelFailoverChannels                      *[]string `json:"model_failover_channels,omitempty"`
+	ModelFailoverMaxRetries                    *int      `json:"model_failover_max_retries,omitempty"`
 	// 指针区分「JSON 未传该字段」与「传空数组要清空」；省略时不应覆盖 YAML 中的常驻工具白名单。
 	ToolSearchAlwaysVisibleTools *[]string `json:"tool_search_always_visible_tools,omitempty"`
 }
@@ -804,6 +792,15 @@ func (c RobotsConfig) ServiceAccountUserIDs() map[string]string {
 type ServerConfig struct {
 	Host string `yaml:"host" json:"host"`
 	Port int    `yaml:"port" json:"port"`
+	// TrustedProxies accepts explicit proxy IPs/CIDRs; empty means no forwarding headers are trusted.
+	TrustedProxies []string `yaml:"trusted_proxies,omitempty" json:"trusted_proxies,omitempty"`
+	// HTTP limits use seconds (zero selects the documented default); write deadlines
+	// remain disabled because chat, terminal and MCP responses can be long-lived.
+	ReadHeaderTimeoutSeconds int `yaml:"read_header_timeout_seconds,omitempty" json:"read_header_timeout_seconds,omitempty"`
+	ReadTimeoutSeconds       int `yaml:"read_timeout_seconds,omitempty" json:"read_timeout_seconds,omitempty"`
+	IdleTimeoutSeconds       int `yaml:"idle_timeout_seconds,omitempty" json:"idle_timeout_seconds,omitempty"`
+	// WebhookMaxBodyBytes bounds the WeCom callback body before XML parsing (default 1 MiB).
+	WebhookMaxBodyBytes int64 `yaml:"webhook_max_body_bytes,omitempty" json:"webhook_max_body_bytes,omitempty"`
 	// CORSAllowedOrigins contains additional, exact origins that may call the API.
 	// Same-origin browser requests are always allowed. Wildcards are intentionally unsupported.
 	CORSAllowedOrigins []string `yaml:"cors_allowed_origins,omitempty" json:"cors_allowed_origins,omitempty"`
@@ -819,8 +816,11 @@ type ServerConfig struct {
 }
 
 type LogConfig struct {
-	Level  string `yaml:"level"`
-	Output string `yaml:"output"`
+	Level                   string `yaml:"level"`
+	Output                  string `yaml:"output"`
+	DiagnosticDir           string `yaml:"diagnostic_dir"`
+	DiagnosticDisabled      bool   `yaml:"diagnostic_disabled"`
+	DiagnosticRetentionDays int    `yaml:"diagnostic_retention_days"`
 }
 
 type MCPConfig struct {
@@ -833,7 +833,7 @@ type MCPConfig struct {
 }
 
 type OpenAIConfig struct {
-	Provider            string `yaml:"provider,omitempty" json:"provider,omitempty"` // API 提供商: "openai"(默认) 或 "claude"，claude 时自动桥接为 Anthropic Messages API
+	Provider            string `yaml:"provider,omitempty" json:"provider,omitempty"` // API 提供商: "openai"(默认) 或 "claude"，claude 使用 Eino 原生 Anthropic Messages API
 	APIKey              string `yaml:"api_key" json:"api_key"`
 	BaseURL             string `yaml:"base_url" json:"base_url"`
 	Model               string `yaml:"model" json:"model"`
@@ -961,10 +961,12 @@ func (c *Config) ApplyDefaultAIChannel() {
 	if c == nil {
 		return
 	}
+	c.NormalizeAIProviderProfiles()
 	c.AI.EnsureDefaultFromOpenAI(c.OpenAI)
 	if oa, _, ok := c.AI.ResolveChannel(c.AI.DefaultChannel); ok {
 		c.OpenAI = oa
 	}
+	c.NormalizeAIProviderProfiles()
 }
 
 func (c OpenAIConfig) MaxCompletionTokensEffective() int {
@@ -972,6 +974,59 @@ func (c OpenAIConfig) MaxCompletionTokensEffective() int {
 		return c.MaxCompletionTokens
 	}
 	return DefaultMaxCompletionTokens
+}
+
+// IsDeepSeekEndpointOrModel reports whether the channel targets DeepSeek's
+// official-compatible API endpoint. The historical name is kept for compatibility;
+// model names alone are not enough to infer DeepSeek wire behavior behind
+// OpenAI-compatible gateways.
+func (c OpenAIConfig) IsDeepSeekEndpointOrModel() bool {
+	baseURL := strings.ToLower(strings.TrimSpace(c.BaseURL))
+	return strings.Contains(baseURL, "deepseek")
+}
+
+func (c OpenAIConfig) IsDeepSeekOfficialEndpoint() bool {
+	host := normalizedURLHost(c.BaseURL)
+	return host == "api.deepseek.com"
+}
+
+func normalizedURLHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		parsed, err = url.Parse("https://" + strings.TrimLeft(raw, "/"))
+		if err != nil {
+			return ""
+		}
+	}
+	return strings.ToLower(strings.TrimPrefix(parsed.Hostname(), "www."))
+}
+
+func NormalizeOpenAIProviderProfile(oa *OpenAIConfig) {
+	if oa == nil {
+		return
+	}
+	if oa.IsDeepSeekOfficialEndpoint() {
+		oa.Reasoning.Profile = "deepseek"
+	}
+}
+
+func (c *Config) NormalizeAIProviderProfiles() {
+	if c == nil {
+		return
+	}
+	NormalizeOpenAIProviderProfile(&c.OpenAI)
+	if c.AI.Channels != nil {
+		for id, ch := range c.AI.Channels {
+			oa := ch.ToOpenAIConfig()
+			NormalizeOpenAIProviderProfile(&oa)
+			ch.Reasoning = oa.Reasoning
+			c.AI.Channels[id] = ch
+		}
+	}
 }
 
 // OpenAIReasoningConfig 全局默认与网关 profile（对话页可通过 ChatRequest.reasoning 覆盖，受 AllowClientReasoning 约束）。
@@ -1027,7 +1082,17 @@ type SpaceSearchConfig struct {
 	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 }
 
+type ProcessIsolationConfig struct {
+	Mode           string `yaml:"mode" json:"mode"`
+	CgroupRoot     string `yaml:"cgroup_root" json:"cgroup_root"`
+	MaxProcesses   int    `yaml:"max_processes" json:"max_processes"`
+	MemoryMaxBytes int64  `yaml:"memory_max_bytes" json:"memory_max_bytes"`
+	CPUQuotaMicros int64  `yaml:"cpu_quota_micros" json:"cpu_quota_micros"`
+}
+
 type SecurityConfig struct {
+	ProcessIsolation ProcessIsolationConfig `yaml:"process_isolation,omitempty" json:"process_isolation"`
+
 	Tools               []ToolConfig `yaml:"tools,omitempty"`                 // 向后兼容：支持在主配置文件中定义工具
 	ToolsDir            string       `yaml:"tools_dir,omitempty"`             // 工具配置文件目录（新方式）
 	ToolDescriptionMode string       `yaml:"tool_description_mode,omitempty"` // 工具描述模式: "short" | "full"，默认 short
@@ -1058,7 +1123,9 @@ type AgentConfig struct {
 // tool_whitelist 可在侧栏「应用」时合并写入 config.yaml 并立即生效。
 // audit_agent_prompt / audit_agent_prompt_review_edit 可在人机协同页编辑并立即生效；空则使用内置默认。
 type HitlConfig struct {
-	// AuditModel 审计 Agent 专用模型；字段留空时继承 OpenAI 主配置，便于用小模型做审批。
+	// AuditBackend 审计 Agent 后端：openai（兼容协议聊天模型）或 typesafe（Jev 结构化裁决）。空值视为 openai。
+	AuditBackend string `yaml:"audit_backend,omitempty" json:"audit_backend,omitempty"`
+	// AuditModel 审计 Agent 专用模型。openai 后端空字段继承主模型；typesafe 后端 api_key 必填，不继承主模型密钥。
 	AuditModel OpenAIConfig `yaml:"audit_model,omitempty" json:"audit_model,omitempty"`
 	// ToolWhitelist 全局免审批工具名（与白名单内工具不触发 HITL 审批）。
 	ToolWhitelist []string `yaml:"tool_whitelist,omitempty" json:"tool_whitelist,omitempty"`
@@ -1072,7 +1139,7 @@ type HitlConfig struct {
 	DefaultMode string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
 	// DefaultReviewer 全局默认审批方（human | audit_agent）；新建会话无独立配置时沿用。
 	DefaultReviewer string `yaml:"default_reviewer,omitempty" json:"default_reviewer,omitempty"`
-	// DefaultTimeoutSeconds 全局默认审批等待秒数；nil 表示使用 5 分钟，0 表示不限时。
+	// DefaultTimeoutSeconds 全局默认审批等待秒数；nil 表示使用前端历史默认 300 秒，0 表示不限时。
 	DefaultTimeoutSeconds *int `yaml:"default_timeout_seconds,omitempty" json:"default_timeout_seconds,omitempty"`
 }
 
@@ -1098,7 +1165,7 @@ func (h HitlConfig) EffectiveDefaultReviewer() string {
 	}
 }
 
-// EffectiveDefaultTimeoutSeconds returns the default HITL approval timeout; omitted defaults to 5 minutes.
+// EffectiveDefaultTimeoutSeconds returns the default HITL approval timeout; nil defaults to 5 minutes.
 func (h HitlConfig) EffectiveDefaultTimeoutSeconds() int {
 	if h.DefaultTimeoutSeconds == nil {
 		return 300
@@ -1118,6 +1185,37 @@ func (h HitlConfig) RetentionDaysEffective() int {
 		return 0
 	}
 	return *h.RetentionDays
+}
+
+const (
+	HitlAuditBackendOpenAI   = "openai"
+	HitlAuditBackendTypeSafe = "typesafe"
+	TypeSafeDefaultBaseURL   = "https://api.typesafe.ai"
+	TypeSafeDefaultModel     = "jev-latest"
+)
+
+// EffectiveAuditBackend returns openai or typesafe. Omitted or unknown values default to openai.
+func (h HitlConfig) EffectiveAuditBackend() string {
+	switch strings.ToLower(strings.TrimSpace(h.AuditBackend)) {
+	case HitlAuditBackendTypeSafe, "jev", "type-safe", "typesafe-ai":
+		return HitlAuditBackendTypeSafe
+	default:
+		return HitlAuditBackendOpenAI
+	}
+}
+
+// TypeSafeConfigEffective returns TypeSafe endpoint settings. Empty base_url/model use defaults; API key is never inherited from the main OpenAI channel.
+func (h HitlConfig) TypeSafeConfigEffective() (baseURL, apiKey, model string) {
+	baseURL = strings.TrimSpace(h.AuditModel.BaseURL)
+	if baseURL == "" {
+		baseURL = TypeSafeDefaultBaseURL
+	}
+	apiKey = strings.TrimSpace(h.AuditModel.APIKey)
+	model = strings.TrimSpace(h.AuditModel.Model)
+	if model == "" {
+		model = TypeSafeDefaultModel
+	}
+	return strings.TrimSuffix(baseURL, "/"), apiKey, model
 }
 
 // AuditModelEffective returns the audit-agent model config with empty fields inherited from the main model config.
@@ -1233,6 +1331,22 @@ func (c HitlConfig) EffectiveAuditAgentPromptForMode(mode string) string {
 		return s
 	}
 	return DefaultHitlAuditAgentPrompt()
+}
+
+// JevOperatorPolicy returns a custom audit-strategy prompt for TypeSafe Jev.
+// Built-in default prompts stay encoded as Jev questions and are not copied into state.
+func (c HitlConfig) JevOperatorPolicy(mode string) string {
+	effective := strings.TrimSpace(c.EffectiveAuditAgentPromptForMode(mode))
+	var def string
+	if normalizeHitlModeForPrompt(mode) == "review_edit" {
+		def = strings.TrimSpace(DefaultHitlAuditAgentPromptReviewEdit())
+	} else {
+		def = strings.TrimSpace(DefaultHitlAuditAgentPrompt())
+	}
+	if effective == "" || effective == def {
+		return ""
+	}
+	return effective
 }
 
 func normalizeHitlModeForPrompt(mode string) string {
@@ -1398,11 +1512,16 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
-	if err := validateToolGuardYAML(data); err != nil {
-		return nil, fmt.Errorf("解析 tool_guard 配置失败: %w", err)
+	if err := cfg.Server.ValidateHTTPSecurity(); err != nil {
+		return nil, fmt.Errorf("校验 server 配置失败: %w", err)
+	}
+	if cfg.ToolGuard != nil {
+		if err := validateToolGuardYAML(data); err != nil {
+			return nil, fmt.Errorf("调用拦截配置无效: %w", err)
+		}
 	}
 	if _, err := toolguard.Compile(cfg.EffectiveToolGuard()); err != nil {
-		return nil, fmt.Errorf("校验 tool_guard 配置失败: %w", err)
+		return nil, fmt.Errorf("调用拦截配置无效: %w", err)
 	}
 
 	if cfg.Auth.SessionDurationHours <= 0 {
@@ -1411,8 +1530,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Audit.MaxDetailBytes <= 0 {
 		cfg.Audit.MaxDetailBytes = 8192
 	}
+	cfg.NormalizeAIProviderProfiles()
 	cfg.ApplyDefaultAIChannel()
-	if err := validateModelOutputLimits(cfg.OpenAI, cfg.MultiAgent.EinoMiddleware); err != nil {
+	if err := validateOpenAIOutputLimits(cfg.OpenAI); err != nil {
 		return nil, err
 	}
 	// 如果配置了工具目录，从目录加载工具配置
@@ -1477,21 +1597,9 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func validateModelOutputLimits(openAI OpenAIConfig, mw MultiAgentEinoMiddlewareConfig) error {
+func validateOpenAIOutputLimits(openAI OpenAIConfig) error {
 	if openAI.MaxCompletionTokens < 0 {
 		return fmt.Errorf("openai.max_completion_tokens 必须为正数")
-	}
-	if mw.MaxToolArgumentsBytes < 0 {
-		return fmt.Errorf("multi_agent.eino_middleware.max_tool_arguments_bytes 必须为正数")
-	}
-	if mw.MaxShellCommandBytes < 0 {
-		return fmt.Errorf("multi_agent.eino_middleware.max_shell_command_bytes 必须为正数")
-	}
-	if mw.ModelOutputRepairMaxAttempts < 0 {
-		return fmt.Errorf("multi_agent.eino_middleware.model_output_repair_max_attempts 必须为正数")
-	}
-	if mw.MaxShellCommandBytesEffective() > mw.MaxToolArgumentsBytesEffective() {
-		return fmt.Errorf("multi_agent.eino_middleware.max_shell_command_bytes 不能大于 max_tool_arguments_bytes")
 	}
 	return nil
 }

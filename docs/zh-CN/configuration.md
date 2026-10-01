@@ -27,7 +27,11 @@ log:
 - Chromium 浏览器插件的合法 `chrome-extension://<32位插件ID>` Origin 会被自动识别，无需配置。插件仍需按域授权，并使用密码登录与 Bearer Token 调用 API。
 - `server.cors_allowed_origins`：仅供其他可信 Web 集成使用的额外 Origin 精确白名单；不支持 `*`，修改后需重启服务。
 - `auth.session_duration_hours`：登录会话有效期（小时）。登录密码由 RBAC 用户管理，首次启动时在控制台输出 `admin` 初始密码。
-- `log.output`：可以是 `stdout`、`stderr` 或文件路径。
+- `log.output`：可以是 `stdout`、`stderr` 或文件路径，由 `log.level` 控制级别。
+- 额外诊断日志默认开启，仅记录 `warn` 及以上（包括重试、连接异常和错误），独立于 `log.level`，不保存普通 `info` / `debug` 日志。保留原有结构化字段、时间、代码位置和 Error 及以上堆栈，不额外采集请求正文或工具输出。
+- `log.diagnostic_dir`：默认 `log`，相对于进程工作目录，文件名为 `diagnostic-YYYY-MM-DD.log`（JSON Lines，按服务器本地日期拆分）。只有出现诊断日志时才创建目录和文件；跨天后首次写入切换文件。
+- `log.diagnostic_retention_days`：默认 14 天（含当天）；省略或小于等于 0 时使用默认值。每天首次写入时清理此目录内过期的 `diagnostic-日期.log`，不删除其他文件；没有新诊断日志时不执行清理。
+- `log.diagnostic_disabled: true`：关闭额外诊断落盘。以上日志配置修改后需重启；目录无法写入时保留原输出，并由 Zap 向 stderr 报告写入失败。
 
 ## AI 通道与模型配置
 
@@ -65,7 +69,7 @@ ai:
 | `ai.default_channel` | 默认通道 ID。新对话、机器人、批量任务和未显式选择通道的请求使用它。 |
 | `ai.channels.<id>` | 通道配置。ID 会归一化为小写、数字和短横线，例如 `Qwen_Max` 会变成 `qwen-max`。 |
 | `name` | Web UI 展示名。留空时使用通道 ID。 |
-| `provider` | `openai_compatible` 或 `claude`。`openai_compatible` 会在运行时映射为 `openai`；`claude` 会桥接到 Anthropic Messages API。 |
+| `provider` | `openai_compatible` 或 `claude`。`openai_compatible` 会在运行时映射为 `openai`；`claude` 使用 Eino 原生 Anthropic Messages API。 |
 | `base_url/api_key/model` | 必填。Base URL 通常需要包含版本路径，如 OpenAI/兼容网关的 `/v1`。 |
 | `max_total_tokens` | 上下文压缩、攻击链构建、多代理摘要等共用的总预算。 |
 | `max_completion_tokens` | 单次模型输出上限；未填时使用默认值。 |
@@ -103,6 +107,7 @@ agent:
 ```yaml
 hitl:
   default_reviewer: audit_agent
+  audit_backend: openai
   retention_days: 90
   tool_whitelist: [read_file, list_dir, glob, grep, tool_search]
   audit_model:
@@ -113,9 +118,10 @@ hitl:
 ```
 
 - `default_reviewer`：`human` 或 `audit_agent`。
+- `audit_backend`：`openai`（默认，兼容协议聊天模型）或 `typesafe`（TypeSafe Jev）。
 - `tool_whitelist`：全局免审批工具列表，会与会话白名单合并。
-- `audit_model`：审计 Agent 独立模型；留空复用主模型。
-- `audit_agent_prompt` / `audit_agent_prompt_review_edit`：可覆盖默认审批策略。
+- `audit_model`：openai 后端留空复用主模型；typesafe 后端需填写 TypeSafe API Key，不继承主模型密钥。
+- `audit_agent_prompt` / `audit_agent_prompt_review_edit`：openai 后端作为聊天提示词；typesafe 后端作为 Jev 的组织策略（`operatorPolicy`）。内置默认提示词与 Jev 问题重复，不会再复制进 state。
 
 更多策略见 [人机协同最佳实践](hitl-best-practices.md)。
 
@@ -260,7 +266,7 @@ project:
 几个字段有“留空复用”的关系：
 
 - `vision.api_key/base_url/provider` 留空时复用 `openai`。
-- `hitl.audit_model` 留空时复用默认 AI 通道解析后的 `openai`。
+- `hitl.audit_model` 在 `audit_backend=openai` 时留空复用默认 AI 通道；typesafe 后端不继承主模型密钥。
 - `knowledge.embedding.base_url/api_key` 留空时复用主模型或 embedding 默认配置。
 - `knowledge.retrieval.rerank.base_url/api_key` 留空时复用 embedding/openai。
 - `database.knowledge_db_path` 留空时可以复用主会话数据库，但独立文件更利于备份。

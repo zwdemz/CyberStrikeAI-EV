@@ -26,11 +26,9 @@ func PrintConfigCreated() {
 	s.BlankLine()
 }
 
-// PrintStartupWebUI prints a colored startup banner for the Web UI.
-func PrintStartupWebUI(opts StartupWebUIOptions) {
-	printStartupWebUI(os.Stdout, opts)
-}
-
+// startupHosts 返回横幅应展示的访问地址。通配地址（含空 host）展开为回环地址
+// 加本机非回环 IPv4；显式 host 原样展示。横幅此前硬编码 127.0.0.1，导致
+// 绑定 0.0.0.0 的用户误以为 server.host 配置未生效（issue #301）。
 func startupHosts(host string) []string {
 	host = strings.TrimSpace(host)
 	if host != "" && host != "0.0.0.0" && host != "::" && host != "[::]" {
@@ -47,18 +45,23 @@ func startupHosts(host string) []string {
 			continue
 		}
 		ip := ipNet.IP.String()
-		seen := false
-		for _, existing := range hosts {
-			if existing == ip {
-				seen = true
+		dup := false
+		for _, h := range hosts {
+			if h == ip {
+				dup = true
 				break
 			}
 		}
-		if !seen {
+		if !dup {
 			hosts = append(hosts, ip)
 		}
 	}
 	return hosts
+}
+
+// PrintStartupWebUI prints a colored startup banner for the Web UI.
+func PrintStartupWebUI(opts StartupWebUIOptions) {
+	printStartupWebUI(os.Stdout, opts)
 }
 
 func printStartupWebUI(out io.Writer, opts StartupWebUIOptions) {
@@ -72,16 +75,16 @@ func printStartupWebUI(out io.Writer, opts StartupWebUIOptions) {
 		port = 8080
 	}
 	hosts := startupHosts(opts.Host)
-	urlFor := func(host string) string {
-		return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/"
+	urlFor := func(h string) string {
+		return scheme + "://" + net.JoinHostPort(h, strconv.Itoa(port)) + "/"
 	}
 
 	s.BlankLine()
 	s.Println(s.Bold(s.Cyan("CYBERSTRIKE AI")) + s.Dim("  /  secure workspace"))
 	s.Println(s.Dim(strings.Repeat("─", 60)))
 	s.Println(s.Green("● ONLINE") + "   " + s.Bold(s.White(urlFor(hosts[0]))))
-	for _, host := range hosts[1:] {
-		s.Println(s.Dim("  Network  ") + s.Bold(s.White(urlFor(host))))
+	for _, h := range hosts[1:] {
+		s.Println(s.Dim("  Network  ") + s.Bold(s.White(urlFor(h))))
 	}
 	if opts.SelfSigned {
 		s.Println(s.Dim("  TLS      ") + s.Yellow("self-signed") + s.Dim(" · accept the browser warning once"))

@@ -10,8 +10,46 @@ function syncChatConversationHash(conversationId) {
     }
 }
 window.syncChatConversationHash = syncChatConversationHash;
+
+function clearChatConversationHash() {
+    if (window.location.hash.split('?')[0] !== '#chat' || window.location.hash === '#chat') return;
+    window.history.replaceState(null, '', '#chat');
+}
+window.clearChatConversationHash = clearChatConversationHash;
 let loadConversationRequestSeq = 0;
 let loadConversationAbortController = null;
+let loadConversationPendingId = '';
+let chatConversationNavigationSeq = 0;
+
+function isChatConversationLoadPending(conversationId) {
+    const id = String(conversationId || '').trim();
+    return !!id && loadConversationPendingId === id;
+}
+window.isChatConversationLoadPending = isChatConversationLoadPending;
+
+function markChatConversationNavigation(nextConversationId, force = false) {
+    const nextId = String(nextConversationId || '').trim();
+    const visibleId = String(currentConversationId || '').trim();
+    if (force || nextId !== visibleId) {
+        chatConversationNavigationSeq++;
+    }
+    return chatConversationNavigationSeq;
+}
+
+/**
+ * 离开聊天页时立即让尚在初始化的发送请求失去页面所有权。
+ * 后端任务仍会继续执行；这里只中止浏览器前台流，避免首个 conversation
+ * 事件在用户已经切到其他页面后再次抢占当前会话。
+ */
+function abandonChatConversationForPageNavigation() {
+    markChatConversationNavigation('', true);
+    if (typeof window.cancelScheduledChatConversationFromHash === 'function') {
+        window.cancelScheduledChatConversationFromHash();
+    }
+    cancelPendingConversationLoad();
+    detachLiveChatStreamForNavigation('', true);
+}
+window.abandonChatConversationForPageNavigation = abandonChatConversationForPageNavigation;
 
 /**
  * 轻量会话 LRU 缓存。
@@ -105,18 +143,18 @@ let chatAIChannels = {};
 let chatDefaultAIChannel = '';
 let chatAIChannelIdByNormalizedId = {};
 let chatHitlAuditModelName = '';
+let chatHitlAuditBackend = '';
 let chatSystemModelRequestSeq = 0;
 let chatSystemModelSaving = false;
 let chatSystemModelCloseTimer = null;
 let chatSystemModelOptions = [];
 let chatSystemModelCurrent = '';
 let chatSystemModelLoadError = '';
+const CHAT_SYSTEM_MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
+const chatSystemModelCache = new Map();
 
 // 人机协同（HITL）会话级配置
 const HITL_STORAGE_PREFIX = 'cyberstrike-chat-hitl';
-const HITL_DRAFT_KEY = 'cyberstrike-chat-hitl-draft';
-/** 跨会话记忆：用户最近一次在侧栏选择的 HITL 偏好（与 hitl.js 中 readHitlGlobalLast 使用同一 key） */
-const HITL_GLOBAL_LAST_KEY = `${HITL_STORAGE_PREFIX}:__last__`;
 const HITL_MODE_OFF = 'off';
 const HITL_MODE_APPROVAL = 'approval';
 const HITL_MODE_REVIEW_EDIT = 'review_edit';
@@ -128,6 +166,8 @@ const DEFAULT_HITL_TIMEOUT_SECONDS = 300;
 const DEFAULT_HITL_SESSION_TOOL_WHITELIST = 'tool_search, skill, task, write_todos, transfer_to_agent, exit, TaskCreate, TaskGet, TaskUpdate, TaskList, upsert_project_fact, get_project_fact';
 let hitlApplyFeedbackTimer = null;
 let hitlAutoSaveTimer = null;
+let hitlConfigSyncConversationId = '';
+let hitlConfigSyncPromise = Promise.resolve();
 const sessionSettingsSelects = new Map();
 let sessionSettingsSelectDocBound = false;
 
@@ -314,6 +354,16 @@ function mountChatSessionSettingsPopover() {
         composerSurface.appendChild(wrap);
     }
     wrap.classList.add('chat-session-settings-popover');
+    syncChatSessionSettingsLayerState();
+}
+
+function syncChatSessionSettingsLayerState() {
+    const wrap = document.getElementById('chat-reasoning-wrapper');
+    const inputBar = document.getElementById('chat-input-container');
+    if (!inputBar) return;
+    const open = !!wrap && wrap.style.display !== 'none' &&
+        !wrap.classList.contains('conversation-reasoning-collapsed');
+    inputBar.classList.toggle('is-session-settings-open', open);
 }
 
 function initChatReasoningBarHeightSync() {
@@ -380,14 +430,17 @@ function normalizeHitlTimeoutForChat(value, fallback) {
 }
 
 function defaultHitlConfig() {
-    const serverReviewer = (typeof window !== 'undefined' && window.csaiHitlDefaultReviewer)
+    const serverDefault = (typeof window !== 'undefined' && window.csaiHitlDefaultConfig && typeof window.csaiHitlDefaultConfig === 'object')
+        ? window.csaiHitlDefaultConfig
+        : {};
+    const serverReviewer = serverDefault.reviewer || ((typeof window !== 'undefined' && window.csaiHitlDefaultReviewer)
         ? window.csaiHitlDefaultReviewer
-        : 'human';
+        : 'human');
     return {
-        mode: HITL_MODE_OFF,
+        mode: normalizeHitlMode(serverDefault.mode || HITL_MODE_OFF),
         reviewer: normalizeHitlReviewer(serverReviewer),
         sensitiveTools: DEFAULT_HITL_SESSION_TOOL_WHITELIST,
-        timeoutSeconds: DEFAULT_HITL_TIMEOUT_SECONDS,
+        timeoutSeconds: normalizeHitlTimeoutForChat(serverDefault.timeoutSeconds, DEFAULT_HITL_TIMEOUT_SECONDS),
         updatedAt: ''
     };
 }
@@ -468,70 +521,11 @@ function getHitlModeLabel(mode) {
     }
 }
 
-function getHitlLastGlobalConfig() {
-    const fallback = defaultHitlConfig();
-    try {
-        const raw = localStorage.getItem(HITL_GLOBAL_LAST_KEY);
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-        return {
-            mode: normalizeHitlMode(parsed.mode),
-            reviewer: normalizeHitlReviewer(parsed.reviewer),
-            sensitiveTools: typeof parsed.sensitiveTools === 'string' ? parsed.sensitiveTools : fallback.sensitiveTools,
-            timeoutSeconds: normalizeHitlTimeoutForChat(parsed.timeoutSeconds, fallback.timeoutSeconds),
-            updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
-        };
-    } catch (e) {
-        return null;
-    }
-}
-
-function saveHitlLastGlobalConfig(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    try {
-        localStorage.setItem(HITL_GLOBAL_LAST_KEY, JSON.stringify(payload));
-    } catch (e) {
-        console.warn('saveHitlLastGlobalConfig failed', e);
-    }
-}
-
 function getHitlConfigForConversation(conversationId) {
     const fallback = defaultHitlConfig();
     const cid = conversationId ? String(conversationId).trim() : '';
     if (!cid) {
-        const globalLast = getHitlLastGlobalConfig();
-        let draftCfg = null;
-        try {
-            const raw = localStorage.getItem(HITL_DRAFT_KEY);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === 'object') {
-                    draftCfg = {
-                        mode: normalizeHitlMode(parsed.mode),
-                        reviewer: normalizeHitlReviewer(parsed.reviewer),
-                        sensitiveTools: typeof parsed.sensitiveTools === 'string' ? parsed.sensitiveTools : fallback.sensitiveTools,
-                        timeoutSeconds: normalizeHitlTimeoutForChat(parsed.timeoutSeconds, fallback.timeoutSeconds),
-                        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
-                    };
-                }
-            }
-        } catch (e) {
-            draftCfg = null;
-        }
-        const g = globalLast ? {
-            mode: normalizeHitlMode(globalLast.mode),
-            reviewer: normalizeHitlReviewer(globalLast.reviewer),
-            sensitiveTools: typeof globalLast.sensitiveTools === 'string' ? globalLast.sensitiveTools : fallback.sensitiveTools,
-            timeoutSeconds: normalizeHitlTimeoutForChat(globalLast.timeoutSeconds, fallback.timeoutSeconds),
-            updatedAt: typeof globalLast.updatedAt === 'string' ? globalLast.updatedAt : ''
-        } : null;
-        if (!draftCfg && !g) return fallback;
-        if (!draftCfg) return g;
-        if (!g) return draftCfg;
-        const tg = Date.parse(g.updatedAt) || 0;
-        const td = Date.parse(draftCfg.updatedAt) || 0;
-        return tg > td ? g : draftCfg;
+        return fallback;
     }
     const key = getHitlStorageKeyByConversation(cid);
     try {
@@ -575,6 +569,8 @@ async function onHitlReviewerChanged(reviewer) {
     try {
         if (cid && typeof window.saveHitlConversationConfig === 'function') {
             await window.saveHitlConversationConfig(cid, cfg);
+        } else if (typeof window.putHitlDefaultConfig === 'function') {
+            await window.putHitlDefaultConfig(cfg);
         } else if (typeof window.putHitlDefaultReviewer === 'function') {
             await window.putHitlDefaultReviewer(cfg.reviewer);
         }
@@ -600,7 +596,10 @@ function bindHitlReviewerToggleListeners() {
 }
 
 function saveHitlConfigForConversation(conversationId, cfg, opts) {
-    const syncGlobalLast = !!(opts && opts.syncGlobalLast);
+    void opts;
+    if (!conversationId) {
+        return;
+    }
     const payload = {
         mode: normalizeHitlMode(cfg && cfg.mode),
         reviewer: normalizeHitlReviewer(cfg && cfg.reviewer),
@@ -608,12 +607,9 @@ function saveHitlConfigForConversation(conversationId, cfg, opts) {
         timeoutSeconds: normalizeHitlTimeoutForChat(cfg && cfg.timeoutSeconds, DEFAULT_HITL_TIMEOUT_SECONDS),
         updatedAt: typeof (cfg && cfg.updatedAt) === 'string' ? cfg.updatedAt : ''
     };
-    const key = conversationId ? getHitlStorageKeyByConversation(conversationId) : HITL_DRAFT_KEY;
+    const key = getHitlStorageKeyByConversation(conversationId);
     try {
         localStorage.setItem(key, JSON.stringify(payload));
-        if (syncGlobalLast) {
-            saveHitlLastGlobalConfig(payload);
-        }
     } catch (e) {
         console.warn('saveHitlConfigForConversation failed', e);
     }
@@ -694,6 +690,19 @@ function refreshHitlConfigByCurrentConversation() {
     applyHitlConfigToUI(cfg);
 }
 
+async function waitForHitlConfigReady(conversationId) {
+    const cid = String(conversationId || '').trim();
+    if (cid && hitlConfigSyncConversationId === cid) {
+        await hitlConfigSyncPromise;
+        return;
+    }
+    const defaultReady = window.csaiHitlDefaultConfigReady || window.csaiHitlDefaultReviewerReady;
+    if (!cid && defaultReady && typeof defaultReady.then === 'function') {
+        await defaultReady.catch(function () {});
+        if (!currentConversationId) refreshHitlConfigByCurrentConversation();
+    }
+}
+
 function showHitlApplyFeedback(text, isError, partial) {
     const el = document.getElementById('hitl-apply-feedback');
     if (hitlApplyFeedbackTimer) {
@@ -754,6 +763,10 @@ async function applyHitlSidebarConfig() {
             await window.saveHitlConversationConfig(cid, cfg);
             const ok = typeof window.t === 'function' ? window.t('chat.hitlApplyOkSync') : '人机协同配置已保存并同步到服务器。';
             showHitlApplyFeedback(ok, false);
+        } else if (typeof window.putHitlDefaultConfig === 'function') {
+            await window.putHitlDefaultConfig(cfg);
+            const okDefault = typeof window.t === 'function' ? window.t('chat.hitlApplyOkDefaultConfig') : '人机协同默认配置已写入 config.yaml 并生效。';
+            showHitlApplyFeedback(okDefault, false);
         } else if (yamlMerged) {
             const okYaml = typeof window.t === 'function' ? window.t('chat.hitlApplyOkWhitelistYaml') : '免审批工具已合并进 config.yaml 并生效。会话配置会自动保存。';
             showHitlApplyFeedback(okYaml, false);
@@ -849,6 +862,11 @@ function applyConversationAgentMode(conversationId, conversation) {
 
 if (typeof window !== 'undefined') {
     window.csaiHitlGlobalToolWhitelist = window.csaiHitlGlobalToolWhitelist || [];
+    window.csaiHitlDefaultConfig = window.csaiHitlDefaultConfig || {
+        mode: HITL_MODE_OFF,
+        reviewer: 'human',
+        timeoutSeconds: DEFAULT_HITL_TIMEOUT_SECONDS
+    };
     window.csaiHitlDefaultReviewer = window.csaiHitlDefaultReviewer || 'human';
     window.csaiChatAgentMode = {
         EINO_MODES: CHAT_AGENT_EINO_MODES,
@@ -870,7 +888,6 @@ if (typeof window !== 'undefined') {
     window.setHitlReviewerUI = setHitlReviewerUI;
     window.onHitlReviewerChanged = onHitlReviewerChanged;
     window.bindHitlReviewerToggleListeners = bindHitlReviewerToggleListeners;
-    window.getHitlLastGlobalConfig = getHitlLastGlobalConfig;
     window.hitlMergeToolsForDisplay = hitlMergeToolsForDisplay;
     window.hitlStripGlobalToolsFromFormString = hitlStripGlobalToolsFromFormString;
     window.hitlToolsSplitToArray = hitlToolsSplitToArray;
@@ -937,14 +954,18 @@ function getAgentModeLabelForValue(mode) {
     }
 }
 
-function getAgentModeIconForValue(mode) {
+function getAgentModeIconClassForValue(mode) {
     switch (mode) {
-        case CHAT_AGENT_MODE_EINO_SINGLE: return '⚡';
-        case 'deep': return '🧩';
-        case 'plan_execute': return '📋';
-        case 'supervisor': return '🎯';
-        default: return '🤖';
+        case CHAT_AGENT_MODE_EINO_SINGLE: return 'eino';
+        case 'deep': return 'deep';
+        case 'plan_execute': return 'plan';
+        case 'supervisor': return 'supervisor';
+        default: return 'default';
     }
+}
+
+function renderAgentModeLogoMarkup() {
+    return '<svg class="agent-mode-logo__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><path d="M8 16h.01"/><path d="M16 16h.01"/></svg>';
 }
 
 function syncAgentModeFromValue(value) {
@@ -953,7 +974,10 @@ function syncAgentModeFromValue(value) {
     const icon = document.getElementById('agent-mode-icon');
     if (hid) hid.value = value;
     if (label) label.textContent = getAgentModeLabelForValue(value);
-    if (icon) icon.textContent = getAgentModeIconForValue(value);
+    if (icon) {
+        icon.className = 'role-selector-icon agent-mode-logo agent-mode-logo--' + getAgentModeIconClassForValue(value);
+        icon.innerHTML = renderAgentModeLogoMarkup();
+    }
     document.querySelectorAll('.agent-mode-option').forEach(function (el) {
         const v = el.getAttribute('data-value');
         el.classList.toggle('selected', v === value);
@@ -1047,31 +1071,51 @@ function currentSystemModelLabel() {
     return model || (ch && (ch.name || chatDefaultAIChannel)) || currentChatModelLabel();
 }
 
+function currentHitlAuditBackend() {
+    const b = String(chatHitlAuditBackend || (typeof window !== 'undefined' && window.csaiHitlAuditBackend) || '').trim().toLowerCase();
+    return (b === 'typesafe' || b === 'jev' || b === 'type-safe') ? 'typesafe' : 'openai';
+}
+
 function currentHitlAuditModelLabel() {
+    if (currentHitlAuditBackend() === 'typesafe') {
+        return chatHitlAuditModelName || 'jev-latest';
+    }
     return chatHitlAuditModelName || currentSystemModelLabel();
 }
 
-function currentSystemReasoningEffort() {
-    const ch = chatDefaultAIChannel ? chatAIChannels[chatDefaultAIChannel] : null;
-    const reasoning = ch && ch.reasoning && typeof ch.reasoning === 'object' ? ch.reasoning : {};
-    const effort = typeof reasoning.effort === 'string' ? reasoning.effort.trim() : '';
-    return ['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : '';
+function currentHitlAuditEngineLabel() {
+    const engine = currentHitlAuditBackend() === 'typesafe'
+        ? chatTranslate('settings.hitl.auditBackendTypeSafe', 'TypeSafe Jev')
+        : chatTranslate('settings.hitl.auditBackendOpenAI', 'OpenAI 协议模型');
+    const model = currentHitlAuditModelLabel();
+    return engine + (model ? ' · ' + model : '');
 }
 
-function chatSystemModelConfigState(cfg) {
+function resolveChatPickerChannelId() {
+    return selectedChatAIChannelId() || chatDefaultAIChannel;
+}
+
+function chatSystemModelConfigState(cfg, preferredChannelId) {
     const source = cfg && typeof cfg === 'object' ? cfg : {};
     const sourceAI = source.ai && typeof source.ai === 'object' ? source.ai : {};
     const channels = sourceAI.channels && typeof sourceAI.channels === 'object'
         ? { ...sourceAI.channels }
         : {};
-    let channelId = String(sourceAI.default_channel || '').trim();
+    const resolveFromChannels = function (value) {
+        const raw = String(value || '').trim();
+        if (raw && channels[raw]) return raw;
+        const normalized = normalizeChatAIChannelId(raw);
+        return normalized
+            ? Object.keys(channels).find(function (id) {
+                return normalizeChatAIChannelId(id) === normalized;
+            }) || ''
+            : '';
+    };
+    let defaultChannelId = resolveFromChannels(sourceAI.default_channel);
+    let channelId = resolveFromChannels(preferredChannelId) || defaultChannelId;
     if (!channels[channelId]) {
-        const normalized = normalizeChatAIChannelId(channelId);
-        channelId = Object.keys(channels).find(function (id) {
-            return normalizeChatAIChannelId(id) === normalized;
-        }) || '';
+        channelId = Object.keys(channels)[0] || 'default';
     }
-    if (!channelId) channelId = Object.keys(channels)[0] || 'default';
     if (!channels[channelId]) {
         const legacy = source.openai && typeof source.openai === 'object' ? source.openai : {};
         channels[channelId] = {
@@ -1082,8 +1126,9 @@ function chatSystemModelConfigState(cfg) {
             model: legacy.model || ''
         };
     }
+    if (!defaultChannelId) defaultChannelId = channelId;
     return {
-        ai: { ...sourceAI, default_channel: channelId, channels: channels },
+        ai: { ...sourceAI, default_channel: defaultChannelId, channels: channels },
         channelId: channelId,
         channel: channels[channelId]
     };
@@ -1100,7 +1145,9 @@ function chatSystemModelElements() {
         list: document.getElementById('chat-system-model-list'),
         status: document.getElementById('chat-system-model-status'),
         subviewStatus: document.getElementById('chat-system-model-subview-status'),
+        channelValue: document.getElementById('chat-system-model-channel-value'),
         currentValue: document.getElementById('chat-system-model-current-value'),
+        modeValue: document.getElementById('chat-system-model-mode-value'),
         effortValue: document.getElementById('chat-system-model-effort-value')
     };
 }
@@ -1130,11 +1177,28 @@ function currentChatReasoningEffort() {
     return effort ? String(effort.value || '').trim() : '';
 }
 
+function currentChatReasoningMode() {
+    const mode = document.getElementById('chat-reasoning-mode');
+    const value = mode ? String(mode.value || 'default').trim() : 'default';
+    return ['default', 'off', 'on', 'auto'].includes(value) ? value : 'default';
+}
+
+function currentChatReasoningMenuLabel() {
+    const modeValue = currentChatReasoningMode();
+    if (modeValue === 'off') return chatTranslate('chat.reasoningModeOff', '关闭');
+    const effort = currentChatReasoningEffort();
+    return effort ? chatReasoningEffortLabel(effort) : reasoningSummaryModeLabel(modeValue);
+}
+
 function updateChatSystemModelPickerValues() {
     const ui = chatSystemModelElements();
-    const model = currentSystemModelLabel();
-    const effort = chatReasoningEffortLabel(currentSystemReasoningEffort());
+    const channel = currentChatAIChannelLabel();
+    const model = currentChatModelLabel();
+    const mode = reasoningSummaryModeLabel(currentChatReasoningMode());
+    const effort = currentChatReasoningMenuLabel();
+    if (ui.channelValue) ui.channelValue.textContent = channel;
     if (ui.currentValue) ui.currentValue.textContent = model;
+    if (ui.modeValue) ui.modeValue.textContent = mode;
     if (ui.effortValue) ui.effortValue.textContent = effort;
     const composerEffort = document.getElementById('chat-model-shortcut-effort');
     if (composerEffort) composerEffort.textContent = effort;
@@ -1208,7 +1272,7 @@ function renderChatReasoningEffortOptions() {
     const ui = chatSystemModelElements();
     if (!ui.list) return;
     ui.list.innerHTML = '';
-    const currentEffort = currentSystemReasoningEffort();
+    const currentEffort = currentChatReasoningEffort();
     ['', 'low', 'medium', 'high', 'xhigh', 'max'].forEach(function (effort) {
         const option = document.createElement('button');
         option.type = 'button';
@@ -1237,61 +1301,68 @@ function renderChatReasoningEffortOptions() {
     });
 }
 
-async function selectChatReasoningEffort(effort) {
-    if (chatSystemModelSaving) return;
-    if (typeof requirePermission === 'function' && !requirePermission('config:write')) return;
-    const chosen = ['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(String(effort || '').trim())
-        ? String(effort || '').trim()
-        : '';
+function renderChatReasoningModeOptions() {
     const ui = chatSystemModelElements();
-    chatSystemModelSaving = true;
-    if (ui.list) {
-        ui.list.querySelectorAll('button').forEach(function (button) { button.disabled = true; });
-    }
-    setChatSystemModelStatus(chatTranslate('chat.systemModelSaving', '正在保存…'), 'loading');
-    try {
-        const latestResponse = await apiFetch('/api/config');
-        if (!latestResponse.ok) {
-            throw new Error(await readChatSystemModelError(latestResponse, chatTranslate('chat.systemModelSaveFailed', '保存失败')));
+    if (!ui.list) return;
+    ui.list.innerHTML = '';
+    const currentMode = currentChatReasoningMode();
+    ['default', 'off', 'on', 'auto'].forEach(function (mode) {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'chat-system-model-option';
+        option.setAttribute('role', 'option');
+        option.setAttribute('aria-selected', mode === currentMode ? 'true' : 'false');
+        if (mode === currentMode) option.classList.add('is-selected');
+        const label = document.createElement('span');
+        label.className = 'chat-system-model-option-label chat-system-effort-option-label';
+        label.textContent = reasoningSummaryModeLabel(mode);
+        option.appendChild(label);
+        if (mode === currentMode) {
+            const current = document.createElement('span');
+            current.className = 'chat-system-model-current';
+            current.textContent = chatTranslate('chat.systemModelCurrent', '当前');
+            option.appendChild(current);
         }
-        const latest = await latestResponse.json();
-        const state = chatSystemModelConfigState(latest);
-        state.ai.channels[state.channelId] = {
-            ...state.channel,
-            reasoning: { ...(state.channel.reasoning || {}), effort: chosen }
-        };
-        const updateResponse = await apiFetch('/api/config', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ai: state.ai })
+        option.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            selectChatReasoningMode(mode);
         });
-        if (!updateResponse.ok) {
-            throw new Error(await readChatSystemModelError(updateResponse, chatTranslate('chat.systemModelSaveFailed', '保存失败')));
-        }
-        const applyResponse = await apiFetch('/api/config/apply', { method: 'POST' });
-        if (!applyResponse.ok) {
-            throw new Error(await readChatSystemModelError(applyResponse, chatTranslate('chat.systemModelApplyFailed', '应用模型失败')));
-        }
-        chatAIChannels = state.ai.channels;
-        chatDefaultAIChannel = state.channelId;
-        await initChatAgentModeFromConfig();
-        updateChatComposerSessionShortcuts();
-        renderChatReasoningEffortOptions();
-        setChatSystemModelStatus(chatTranslate('chat.systemModelSaved', '已自动保存'), 'success');
-        if (chatSystemModelCloseTimer) window.clearTimeout(chatSystemModelCloseTimer);
-        chatSystemModelCloseTimer = window.setTimeout(function () {
-            chatSystemModelSaving = false;
-            closeChatSystemModelPicker(true);
-        }, 650);
-        return;
-    } catch (error) {
-        console.error('selectChatReasoningEffort', error);
-        setChatSystemModelStatus(error.message || chatTranslate('chat.systemModelSaveFailed', '保存失败'), 'error');
-    }
-    chatSystemModelSaving = false;
-    if (ui.list) {
-        ui.list.querySelectorAll('button').forEach(function (button) { button.disabled = false; });
-    }
+        ui.list.appendChild(option);
+    });
+}
+
+function finishChatReasoningPickerUpdate() {
+    persistChatReasoningPrefs();
+    setChatSystemModelStatus(chatTranslate('chat.reasoningSessionUpdated', '会话推理设置已更新'), 'success');
+    if (chatSystemModelCloseTimer) window.clearTimeout(chatSystemModelCloseTimer);
+    chatSystemModelCloseTimer = window.setTimeout(function () {
+        chatSystemModelSaving = false;
+        closeChatSystemModelPicker(true);
+    }, 450);
+}
+
+function selectChatReasoningMode(mode) {
+    if (chatSystemModelSaving) return;
+    const chosen = ['default', 'off', 'on', 'auto'].includes(String(mode || '').trim())
+        ? String(mode || '').trim()
+        : 'default';
+    const modeControl = document.getElementById('chat-reasoning-mode');
+    if (!modeControl) return;
+    chatSystemModelSaving = true;
+    modeControl.value = chosen;
+    finishChatReasoningPickerUpdate();
+}
+
+function selectChatReasoningEffort(effort) {
+    if (chatSystemModelSaving) return;
+    const raw = String(effort || '').trim();
+    const chosen = ['', 'low', 'medium', 'high', 'xhigh', 'max'].includes(raw) ? raw : '';
+    const effortControl = document.getElementById('chat-reasoning-effort');
+    if (!effortControl) return;
+    chatSystemModelSaving = true;
+    effortControl.value = chosen;
+    finishChatReasoningPickerUpdate();
 }
 
 function renderChatSystemModelRetry() {
@@ -1303,10 +1374,60 @@ function renderChatSystemModelRetry() {
     retry.className = 'chat-system-model-retry';
     retry.textContent = chatTranslate('chat.systemModelRetry', '重新获取');
     retry.addEventListener('click', function (retryEvent) {
-        closeChatSystemModelPicker(true);
-        openChatSystemModelPicker(retryEvent);
+        retryEvent.preventDefault();
+        retryEvent.stopPropagation();
+        fetchChatSystemModelsForChannel(resolveChatPickerChannelId(), { force: true });
     });
     ui.list.appendChild(retry);
+}
+
+function renderChatAIChannelOptions() {
+    const ui = chatSystemModelElements();
+    if (!ui.list) return;
+    ui.list.innerHTML = '';
+    const selected = selectedChatAIChannelId();
+    const choices = [{ id: '', label: chatTranslate('chat.aiChannelDefault', '跟随默认通道') }]
+        .concat(Object.keys(chatAIChannels).sort().map(function (id) {
+            const channel = chatAIChannels[id] || {};
+            return { id: id, label: channel.name || id };
+        }));
+    choices.forEach(function (choice) {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'chat-system-model-option';
+        option.setAttribute('role', 'option');
+        option.setAttribute('aria-selected', choice.id === selected ? 'true' : 'false');
+        if (choice.id === selected) option.classList.add('is-selected');
+        const label = document.createElement('span');
+        label.className = 'chat-system-model-option-label chat-system-channel-option-label';
+        label.textContent = choice.label;
+        option.appendChild(label);
+        if (choice.id === selected) {
+            const current = document.createElement('span');
+            current.className = 'chat-system-model-current';
+            current.textContent = chatTranslate('chat.systemModelCurrent', '当前');
+            option.appendChild(current);
+        }
+        option.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            selectChatAIChannel(choice.id);
+        });
+        ui.list.appendChild(option);
+    });
+}
+
+async function selectChatAIChannel(channelId) {
+    const select = document.getElementById('chat-ai-channel-select');
+    if (!select) return;
+    const resolved = resolveChatAIChannelId(channelId);
+    select.value = resolved || '';
+    persistChatAIChannelPref();
+    refreshSessionSettingsSelects();
+    updateChatSystemModelPickerValues();
+    openChatSystemModelView('main');
+    setChatSystemModelStatus(chatTranslate('chat.systemModelLoading', '正在获取模型列表…'), 'loading');
+    await fetchChatSystemModelsForChannel(resolveChatPickerChannelId(), { force: true });
 }
 
 function openChatSystemModelView(view, event) {
@@ -1325,6 +1446,18 @@ function openChatSystemModelView(view, event) {
     ui.main.hidden = true;
     ui.subview.hidden = false;
     ui.subview.dataset.view = view;
+    if (view === 'channel') {
+        if (ui.subviewTitle) ui.subviewTitle.textContent = chatTranslate('chat.aiChannelLabel', 'AI 通道');
+        setChatSystemModelStatus('', '');
+        renderChatAIChannelOptions();
+        return;
+    }
+    if (view === 'mode') {
+        if (ui.subviewTitle) ui.subviewTitle.textContent = chatTranslate('chat.reasoningModeLabel', '推理模式');
+        setChatSystemModelStatus('', '');
+        renderChatReasoningModeOptions();
+        return;
+    }
     if (view === 'effort') {
         if (ui.subviewTitle) ui.subviewTitle.textContent = chatTranslate('chat.reasoningEffortLabel', '推理强度');
         setChatSystemModelStatus('', '');
@@ -1364,7 +1497,7 @@ async function selectChatSystemModel(model) {
             throw new Error(await readChatSystemModelError(latestResponse, chatTranslate('chat.systemModelSaveFailed', '保存失败')));
         }
         const latest = await latestResponse.json();
-        const state = chatSystemModelConfigState(latest);
+        const state = chatSystemModelConfigState(latest, resolveChatPickerChannelId());
         state.ai.channels[state.channelId] = { ...state.channel, model: chosen };
         const updateResponse = await apiFetch('/api/config', {
             method: 'PUT',
@@ -1379,7 +1512,7 @@ async function selectChatSystemModel(model) {
             throw new Error(await readChatSystemModelError(applyResponse, chatTranslate('chat.systemModelApplyFailed', '应用模型失败')));
         }
         chatAIChannels = state.ai.channels;
-        chatDefaultAIChannel = state.channelId;
+        chatDefaultAIChannel = resolveChatAIChannelId(state.ai.default_channel) || state.channelId;
         updateChatComposerSessionShortcuts();
         await initChatAgentModeFromConfig();
         chatSystemModelCurrent = chosen;
@@ -1400,6 +1533,89 @@ async function selectChatSystemModel(model) {
     chatSystemModelSaving = false;
     if (ui.list) {
         ui.list.querySelectorAll('button').forEach(function (button) { button.disabled = false; });
+    }
+}
+
+function chatSystemModelCacheKey(channelId, channel) {
+    return [
+        String(channelId || ''),
+        String(channel && channel.provider || 'openai'),
+        String(channel && channel.base_url || '').trim()
+    ].join('|');
+}
+
+async function fetchChatSystemModelsForChannel(channelId, options) {
+    const opts = options || {};
+    const ui = chatSystemModelElements();
+    if (!ui.menu || !ui.list || ui.menu.hidden) return;
+    const resolvedChannelId = resolveChatAIChannelId(channelId) || chatDefaultAIChannel;
+    const channel = resolvedChannelId ? chatAIChannels[resolvedChannelId] || {} : {};
+    const cacheKey = chatSystemModelCacheKey(resolvedChannelId, channel);
+    const cached = chatSystemModelCache.get(cacheKey);
+    const requestId = ++chatSystemModelRequestSeq;
+    chatSystemModelCurrent = String(channel.model || '').trim();
+    chatSystemModelOptions = [];
+    chatSystemModelLoadError = '';
+    if (!opts.force && cached && Date.now() - cached.fetchedAt < CHAT_SYSTEM_MODEL_CACHE_TTL_MS) {
+        chatSystemModelOptions = cached.models.slice();
+        if (ui.subview && !ui.subview.hidden && ui.subview.dataset.view === 'model') {
+            renderChatSystemModelOptions(chatSystemModelOptions, chatSystemModelCurrent);
+        }
+        const cachedCount = [chatSystemModelCurrent].concat(chatSystemModelOptions)
+            .map(function (model) { return String(model || '').trim(); })
+            .filter(function (model, index, all) { return model && all.indexOf(model) === index; })
+            .length;
+        setChatSystemModelStatus(
+            chatTranslate('chat.systemModelLoaded', '已获取 {count} 个模型').replace('{count}', String(cachedCount)),
+            'success'
+        );
+        return;
+    }
+    if (ui.subview && !ui.subview.hidden && ui.subview.dataset.view === 'model') {
+        ui.list.innerHTML = '';
+    }
+    setChatSystemModelStatus(chatTranslate('chat.systemModelLoading', '正在获取模型列表…'), 'loading');
+    try {
+        if (!String(channel.api_key || '').trim()) {
+            throw new Error(chatTranslate('chat.systemModelNeedApiKey', '请先在系统设置中配置 API Key'));
+        }
+        const listResponse = await apiFetch('/api/config/list-models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                provider: channel.provider || 'openai',
+                base_url: String(channel.base_url || '').trim(),
+                api_key: String(channel.api_key || '').trim()
+            })
+        });
+        const result = await listResponse.json().catch(function () { return {}; });
+        if (!listResponse.ok || !result.success) {
+            throw new Error(result.error || chatTranslate('chat.systemModelLoadFailed', '获取模型失败'));
+        }
+        if (requestId !== chatSystemModelRequestSeq || ui.menu.hidden) return;
+        chatSystemModelOptions = Array.isArray(result.models) ? result.models.slice() : [];
+        chatSystemModelCache.set(cacheKey, {
+            models: chatSystemModelOptions.slice(),
+            fetchedAt: Date.now()
+        });
+        const count = [chatSystemModelCurrent].concat(chatSystemModelOptions)
+            .map(function (model) { return String(model || '').trim(); })
+            .filter(function (model, index, all) { return model && all.indexOf(model) === index; })
+            .length;
+        if (ui.subview && !ui.subview.hidden && ui.subview.dataset.view === 'model') {
+            renderChatSystemModelOptions(chatSystemModelOptions, chatSystemModelCurrent);
+        }
+        setChatSystemModelStatus(
+            chatTranslate('chat.systemModelLoaded', '已获取 {count} 个模型').replace('{count}', String(count)),
+            'success'
+        );
+    } catch (error) {
+        if (requestId !== chatSystemModelRequestSeq || ui.menu.hidden) return;
+        chatSystemModelLoadError = error.message || chatTranslate('chat.systemModelLoadFailed', '获取模型失败');
+        if (ui.subview && !ui.subview.hidden && ui.subview.dataset.view === 'model') {
+            renderChatSystemModelRetry();
+        }
+        setChatSystemModelStatus(chatSystemModelLoadError, 'error');
     }
 }
 
@@ -1425,58 +1641,8 @@ async function openChatSystemModelPicker(event) {
     if (ui.main) ui.main.hidden = false;
     if (ui.subview) ui.subview.hidden = true;
     ui.list.innerHTML = '';
-    chatSystemModelOptions = [];
-    chatSystemModelCurrent = currentSystemModelLabel();
-    chatSystemModelLoadError = '';
     updateChatSystemModelPickerValues();
-    setChatSystemModelStatus(chatTranslate('chat.systemModelLoading', '正在获取模型列表…'), 'loading');
-    const requestId = ++chatSystemModelRequestSeq;
-    try {
-        const configResponse = await apiFetch('/api/config');
-        if (!configResponse.ok) {
-            throw new Error(await readChatSystemModelError(configResponse, chatTranslate('chat.systemModelLoadFailed', '获取模型失败')));
-        }
-        const cfg = await configResponse.json();
-        const state = chatSystemModelConfigState(cfg);
-        const channel = state.channel || {};
-        if (!String(channel.api_key || '').trim()) {
-            throw new Error(chatTranslate('chat.systemModelNeedApiKey', '请先在系统设置中配置 API Key'));
-        }
-        const listResponse = await apiFetch('/api/config/list-models', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                provider: channel.provider || 'openai',
-                base_url: String(channel.base_url || '').trim(),
-                api_key: String(channel.api_key || '').trim()
-            })
-        });
-        const result = await listResponse.json().catch(function () { return {}; });
-        if (!listResponse.ok || !result.success) {
-            throw new Error(result.error || chatTranslate('chat.systemModelLoadFailed', '获取模型失败'));
-        }
-        if (requestId !== chatSystemModelRequestSeq || ui.menu.hidden) return;
-        chatSystemModelCurrent = String(channel.model || '').trim();
-        chatSystemModelOptions = Array.isArray(result.models) ? result.models.slice() : [];
-        const count = [chatSystemModelCurrent].concat(chatSystemModelOptions)
-            .map(function (model) { return String(model || '').trim(); })
-            .filter(function (model, index, all) { return model && all.indexOf(model) === index; })
-            .length;
-        if (ui.subview && !ui.subview.hidden && ui.subview.dataset.view === 'model') {
-            renderChatSystemModelOptions(chatSystemModelOptions, chatSystemModelCurrent);
-        }
-        setChatSystemModelStatus(
-            chatTranslate('chat.systemModelLoaded', '已获取 {count} 个模型').replace('{count}', String(count)),
-            'success'
-        );
-    } catch (error) {
-        if (requestId !== chatSystemModelRequestSeq || ui.menu.hidden) return;
-        chatSystemModelLoadError = error.message || chatTranslate('chat.systemModelLoadFailed', '获取模型失败');
-        if (ui.subview && !ui.subview.hidden && ui.subview.dataset.view === 'model') {
-            renderChatSystemModelRetry();
-        }
-        setChatSystemModelStatus(chatSystemModelLoadError, 'error');
-    }
+    await fetchChatSystemModelsForChannel(resolveChatPickerChannelId());
 }
 
 function truncateChatAIChannelSummaryLabel(label) {
@@ -1492,6 +1658,7 @@ function persistChatAIChannelPref() {
         else localStorage.removeItem(AI_CHANNEL_STORAGE_KEY);
     } catch (e) {}
     updateChatReasoningSummary();
+    updateChatSystemModelPickerValues();
 }
 
 function reasoningSummaryModeLabel(mode) {
@@ -1523,9 +1690,8 @@ function updateChatReasoningSummary() {
     }
     const channelPart = currentChatAIChannelLabel();
     const modelPart = currentChatModelLabel();
-    const parts = [truncateChatAIChannelSummaryLabel(channelPart), reasoningPart, hitlPart].filter(Boolean);
-    el.textContent = parts.join(' / ');
-    el.title = [channelPart, reasoningPart, hitlPart].filter(Boolean).join(' / ');
+    el.textContent = hitlPart;
+    el.title = hitlPart;
     updateChatComposerSessionShortcuts({
         channel: channelPart,
         model: modelPart,
@@ -1539,16 +1705,17 @@ function updateChatComposerSessionShortcuts(summary) {
     const modelEl = document.getElementById('chat-model-shortcut-text');
     const hitlEl = document.getElementById('chat-hitl-shortcut-text');
     if (modelEl) {
-        // 输入框右侧只展示系统默认主模型；审批模型只出现在 HITL 入口。
-        const label = currentSystemModelLabel();
+        // 输入框右侧展示当前会话通道的模型；审批模型只出现在 HITL 入口。
+        const label = currentChatModelLabel();
         modelEl.textContent = truncateChatAIChannelSummaryLabel(label);
         modelEl.title = label;
         const shortcut = document.getElementById('chat-model-shortcut');
         if (shortcut) {
-            const effort = chatReasoningEffortLabel(currentSystemReasoningEffort());
-            const action = chatTranslate('chat.modelSettingsAria', '选择模型与推理强度');
-            shortcut.setAttribute('aria-label', action + '：' + label + ' · ' + effort);
-            shortcut.title = action + '：' + label + ' · ' + effort;
+            const channel = currentChatAIChannelLabel();
+            const effort = currentChatReasoningMenuLabel();
+            const action = chatTranslate('chat.modelSettingsAria', '选择 AI 通道、模型与推理设置');
+            shortcut.setAttribute('aria-label', action + '：' + channel + ' · ' + label + ' · ' + effort);
+            shortcut.title = action + '：' + channel + ' · ' + label + ' · ' + effort;
         }
         updateChatSystemModelPickerValues();
     }
@@ -1559,7 +1726,7 @@ function updateChatComposerSessionShortcuts(summary) {
             ? chatTranslate('chat.sessionShortcutAuditAgent', 'Agent 审查')
             : chatTranslate('chat.sessionShortcutHuman', '人工审批');
         const modeLabel = data.hitl || getHitlModeLabel(cfg.mode);
-        const approvalModel = auditAgent ? currentHitlAuditModelLabel() : '';
+        const approvalModel = auditAgent ? currentHitlAuditEngineLabel() : '';
         const label = prefix + '：' + modeLabel + (approvalModel ? ' · ' + approvalModel : '');
         hitlEl.textContent = label;
         hitlEl.title = label;
@@ -1574,6 +1741,7 @@ function openChatSessionSettings(section, event) {
     if (!wrap || !toggle || wrap.style.display === 'none') return;
     syncChatReasoningBarHeight();
     wrap.classList.remove('conversation-reasoning-collapsed');
+    syncChatSessionSettingsLayerState();
     toggle.setAttribute('aria-expanded', 'true');
     if (typeof closeAgentModePanel === 'function') closeAgentModePanel();
     if (typeof closeRoleSelectionPanel === 'function') closeRoleSelectionPanel();
@@ -1612,6 +1780,18 @@ function shouldTreatLiveChatTaskAsCurrent(liveConversationId, visibleConversatio
 
 function ownsLiveChatStream(liveStream) {
     return !!liveStream && window.__csAgentLiveStream === liveStream;
+}
+
+function shouldIgnoreLiveChatStreamEvent(
+    liveStream,
+    activeLiveStream = window.__csAgentLiveStream,
+    navigationSeq = chatConversationNavigationSeq
+) {
+    return !liveStream ||
+        activeLiveStream !== liveStream ||
+        liveStream.active !== true ||
+        liveStream.detached === true ||
+        liveStream.navigationSeq !== navigationSeq;
 }
 
 function clearLiveChatStreamIfOwned(liveStream) {
@@ -1728,10 +1908,13 @@ function initChatPrimaryActionButton() {
     updateChatPrimaryActionState();
 }
 
+document.addEventListener('DOMContentLoaded', initChatPrimaryActionButton);
+
 function closeChatReasoningPanel() {
     const wrap = document.getElementById('chat-reasoning-wrapper');
     const toggle = document.getElementById('conversation-reasoning-toggle');
     if (wrap) wrap.classList.add('conversation-reasoning-collapsed');
+    syncChatSessionSettingsLayerState();
     if (toggle) toggle.setAttribute('aria-expanded', 'false');
 }
 
@@ -1741,6 +1924,7 @@ function toggleConversationReasoningCard() {
     if (!wrap || !toggle) return;
     syncChatReasoningBarHeight();
     wrap.classList.toggle('conversation-reasoning-collapsed');
+    syncChatSessionSettingsLayerState();
     const collapsed = wrap.classList.contains('conversation-reasoning-collapsed');
     toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     if (!collapsed) {
@@ -1903,9 +2087,22 @@ async function initChatAgentModeFromConfig() {
         multiAgentAPIEnabled = !!(cfg.multi_agent && cfg.multi_agent.enabled);
         populateChatAIChannelSelect(cfg.ai || {});
         const hitlAuditModel = cfg.hitl && cfg.hitl.audit_model;
+        chatHitlAuditBackend = cfg.hitl && typeof cfg.hitl.audit_backend === 'string'
+            ? cfg.hitl.audit_backend.trim().toLowerCase()
+            : '';
         chatHitlAuditModelName = hitlAuditModel && typeof hitlAuditModel.model === 'string'
             ? hitlAuditModel.model.trim()
             : '';
+        if (typeof window !== 'undefined') {
+            window.csaiHitlAuditBackend = chatHitlAuditBackend;
+            window.csaiHitlAuditModel = chatHitlAuditModelName;
+            if (typeof window.renderHitlPageAuditEngine === 'function') {
+                window.renderHitlPageAuditEngine();
+            }
+            if (typeof window.renderHitlStrategyJevHint === 'function') {
+                window.renderHitlStrategyJevHint();
+            }
+        }
         updateChatReasoningSummary();
         if (typeof window !== 'undefined') {
             window.__csaiMultiAgentPublic = cfg.multi_agent || null;
@@ -1956,7 +2153,7 @@ function saveChatDraftDebounced(content) {
     if (draftSaveTimer) {
         clearTimeout(draftSaveTimer);
     }
-    
+
     // 设置新的定时器
     draftSaveTimer = setTimeout(() => {
         saveChatDraft(content);
@@ -1999,7 +2196,7 @@ function restoreChatDraft() {
         if (chatInput.value && chatInput.value.trim().length > 0) {
             return;
         }
-        
+
         const draft = localStorage.getItem(DRAFT_STORAGE_KEY);
         const trimmedDraft = draft ? draft.trim() : '';
 
@@ -2030,17 +2227,17 @@ function clearChatDraft() {
 // 调整textarea高度以适应内容
 function adjustTextareaHeight(textarea) {
     if (!textarea) return;
-    
+
     // 先重置高度为auto，然后立即设置为固定值，确保能准确获取scrollHeight
     textarea.style.height = 'auto';
     // 强制浏览器重新计算布局
     void textarea.offsetHeight;
-    
+
     // 计算新高度（最小40px，最大不超过300px）
     const scrollHeight = textarea.scrollHeight;
     const newHeight = Math.min(Math.max(scrollHeight, 40), 300);
     textarea.style.height = newHeight + 'px';
-    
+
     // 如果内容为空或只有很少内容，立即重置到最小高度
     if (!textarea.value || textarea.value.trim().length === 0) {
         textarea.style.height = '40px';
@@ -2052,10 +2249,21 @@ async function sendMessage() {
     const input = document.getElementById('chat-input');
     let message = input.value.trim();
     const hasAttachments = chatAttachments && chatAttachments.length > 0;
+    const requestConversationId = currentConversationId;
+    const requestNavigationSeq = chatConversationNavigationSeq;
 
     if (!message && !hasAttachments) {
         return;
     }
+
+    // A restored conversation renders from the local cache first, while its
+    // authoritative HITL config is fetched separately. Do not let a fast send
+    // reuse the temporary/default reviewer (historically "human") before that
+    // fetch completes, otherwise refreshing could turn Audit Agent review into
+    // a human approval for the next tool call.
+    const hitlConversationAtSendStart = String(currentConversationId || '').trim();
+    await waitForHitlConfigReady(hitlConversationAtSendStart);
+    if (String(currentConversationId || '').trim() !== hitlConversationAtSendStart) return;
 
     // Enter 会直接调用 sendMessage；同一会话在其他标签页已启动任务时，
     // 必须在渲染用户气泡和发起 POST 前做一次权威状态同步，避免生成一轮“已有任务执行中”伪对话。
@@ -2096,6 +2304,12 @@ async function sendMessage() {
         message = CHAT_FILE_DEFAULT_PROMPT;
     }
 
+    // 发送前的任务状态/附件检查可能包含异步等待。若用户已主动切换会话，
+    // 保留当前页面，不再把这次尚未发出的请求写入新的可见对话。
+    if (requestNavigationSeq !== chatConversationNavigationSeq) {
+        return;
+    }
+
     // 显示用户消息（含附件名，便于用户确认）
     const displayMessage = hasAttachments
         ? message + '\n' + chatAttachments.map(a => '📎 ' + a.fileName).join('\n')
@@ -2107,13 +2321,13 @@ async function sendMessage() {
     if (currentConversationId) {
         invalidateConversationLiteCache(currentConversationId);
     }
-    
+
     // 清除防抖定时器，防止在清空输入框后重新保存草稿
     if (draftSaveTimer) {
         clearTimeout(draftSaveTimer);
         draftSaveTimer = null;
     }
-    
+
     // 立即清除草稿，防止页面刷新时恢复
     clearChatDraft();
     // 使用同步方式确保草稿被清除
@@ -2122,7 +2336,7 @@ async function sendMessage() {
     } catch (e) {
         // 忽略错误
     }
-    
+
     // 立即清空输入框并清除草稿（在发送请求之前）
     input.value = '';
     // 强制重置输入框高度为初始高度（40px）
@@ -2131,7 +2345,7 @@ async function sendMessage() {
     // 构建请求体（含附件）
     const body = {
         message: message,
-        conversationId: currentConversationId,
+        conversationId: requestConversationId,
         role: typeof getCurrentRole === 'function' ? getCurrentRole() : ''
     };
     if (window.__csNextChatFinalizationPolicy && typeof window.__csNextChatFinalizationPolicy === 'object') {
@@ -2192,7 +2406,8 @@ async function sendMessage() {
         conversationId: streamConversationId || null,
         progressId: progressId,
         abortController: requestAbortController,
-        detached: false
+        detached: false,
+        navigationSeq: requestNavigationSeq
     };
     window.__csAgentLiveStream = liveStreamState;
     if (streamConversationId && typeof window.notifyConversationTaskStarted === 'function') {
@@ -2202,7 +2417,7 @@ async function sendMessage() {
     loadActiveTasks();
     let assistantMessageId = null;
     let mcpExecutionIds = [];
-    
+
     try {
         const modeSel = document.getElementById('agent-mode-select');
         let modeVal = modeSel ? modeSel.value : CHAT_AGENT_MODE_EINO_SINGLE;
@@ -2220,7 +2435,7 @@ async function sendMessage() {
             body: JSON.stringify(body),
             signal: requestAbortController.signal,
         });
-        
+
         if (!response.ok) {
             throw new Error('请求失败: ' + response.status);
         }
@@ -2243,17 +2458,17 @@ async function sendMessage() {
                     if (streamConversationId && streamConversationId !== eventConvId) {
                         return;
                     }
-                    if (!streamConversationId && eventData.type === 'conversation') {
+                    if (!streamConversationId) {
                         streamConversationId = eventConvId;
                         liveStreamState.conversationId = eventConvId;
                         justBoundConversation = true;
-                        // 旧请求可能在用户切换对话后才收到 conversation 事件。
-                        // 只完成本地任务绑定，不允许它重新抢占当前对话或新的主流状态。
-                        if (!ownsLiveChatStream(liveStreamState) || liveStreamState.detached) {
-                            updateProgressConversation(progressId, eventConvId);
-                            return;
-                        }
                     }
+                }
+                // 切换对话后仍可能收到旧响应流中已缓冲的 conversation、response_start
+                // 或 response 事件。它们只能补齐后台任务归属，不能重新抢占当前对话。
+                if (shouldIgnoreLiveChatStreamEvent(liveStreamState)) {
+                    if (eventConvId) updateProgressConversation(progressId, eventConvId);
+                    return;
                 }
                 if (!justBoundConversation && !isStreamStillVisibleForRequest()) {
                     return;
@@ -2332,7 +2547,7 @@ async function sendMessage() {
         } catch (e) {
             // 忽略错误
         }
-        
+
     } catch (error) {
         clearLiveChatStreamIfOwned(liveStreamState);
         if (liveStreamState.detached || !isStreamStillVisibleForRequest()) {
@@ -2383,7 +2598,7 @@ function renderChatFileChips() {
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'chat-file-chip-remove';
-        remove.title = typeof window.t === 'function' ? window.t('chatGroup.remove') : '移除';
+        remove.title = typeof window.t === 'function' ? window.t('common.remove') : '移除';
         remove.innerHTML = '×';
         remove.setAttribute('aria-label', '移除 ' + a.fileName);
         remove.addEventListener('click', () => removeChatAttachment(i));
@@ -2607,7 +2822,7 @@ function ensureMentionToolsLoaded() {
         mentionTools = [];
         delete window._mentionToolsRoleChanged;
     }
-    
+
     if (mentionToolsLoaded) {
         return Promise.resolve(mentionTools);
     }
@@ -2649,7 +2864,7 @@ async function fetchMentionTools() {
                 externalMcpNames = Object.keys(mcpData.servers || {}).filter(name => {
                     const server = mcpData.servers[name];
                     // 只包含已连接且已启用的MCP
-                    return server.status === 'connected' && 
+                    return server.status === 'connected' &&
                            (server.config.external_mcp_enable || (server.config.enabled && !server.config.disabled));
                 });
             }
@@ -2833,7 +3048,7 @@ function updateMentionCandidates() {
 
     if (normalizedQuery) {
         // 检查是否精确匹配外部MCP名称
-        const exactMatchedMcp = externalMcpNames.find(mcpName => 
+        const exactMatchedMcp = externalMcpNames.find(mcpName =>
             mcpName.toLowerCase() === normalizedQuery
         );
 
@@ -2844,21 +3059,21 @@ function updateMentionCandidates() {
             });
         } else {
             // 检查是否部分匹配MCP名称
-            const partialMatchedMcps = externalMcpNames.filter(mcpName => 
+            const partialMatchedMcps = externalMcpNames.filter(mcpName =>
                 mcpName.toLowerCase().includes(normalizedQuery)
             );
-            
+
             // 正常匹配：按工具名称和描述过滤，同时也匹配MCP名称
             filtered = mentionTools.filter(tool => {
                 const nameMatch = tool.name.toLowerCase().includes(normalizedQuery);
                 const descMatch = tool.description && tool.description.toLowerCase().includes(normalizedQuery);
                 const mcpMatch = tool.externalMcp && tool.externalMcp.toLowerCase().includes(normalizedQuery);
-                
+
                 // 如果部分匹配到MCP名称，也包含该MCP下的所有工具
-                const mcpPartialMatch = partialMatchedMcps.some(mcpName => 
+                const mcpPartialMatch = partialMatchedMcps.some(mcpName =>
                     tool.externalMcp && tool.externalMcp.toLowerCase() === mcpName.toLowerCase()
                 );
-                
+
                 return nameMatch || descMatch || mcpMatch || mcpPartialMatch;
             });
         }
@@ -2881,7 +3096,7 @@ function updateMentionCandidates() {
             if (aMcpExact !== bMcpExact) {
                 return aMcpExact ? -1 : 1;
             }
-            
+
             const aStarts = a.name.toLowerCase().startsWith(normalizedQuery);
             const bStarts = b.name.toLowerCase().startsWith(normalizedQuery);
             if (aStarts !== bStarts) {
@@ -3087,7 +3302,7 @@ function applyMentionSelection() {
     const newCaret = before.length + insertText.length;
     textarea.focus();
     textarea.setSelectionRange(newCaret, newCaret);
-    
+
     // 调整输入框高度并保存草稿
     adjustTextareaHeight(textarea);
     saveChatDraftDebounced(textarea.value);
@@ -3161,11 +3376,11 @@ function wrapTablesInBubble(bubble) {
         if (table.parentElement && table.parentElement.classList.contains('table-wrapper')) {
             return;
         }
-        
+
         // 创建表格包装容器
         const wrapper = document.createElement('div');
         wrapper.className = 'table-wrapper';
-        
+
         // 将表格移动到包装容器中
         table.parentNode.insertBefore(wrapper, table);
         wrapper.appendChild(table);
@@ -3283,8 +3498,59 @@ function refreshSystemReadyMessageBubbles() {
         bubble.innerHTML = formattedContent;
         if (typeof wrapTablesInBubble === 'function') wrapTablesInBubble(bubble);
         messageDiv.dataset.originalContent = text;
+        appendMessageCopyButton(messageDiv);
     });
 }
+
+function ensureMessageMetaFooter(content) {
+    if (!content) return null;
+    let footer = content.querySelector('.message-meta-footer');
+    if (footer) return footer;
+    const timeDiv = content.querySelector('.message-time');
+    footer = document.createElement('div');
+    footer.className = 'message-meta-footer';
+    if (timeDiv && timeDiv.parentNode === content) {
+        timeDiv.parentNode.insertBefore(footer, timeDiv);
+        footer.appendChild(timeDiv);
+    } else {
+        content.appendChild(footer);
+    }
+    return footer;
+}
+
+function appendMessageCopyButton(messageDiv) {
+    if (!messageDiv) return null;
+    if (!messageDiv.classList || (!messageDiv.classList.contains('assistant') && !messageDiv.classList.contains('user'))) {
+        return null;
+    }
+    const content = messageDiv.querySelector('.message-content');
+    const footer = ensureMessageMetaFooter(content);
+    if (!footer) return null;
+
+    messageDiv.querySelectorAll('.message-bubble .message-copy-btn').forEach((btn) => btn.remove());
+    let copyBtn = footer.querySelector('.message-copy-btn');
+    if (copyBtn) return copyBtn;
+
+    copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'message-copy-btn';
+    copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>' + (typeof window.t === 'function' ? window.t('common.copy') : '复制') + '</span>';
+    copyBtn.title = typeof window.t === 'function' ? window.t('chat.copyMessageTitle') : '复制消息内容';
+    copyBtn.setAttribute('aria-label', copyBtn.title);
+    copyBtn.onclick = function(e) {
+        e.stopPropagation();
+        copyMessageToClipboard(messageDiv, this);
+    };
+    const deleteBtn = footer.querySelector('.message-delete-turn-btn');
+    if (deleteBtn) {
+        footer.insertBefore(copyBtn, deleteBtn);
+    } else {
+        footer.appendChild(copyBtn);
+    }
+    return copyBtn;
+}
+window.appendMessageCopyButton = appendMessageCopyButton;
+window.ensureMessageMetaFooter = ensureMessageMetaFooter;
 
 // 添加消息（options.systemReadyMessage 为 true 时，语言切换会刷新该条文案）
 function addMessage(role, content, mcpExecutionIds = null, progressId = null, createdAt = null, options = null) {
@@ -3294,17 +3560,17 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
     const id = 'msg-' + Date.now() + '-' + messageCounter + '-' + Math.random().toString(36).substr(2, 9);
     messageDiv.id = id;
     messageDiv.className = 'message ' + role;
-    
+
     messagesDiv.querySelector('.chat-welcome-empty-state')?.remove();
 
     // 创建消息内容容器
     const contentWrapper = document.createElement('div');
     contentWrapper.className = 'message-content';
-    
+
     // 创建消息气泡
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble';
-    
+
     // 解析 Markdown 或 HTML 格式
     let formattedContent;
     const escapeHtml = (text) => {
@@ -3313,7 +3579,7 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
         div.textContent = text;
         return div.innerHTML;
     };
-    
+
     // 助手消息中的已知中文错误前缀做国际化替换（后端固定返回中文）
     let displayContent = content;
     if (role === 'assistant' && typeof displayContent === 'string' && typeof window.t === 'function') {
@@ -3337,7 +3603,7 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
         const rawForEscape = role === 'assistant' ? displayContent : content;
         formattedContent = escapeHtml(rawForEscape).replace(/\n/g, '<br>');
     }
-    
+
     bubble.innerHTML = formattedContent;
 
     // 刷新恢复运行中会话时，后端正文可能仍是持久化占位值“处理中...”。
@@ -3346,34 +3612,21 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
         messageDiv.classList.add('assistant-placeholder-content');
         bubble.hidden = true;
     }
-    
+
     if (typeof window.csMarkdownSanitize !== 'undefined') {
         window.csMarkdownSanitize.stripSuspiciousImages(bubble);
     }
-    
+
     // 为每个表格添加独立的滚动容器
     wrapTablesInBubble(bubble);
-    
+
     contentWrapper.appendChild(bubble);
-    
+
     // 保存原始内容到消息元素，用于复制功能
-    if (role === 'assistant') {
+    if (role === 'assistant' || role === 'user') {
         messageDiv.dataset.originalContent = content;
     }
-    
-    // 为助手消息添加复制按钮（复制整个回复内容）- 放在消息气泡右下角
-    if (role === 'assistant') {
-        const copyBtn = document.createElement('button');
-        copyBtn.className = 'message-copy-btn';
-        copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>' + (typeof window.t === 'function' ? window.t('common.copy') : '复制') + '</span>';
-        copyBtn.title = typeof window.t === 'function' ? window.t('chat.copyMessageTitle') : '复制消息内容';
-        copyBtn.onclick = function(e) {
-            e.stopPropagation();
-            copyMessageToClipboard(messageDiv, this);
-        };
-        bubble.appendChild(copyBtn);
-    }
-    
+
     // 添加时间戳
     const timeDiv = document.createElement('div');
     timeDiv.className = 'message-time';
@@ -3402,9 +3655,17 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
     try {
         timeDiv.dataset.messageTime = messageTime.toISOString();
     } catch (e) { /* ignore */ }
-    contentWrapper.appendChild(timeDiv);
+    const metaFooter = document.createElement('div');
+    metaFooter.className = 'message-meta-footer';
+    metaFooter.appendChild(timeDiv);
+    contentWrapper.appendChild(metaFooter);
     messageDiv.appendChild(contentWrapper);
-    
+
+    // 为用户和助手消息添加复制按钮（复制整条消息内容）
+    if (role === 'assistant' || role === 'user') {
+        appendMessageCopyButton(messageDiv);
+    }
+
     // 有 MCP 执行记录且非流式占位消息时展示调用按钮；带 progressId 的流式占位不挂此条（与进度卡片一致，结束时 integrate 再创建）
     if (role === 'assistant' && (mcpExecutionIds && Array.isArray(mcpExecutionIds) && mcpExecutionIds.length > 0) && !progressId) {
         if (options && options.deferMcpButtons) {
@@ -3416,7 +3677,7 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
             setMcpCallExecutionIds(messageDiv, mcpExecutionIds);
         }
     }
-    
+
     // 标记「系统就绪」占位消息，便于切换语言后刷新文案
     if (options && options.systemReadyMessage) {
         messageDiv.setAttribute('data-system-ready-message', '1');
@@ -3485,13 +3746,13 @@ function copyMessageToClipboard(messageDiv, button) {
             if (bubble) {
                 const tempDiv = document.createElement('div');
                 tempDiv.innerHTML = bubble.innerHTML;
-                
+
                 // 移除复制按钮本身（避免复制按钮文本）
                 const copyBtnInTemp = tempDiv.querySelector('.message-copy-btn');
                 if (copyBtnInTemp) {
                     copyBtnInTemp.remove();
                 }
-                
+
                 // 提取纯文本内容
                 let textContent = tempDiv.textContent || tempDiv.innerText || '';
                 textContent = textContent.replace(/\n{3,}/g, '\n\n').trim();
@@ -3500,7 +3761,7 @@ function copyMessageToClipboard(messageDiv, button) {
             }
             return;
         }
-        
+
         // 使用原始Markdown内容
         doCopy(originalContent);
     } catch (error) {
@@ -3635,10 +3896,71 @@ function isEinoAgentHeartbeatProgress(detail) {
     return /^\[Eino\]\s+\S/.test(msg);
 }
 
+function hasModelOutputRecoveryMarker(value) {
+    if (!value) return false;
+    let obj = value;
+    if (typeof obj === 'string') {
+        const text = obj.trim();
+        if (!text || text.indexOf('_cyberstrike_model_output_recovery') === -1) return false;
+        try {
+            obj = JSON.parse(text);
+        } catch (e) {
+            return false;
+        }
+    }
+    return !!(obj && typeof obj === 'object' && obj._cyberstrike_model_output_recovery);
+}
+
+function isModelOutputRecoveryToolCallDetail(detail) {
+    if (!detail || detail.eventType !== 'tool_call') return false;
+    const data = detail.data && typeof detail.data === 'object' ? detail.data : {};
+    return hasModelOutputRecoveryMarker(data.argumentsObj) || hasModelOutputRecoveryMarker(data.arguments);
+}
+
+function isAnonymousTaskFragmentToolCallDetail(detail) {
+    if (!detail || detail.eventType !== 'tool_call') return false;
+    const data = detail.data && typeof detail.data === 'object' ? detail.data : {};
+    const toolName = String(data.toolName || '').trim().toLowerCase();
+    if (toolName && toolName !== 'task' && toolName !== 'unknown') return false;
+
+    let raw = null;
+    const argsObj = data.argumentsObj && typeof data.argumentsObj === 'object' ? data.argumentsObj : null;
+    if (argsObj) {
+        const keys = Object.keys(argsObj);
+        if (keys.length === 1 && keys[0] === '_raw') {
+            raw = String(argsObj._raw != null ? argsObj._raw : '').trim();
+        }
+    }
+    if (raw == null && typeof data.arguments === 'string') {
+        raw = data.arguments.trim();
+    }
+    if (raw == null) return false;
+    if (!raw) return true;
+    return !(raw.startsWith('{') && raw.endsWith('}'));
+}
+
+function isInternalEinoDiagnosticDetail(detail) {
+    if (!detail) return false;
+    if (detail.eventType === 'model_output_rejected') return true;
+    if (detail.eventType !== 'progress') return false;
+    const msg = String(detail.message != null ? detail.message : '').trim();
+    if (msg === 'Eino TurnLoop 常驻多轮 runtime 已接管本轮会话。' ||
+        msg === 'Eino TurnLoop 已在安全点切换到用户补充后的下一轮。' ||
+        msg === '已将用户补充推入 Eino TurnLoop，正在等待安全点切换…') {
+        return true;
+    }
+    const data = detail.data && typeof detail.data === 'object' ? detail.data : {};
+    const kind = String(data.kind || '').trim();
+    return kind === 'turn_loop_takeover' || kind === 'turn_loop_preempted';
+}
+
 function filterNoiseProcessDetails(details) {
     if (!Array.isArray(details)) return details;
     return details.filter(function (d) {
         if (isEinoAgentHeartbeatProgress(d)) return false;
+        if (isModelOutputRecoveryToolCallDetail(d)) return false;
+        if (isAnonymousTaskFragmentToolCallDetail(d)) return false;
+        if (isInternalEinoDiagnosticDetail(d)) return false;
         return !(d && d.eventType === 'tool_calls_detected');
     });
 }
@@ -3766,12 +4088,12 @@ function renderProcessDetails(messageId, processDetails, options) {
         pruneEmptyMcpCallSection(messageElement);
         return;
     }
-    
+
     // 查找或创建 MCP 区域（工具栏 + 工具列表 + 迭代时间线 分区）
     const chrome = ensureMcpCallSectionChrome(messageElement, messageId);
     if (!chrome) return;
     const { mcpSection, toolbar: buttonsContainer } = chrome;
-    
+
     // 添加过程详情按钮（如果还没有）
     let processDetailBtn = buttonsContainer.querySelector('.process-detail-btn');
     if (!processDetailBtn) {
@@ -3782,12 +4104,12 @@ function renderProcessDetails(messageId, processDetails, options) {
         buttonsContainer.appendChild(processDetailBtn);
     }
     syncMcpToolsToggleButton(messageElement);
-    
+
     // 创建过程详情容器（放在工具列表之后）
     const detailsId = 'process-details-' + messageId;
     let detailsContainer = document.getElementById(detailsId);
     const toolListEl = chrome.toolList;
-    
+
     if (!detailsContainer) {
         detailsContainer = document.createElement('div');
         detailsContainer.id = detailsId;
@@ -3800,23 +4122,26 @@ function renderProcessDetails(messageId, processDetails, options) {
             mcpSection.appendChild(detailsContainer);
         }
     }
-    
+
     // 创建时间线（即使没有processDetails也要创建，以便展开详情按钮能正常工作）
     const timelineId = detailsId + '-timeline';
     let timeline = document.getElementById(timelineId);
-    
+
     if (!timeline) {
         const contentDiv = document.createElement('div');
         contentDiv.className = 'process-details-content';
-        
+
         timeline = document.createElement('div');
         timeline.id = timelineId;
         timeline.className = 'progress-timeline';
-        
+
         contentDiv.appendChild(timeline);
         detailsContainer.appendChild(contentDiv);
     }
-    
+    if (typeof window.ensureProcessDetailsReturnLatestControl === 'function') {
+        window.ensureProcessDetailsReturnLatestControl(timeline);
+    }
+
     // processDetails === null 表示“尚未加载（懒加载）”；messages.reasoningContent 可先展示
     const isLazyNotLoaded = isLazyRequest;
     if (isLazyNotLoaded && !reasoningFromMessage) {
@@ -3827,6 +4152,9 @@ function renderProcessDetails(messageId, processDetails, options) {
         timeline.innerHTML = '<div class="progress-timeline-empty">' + lazyHint + '</div>';
         bindProcessDetailsLazyHint(timeline, messageId);
         timeline.classList.remove('expanded');
+        if (typeof window.updateProcessDetailsReturnLatestControl === 'function') {
+            window.updateProcessDetailsReturnLatestControl(timeline);
+        }
         prefetchProcessDetailsSummaryHint(messageId, messageElement);
         return;
     }
@@ -3840,6 +4168,10 @@ function renderProcessDetails(messageId, processDetails, options) {
     } else if (markLoaded) {
         detailsContainer.dataset.lazyNotLoaded = '0';
         detailsContainer.dataset.loaded = '1';
+    }
+    const turnUsageFromDetails = extractAssistantTurnTokenUsage(processDetails);
+    if (turnUsageFromDetails) {
+        setAssistantTurnTokenUsage(messageElement, turnUsageFromDetails);
     }
     processDetails = mergeMessageReasoningContentIntoProcessDetails(processDetails, reasoningFromMessage);
     processDetails = filterNoiseProcessDetails(processDetails);
@@ -3860,10 +4192,13 @@ function renderProcessDetails(messageId, processDetails, options) {
             if (!isProcessDetailsUserExpanded(messageId)) {
                 timeline.classList.remove('expanded');
             }
+            if (typeof window.updateProcessDetailsReturnLatestControl === 'function') {
+                window.updateProcessDetailsReturnLatestControl(timeline);
+            }
         }
         return;
     }
-    
+
     const prependAnchor = prependMode ? timeline.firstChild : null;
     const prependScrollBox = prependMode ? document.getElementById('chat-messages') : null;
     const prependScrollHeight = prependScrollBox ? prependScrollBox.scrollHeight : 0;
@@ -3873,8 +4208,8 @@ function renderProcessDetails(messageId, processDetails, options) {
     if (!appendMode && !prependMode) {
         timeline.innerHTML = '';
     }
-    
-    
+
+
     function processDetailAgentPrefix(d) {
         if (!d || d.einoAgent == null) return '';
         const s = String(d.einoAgent).trim();
@@ -3963,7 +4298,7 @@ function renderProcessDetails(messageId, processDetails, options) {
         const title = detail.message || '';
         const data = detail.data || {};
         const agPx = processDetailAgentPrefix(data);
-        
+
         let itemTitle = title;
         if (eventType === 'workflow_start') {
             const name = data.workflowName || data.workflowId || '';
@@ -4052,8 +4387,10 @@ function renderProcessDetails(messageId, processDetails, options) {
                 : { kind: (data.success !== false ? 'success' : 'error'), isError: data.success === false };
             const backgroundRunning = displayState.kind === 'background_running';
             const success = !displayState.isError && !backgroundRunning;
-            const statusIcon = backgroundRunning ? '⏳' : (success ? '✅' : '❌');
-            const execText = backgroundRunning
+            const statusIcon = displayState.kind === 'blocked' ? '🛡' : (backgroundRunning ? '⏳' : (success ? '✅' : '❌'));
+            const execText = displayState.kind === 'blocked'
+                ? (typeof window.t === 'function' ? window.t('chat.toolExecBlocked', { name: escapeHtml(toolName) }) : '工具 ' + escapeHtml(toolName) + ' 已拦截')
+                : backgroundRunning
                 ? ((typeof window.getBackgroundRunningToolLabel === 'function' ? window.getBackgroundRunningToolLabel() : '后台执行中') + ': ' + escapeHtml(toolName))
                 : (success ? (typeof window.t === 'function' ? window.t('chat.toolExecComplete', { name: escapeHtml(toolName) }) : '工具 ' + escapeHtml(toolName) + ' 执行完成') : (typeof window.t === 'function' ? window.t('chat.toolExecFailed', { name: escapeHtml(toolName) }) : '工具 ' + escapeHtml(toolName) + ' 执行失败'));
             let execLine = statusIcon + ' ' + execText;
@@ -4094,7 +4431,7 @@ function renderProcessDetails(messageId, processDetails, options) {
                 ? window.t('chat.userInterruptContinueTitle')
                 : '⏸️ 用户中断并继续';
         }
-        
+
         if (eventType === 'hitl_interrupt' || eventType === 'hitl_audit_agent_started' ||
             eventType === 'hitl_audit_agent' || eventType === 'hitl_resumed' || eventType === 'hitl_rejected') {
             const hitlTarget = typeof findToolCallItemForHitl === 'function'
@@ -4117,11 +4454,12 @@ function renderProcessDetails(messageId, processDetails, options) {
             }
         }
 
+        const processDetailId = detail.id || data.processDetailId || '';
         const timelineOpts = {
             title: itemTitle,
             message: detail.message || '',
             data: data,
-            processDetailId: detail.id || '',
+            processDetailId: processDetailId,
             createdAt: detail.createdAt
         };
         if (eventType === 'tool_call' && data._mergedResult) {
@@ -4133,7 +4471,7 @@ function renderProcessDetails(messageId, processDetails, options) {
                 }
             }
         }
-        if (!timelineOpts.toolStatus && eventType === 'tool_call' && detail.id && toolStatusByProcessDetailId.has(String(detail.id))) {
+        if (eventType === 'tool_call' && detail.id && toolStatusByProcessDetailId.has(String(detail.id))) {
             timelineOpts.toolStatus = toolStatusByProcessDetailId.get(String(detail.id));
         }
         const itemId = addTimelineItem(timeline, eventType, timelineOpts);
@@ -4204,10 +4542,10 @@ function finishProcessDetailsRender(messageElement, processDetails, isLazyNotLoa
         timeline.appendChild(lazyHint);
         bindProcessDetailsLazyHint(lazyHint, messageElement.id);
     }
-    
+
     const hasPendingHitlInDetails = processDetails.some(d => d && d.eventType === 'hitl_interrupt');
     const hasPendingWorkflowHitl = processDetails.some(d => d && d.eventType === 'workflow_hitl_waiting');
-    const hasErrorOrCancelled = processDetails.some(d => 
+    const hasErrorOrCancelled = processDetails.some(d =>
         d.eventType === 'error' || d.eventType === 'cancelled'
     );
     const userExpanded = isProcessDetailsUserExpanded(messageElement.id);
@@ -4223,6 +4561,12 @@ function finishProcessDetailsRender(messageElement, processDetails, isLazyNotLoa
         if (convId && typeof window.restoreWorkflowHitlInlineForConversation === 'function') {
             window.restoreWorkflowHitlInlineForConversation(convId);
         }
+    }
+    if (typeof window.ensureProcessDetailsReturnLatestControl === 'function') {
+        window.ensureProcessDetailsReturnLatestControl(timeline);
+    }
+    if (typeof window.updateProcessDetailsReturnLatestControl === 'function') {
+        window.updateProcessDetailsReturnLatestControl(timeline);
     }
 }
 
@@ -4586,6 +4930,134 @@ function formatAssistantTurnDuration(durationMs) {
         : seconds + ' 秒';
 }
 
+function assistantTurnUsageNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+function normalizeAssistantTurnTokenUsage(data) {
+    const source = data && typeof data === 'object' ? data : {};
+    const usage = {
+        modelCalls: assistantTurnUsageNumber(source.modelCalls),
+        promptTokens: assistantTurnUsageNumber(source.promptTokens),
+        completionTokens: assistantTurnUsageNumber(source.completionTokens),
+        totalTokens: assistantTurnUsageNumber(source.totalTokens),
+        cachedTokens: assistantTurnUsageNumber(source.cachedTokens),
+        reasoningTokens: assistantTurnUsageNumber(source.reasoningTokens),
+        model: source.model != null ? String(source.model).trim() : ''
+    };
+    if (usage.totalTokens <= 0 && (usage.promptTokens > 0 || usage.completionTokens > 0)) {
+        usage.totalTokens = usage.promptTokens + usage.completionTokens;
+    }
+    return usage.totalTokens > 0 ? usage : null;
+}
+
+function mergeAssistantTurnTokenUsage(target, usage) {
+    if (!usage) return target || null;
+    const out = target || {
+        modelCalls: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        model: ''
+    };
+    out.modelCalls += usage.modelCalls || 0;
+    out.promptTokens += usage.promptTokens || 0;
+    out.completionTokens += usage.completionTokens || 0;
+    out.totalTokens += usage.totalTokens || 0;
+    out.cachedTokens += usage.cachedTokens || 0;
+    out.reasoningTokens += usage.reasoningTokens || 0;
+    if (!out.model && usage.model) out.model = usage.model;
+    return out.totalTokens > 0 ? out : null;
+}
+
+function extractAssistantTurnTokenUsage(processDetails) {
+    if (!Array.isArray(processDetails)) return null;
+    let total = null;
+    processDetails.forEach((detail) => {
+        if (!detail || String(detail.eventType || '').trim() !== 'eino_usage_summary') return;
+        const usage = normalizeAssistantTurnTokenUsage(detail.data);
+        total = mergeAssistantTurnTokenUsage(total, usage);
+    });
+    return total;
+}
+
+function setAssistantTurnTokenUsage(messageElementOrId, usage) {
+    const messageElement = typeof messageElementOrId === 'string'
+        ? document.getElementById(messageElementOrId)
+        : messageElementOrId;
+    if (!messageElement || !messageElement.dataset) return;
+    const normalized = normalizeAssistantTurnTokenUsage(usage);
+    if (!normalized) {
+        delete messageElement.dataset.turnModelCalls;
+        delete messageElement.dataset.turnPromptTokens;
+        delete messageElement.dataset.turnCompletionTokens;
+        delete messageElement.dataset.turnTotalTokens;
+        delete messageElement.dataset.turnCachedTokens;
+        delete messageElement.dataset.turnReasoningTokens;
+        delete messageElement.dataset.turnModel;
+        syncAssistantTurnSummary(messageElement);
+        return;
+    }
+    messageElement.dataset.turnModelCalls = String(normalized.modelCalls || 0);
+    messageElement.dataset.turnPromptTokens = String(normalized.promptTokens || 0);
+    messageElement.dataset.turnCompletionTokens = String(normalized.completionTokens || 0);
+    messageElement.dataset.turnTotalTokens = String(normalized.totalTokens || 0);
+    messageElement.dataset.turnCachedTokens = String(normalized.cachedTokens || 0);
+    messageElement.dataset.turnReasoningTokens = String(normalized.reasoningTokens || 0);
+    if (normalized.model) {
+        messageElement.dataset.turnModel = normalized.model;
+    } else {
+        delete messageElement.dataset.turnModel;
+    }
+    syncAssistantTurnSummary(messageElement);
+}
+
+function getAssistantTurnTokenUsage(messageElement) {
+    if (!messageElement || !messageElement.dataset) return null;
+    return normalizeAssistantTurnTokenUsage({
+        modelCalls: messageElement.dataset.turnModelCalls,
+        promptTokens: messageElement.dataset.turnPromptTokens,
+        completionTokens: messageElement.dataset.turnCompletionTokens,
+        totalTokens: messageElement.dataset.turnTotalTokens,
+        cachedTokens: messageElement.dataset.turnCachedTokens,
+        reasoningTokens: messageElement.dataset.turnReasoningTokens,
+        model: messageElement.dataset.turnModel
+    });
+}
+
+function formatAssistantTurnTokenCount(value) {
+    const n = assistantTurnUsageNumber(value);
+    if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(n >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'K';
+    return String(n);
+}
+
+function formatAssistantTurnTokenUsageLabel(usage) {
+    const tokens = formatAssistantTurnTokenCount(usage && usage.totalTokens);
+    return typeof window.t === 'function'
+        ? window.t('chat.turnTokenUsageLabel', { tokens: tokens })
+        : tokens + ' tokens';
+}
+
+function formatAssistantTurnTokenUsageTitle(usage) {
+    const safeUsage = usage || {};
+    const values = {
+        total: formatAssistantTurnTokenCount(safeUsage.totalTokens),
+        prompt: formatAssistantTurnTokenCount(safeUsage.promptTokens),
+        completion: formatAssistantTurnTokenCount(safeUsage.completionTokens),
+        cached: formatAssistantTurnTokenCount(safeUsage.cachedTokens),
+        reasoning: formatAssistantTurnTokenCount(safeUsage.reasoningTokens),
+        calls: formatAssistantTurnTokenCount(safeUsage.modelCalls),
+        model: safeUsage.model || ''
+    };
+    return typeof window.t === 'function'
+        ? window.t('chat.turnTokenUsageTitle', values)
+        : 'Token usage: ' + values.total + ' (input ' + values.prompt + ', output ' + values.completion + ')';
+}
+
 function assistantTurnTimestamp(value) {
     if (value == null || value === '') return NaN;
     const n = new Date(value).getTime();
@@ -4684,6 +5156,12 @@ function syncAssistantTurnSummary(messageElementOrId) {
             : 0;
     }
     const duration = formatAssistantTurnDuration(durationMs);
+    const tokenUsage = getAssistantTurnTokenUsage(messageElement);
+    const tokenUsageHtml = tokenUsage
+        ? '<span class="turn-process-token-chip" title="' + escapeHtml(formatAssistantTurnTokenUsageTitle(tokenUsage)) + '">' +
+            escapeHtml(formatAssistantTurnTokenUsageLabel(tokenUsage)) +
+          '</span>'
+        : '';
     let text;
     if (status === 'running') {
         text = typeof window.t === 'function' ? window.t('chat.turnElapsedRunning', { duration: duration }) : '已处理 ' + duration;
@@ -4700,6 +5178,7 @@ function syncAssistantTurnSummary(messageElementOrId) {
         <span class="turn-process-leading">
             <span class="turn-process-status-dot${status === 'running' ? ' is-running' : ''}" aria-hidden="true"></span>
             <span class="turn-process-summary-text">${escapeHtml(text)}</span>
+            ${tokenUsageHtml}
         </span>
         <svg class="turn-process-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M7.5 5.5L12 10l-4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
     `;
@@ -4711,8 +5190,10 @@ function syncAssistantTurnSummary(messageElementOrId) {
 }
 
 window.setAssistantTurnTiming = setAssistantTurnTiming;
+window.setAssistantTurnTokenUsage = setAssistantTurnTokenUsage;
 window.syncAssistantTurnSummary = syncAssistantTurnSummary;
 window.formatAssistantTurnDuration = formatAssistantTurnDuration;
+window.extractAssistantTurnTokenUsage = extractAssistantTurnTokenUsage;
 
 /** 渗透测试区：工具栏（展开详情 | N次工具执行）+ 独立工具列表 + 迭代时间线 */
 function ensureMcpCallSectionChrome(messageElement, messageId) {
@@ -4952,7 +5433,7 @@ function normalizeToolExecutionSummary(raw) {
     if (raw && typeof raw === 'object') {
         return {
             toolName: raw.toolName || raw.name || '',
-            status: raw.status || ''
+            status: typeof window.getToolExecutionDisplayStatus === 'function' ? window.getToolExecutionDisplayStatus(raw) : (raw.status || '')
         };
     }
     return { toolName: '', status: '' };
@@ -4964,6 +5445,7 @@ function getToolExecutionStatusLabel(status) {
         const keyMap = {
             completed: 'mcpMonitor.statusSuccess',
             failed: 'mcpMonitor.statusFailed',
+            blocked: 'mcpMonitor.statusBlocked',
             running: 'mcpMonitor.statusRunning',
             cancelled: 'mcpMonitor.statusCancelled',
             pending: 'mcpMonitor.statusPending',
@@ -4978,6 +5460,7 @@ function getToolExecutionStatusLabel(status) {
     const fallback = {
         completed: '成功',
         failed: '失败',
+        blocked: '已拦截',
         running: '运行中',
         cancelled: '已取消',
         pending: '等待中',
@@ -5057,7 +5540,8 @@ function formatMCPResultJsonForDisplay(result) {
     if (!result) return '{}';
     const payload = {
         content: result.content,
-        isError: !!result.isError
+        isError: !!result.isError,
+        ...(result.blocked === true ? { blocked: true } : {})
     };
     return JSON.stringify(payload, null, 2);
 }
@@ -5105,12 +5589,13 @@ function renderMCPDetailModal(exec) {
     document.getElementById('detail-tool-name').textContent = exec.toolName || (typeof window.t === 'function' ? window.t('mcpDetailModal.unknown') : 'Unknown');
     document.getElementById('detail-execution-id').textContent = exec.id || 'N/A';
     const statusEl = document.getElementById('detail-status');
-    const normalizedStatus = (exec.status || 'unknown').toLowerCase();
-    statusEl.textContent = getStatusText(exec.status);
+    const normalizedStatus = typeof window.getToolExecutionDisplayStatus === 'function' ? window.getToolExecutionDisplayStatus(exec) : (exec.status || 'unknown').toLowerCase();
+    const blocked = normalizedStatus === 'blocked';
+    statusEl.textContent = getStatusText(normalizedStatus);
     const statusClass = normalizedStatus === 'background_running' ? 'running' : normalizedStatus;
     statusEl.className = `status-chip status-${statusClass}`;
     try {
-        statusEl.dataset.detailStatus = (exec.status || '') + '';
+        statusEl.dataset.detailStatus = normalizedStatus;
     } catch (e) { /* ignore */ }
     const detailTimeLocale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
     const detailTimeEl = document.getElementById('detail-time');
@@ -5145,12 +5630,26 @@ function renderMCPDetailModal(exec) {
         errorElement.textContent = '';
     }
     setMCPResultDetailTabs('raw', false);
+    const resultTabLabel = document.querySelector('#detail-result-tab-success [data-i18n]');
+    if (resultTabLabel) {
+        const key = blocked ? 'mcpDetailModal.blockReason' : 'mcpDetailModal.correctInfo';
+        resultTabLabel.dataset.i18n = key;
+        resultTabLabel.textContent = typeof window.t === 'function' ? window.t(key) : (blocked ? '拦截原因' : '正确信息');
+    }
 
     if (exec.result) {
         const agentVisibleText = formatMCPDetailText(extractMCPResultText(exec.result));
         const emptyText = typeof window.t === 'function' ? window.t('mcpDetailModal.execSuccessNoContent') : '执行成功，未返回可展示的文本内容。';
 
-        if (exec.result.isError) {
+        if (blocked) {
+            responseElement.className = 'code-block blocked';
+            responseElement.textContent = formatMCPResultJsonForDisplay(exec.result);
+            if (successElement) {
+                successElement.className = 'code-block blocked';
+                successElement.textContent = agentVisibleText || exec.error || getStatusText('blocked');
+            }
+            setMCPResultDetailTabs('success', true);
+        } else if (exec.result.isError) {
             responseElement.className = 'code-block error';
             responseElement.textContent = formatMCPResultJsonForDisplay(exec.result);
             if (successElement) {
@@ -5410,6 +5909,11 @@ async function startNewConversation(options = {}) {
     const requestedProjectId = hasExplicitProjectId
         ? String(options.projectId || '').trim()
         : String(inheritedProjectId || '').trim();
+    markChatConversationNavigation('', true);
+    if (typeof window.cancelScheduledChatConversationFromHash === 'function') {
+        window.cancelScheduledChatConversationFromHash();
+    }
+    clearChatConversationHash();
     cancelPendingConversationLoad();
     detachLiveChatStreamForNavigation('', true);
     if (typeof window.cancelRunningTaskEventStream === 'function') {
@@ -5418,24 +5922,13 @@ async function startNewConversation(options = {}) {
     if (typeof window.clearChatHitlApprovalDock === 'function') {
         window.clearChatHitlApprovalDock();
     }
-    // 如果当前在分组详情页面，先退出分组详情
-    if (currentGroupId) {
-        const groupDetailPage = document.getElementById('group-detail-page');
-        const chatContainer = document.querySelector('.chat-container');
-        if (groupDetailPage) groupDetailPage.style.display = 'none';
-        if (chatContainer) chatContainer.style.display = 'flex';
-        currentGroupId = null;
-        // 刷新对话列表
-        loadConversationsWithGroups();
-    }
-    
     currentConversationId = null;
     window._loadedConversationProjectId = '';
     try {
         window.currentConversationId = '';
     } catch (e) { /* ignore */ }
+    window.dispatchEvent(new CustomEvent('conversation-changed', { detail: { conversationId: '' } }));
     updateChatPrimaryActionState();
-    currentConversationGroupId = null; // 新对话不属于任何分组
     // 顶部“新任务”继承当前文件夹；文件夹内的“+”仍可显式指定（包括无项目）。
     if (typeof setActiveProjectId === 'function') setActiveProjectId(requestedProjectId);
     if (typeof refreshChatProjectSelector === 'function') {
@@ -5446,10 +5939,8 @@ async function startNewConversation(options = {}) {
     renderChatWelcomeEmptyState();
     addAttackChainButton(null);
     updateActiveConversation();
-    // 刷新分组列表，清除分组高亮
-    await loadGroups();
     // 刷新对话列表，确保显示最新的历史对话
-    loadConversationsWithGroups();
+    loadConversations();
     // 清除防抖定时器，防止恢复草稿时触发保存
     if (draftSaveTimer) {
         clearTimeout(draftSaveTimer);
@@ -5463,19 +5954,7 @@ async function startNewConversation(options = {}) {
         chatInput.value = '';
         adjustTextareaHeight(chatInput);
     }
-    // 把当前侧栏人机协同选项写入草稿与「最近应用」记忆，避免刷新时被旧草稿里的「关闭」覆盖
-    try {
-        if (typeof readHitlConfigFromForm === 'function' && typeof saveHitlConfigForConversation === 'function') {
-            const snap = readHitlConfigFromForm();
-            saveHitlConfigForConversation('', snap, { syncGlobalLast: true });
-        }
-    } catch (e) { /* ignore */ }
     refreshHitlConfigByCurrentConversation();
-}
-
-// 与 loadConversationsWithGroups 合并实现，避免并发加载时重复追加列表项
-async function loadConversations(searchQuery = '') {
-    return loadConversationsWithGroups(searchQuery);
 }
 
 function createConversationListItem(conversation) {
@@ -5519,7 +5998,7 @@ function createConversationListItem(conversation) {
     deleteBtn.className = 'conversation-delete-btn';
     deleteBtn.innerHTML = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14zM10 11v6M14 11v6" 
+            <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14zM10 11v6M14 11v6"
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
     `;
@@ -5533,7 +6012,8 @@ function createConversationListItem(conversation) {
     item.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        loadConversation(conversation.id);
+        const targetConversationId = String(item.dataset.conversationId || '').trim();
+        if (targetConversationId) loadConversation(targetConversationId);
     };
     return item;
 }
@@ -5547,10 +6027,10 @@ function handleConversationSearch(query) {
     if (conversationSearchTimer) {
         clearTimeout(conversationSearchTimer);
     }
-    
+
     const searchInput = document.getElementById('conversation-search-input');
     const clearBtn = document.getElementById('conversation-search-clear');
-    
+
     if (clearBtn) {
         if (query && query.trim()) {
             clearBtn.style.display = 'block';
@@ -5558,7 +6038,7 @@ function handleConversationSearch(query) {
             clearBtn.style.display = 'none';
         }
     }
-    
+
     conversationSearchTimer = setTimeout(() => {
         loadConversations(query);
     }, 300); // 300ms防抖延迟
@@ -5568,14 +6048,14 @@ function handleConversationSearch(query) {
 function clearConversationSearch() {
     const searchInput = document.getElementById('conversation-search-input');
     const clearBtn = document.getElementById('conversation-search-clear');
-    
+
     if (searchInput) {
         searchInput.value = '';
     }
     if (clearBtn) {
         clearBtn.style.display = 'none';
     }
-    
+
     commitConversationsPage(1, { bumpNavigateGen: true });
     conversationsSearchQuery = '';
     loadConversations('');
@@ -5848,17 +6328,68 @@ async function prefetchLastAssistantProcessDetails() {
     }
 }
 
+async function hydrateConversationTokenUsage(conversationId, expectedSeq, signal) {
+    const id = String(conversationId || '').trim();
+    if (!id || typeof apiFetch !== 'function' || typeof window.setAssistantTurnTokenUsage !== 'function') return;
+    if (signal && signal.aborted) return;
+    const params = new URLSearchParams();
+    params.set('since', '1970-01-01');
+    params.set('limit', '500');
+    const res = await apiFetch(
+        '/api/conversations/' + encodeURIComponent(id) + '/token-usage?' + params.toString(),
+        signal ? { signal: signal } : undefined
+    );
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || (signal && signal.aborted)) return;
+    if (expectedSeq != null && expectedSeq !== loadConversationRequestSeq) return;
+    if (currentConversationId !== id) return;
+    const rows = Array.isArray(payload && payload.recent) ? payload.recent : [];
+    if (rows.length === 0) return;
+    const byMessage = new Map();
+    rows.forEach((row) => {
+        const messageId = row && row.messageId != null ? String(row.messageId).trim() : '';
+        if (!messageId) return;
+        const usage = normalizeAssistantTurnTokenUsage(row);
+        if (!usage) return;
+        byMessage.set(messageId, mergeAssistantTurnTokenUsage(byMessage.get(messageId) || null, usage));
+    });
+    if (byMessage.size === 0) return;
+    document.querySelectorAll('#chat-messages .message.assistant[data-backend-message-id]').forEach((messageElement) => {
+        const backendMessageId = messageElement && messageElement.dataset
+            ? String(messageElement.dataset.backendMessageId || '').trim()
+            : '';
+        const usage = backendMessageId ? byMessage.get(backendMessageId) : null;
+        if (usage) {
+            window.setAssistantTurnTokenUsage(messageElement, usage);
+        }
+    });
+}
+
 async function loadConversation(conversationId) {
+    conversationId = String(conversationId || '').trim();
+    if (!conversationId) return;
     // Keep the visible conversation addressable across a full page refresh.
     // Sidebar/project entries call loadConversation directly (rather than the
     // router helper), so without this synchronization #chat loses the active
     // conversation and reload falls back to the welcome screen instead of
     // reconnecting the running task event stream.
+    markChatConversationNavigation(conversationId);
+    if (typeof window.cancelScheduledChatConversationFromHash === 'function') {
+        window.cancelScheduledChatConversationFromHash();
+    }
     syncChatConversationHash(conversationId);
     const seq = ++loadConversationRequestSeq;
     const previousConversationId = currentConversationId;
     cancelPendingConversationLoad();
     detachLiveChatStreamForNavigation(conversationId);
+    // 用户单击即代表新的可见会话。必须在任何网络等待之前提交该选择，
+    // 否则每 2 秒的活跃任务刷新仍会把旧会话识别为可见，并排队重载旧补流，
+    // 反过来取消这次切换。
+    currentConversationId = conversationId;
+    try {
+        window.currentConversationId = conversationId;
+    } catch (e) { /* ignore */ }
+    loadConversationPendingId = conversationId;
     const conversationLoadController = new AbortController();
     loadConversationAbortController = conversationLoadController;
     if (typeof window.selectChatProjectConversationItem === 'function') {
@@ -5889,6 +6420,14 @@ async function loadConversation(conversationId) {
             return;
         }
         if (response && !response.ok) {
+            if (seq === loadConversationRequestSeq) {
+                currentConversationId = previousConversationId;
+                try {
+                    window.currentConversationId = previousConversationId || '';
+                } catch (e) { /* ignore */ }
+                if (previousConversationId) syncChatConversationHash(previousConversationId);
+                else clearChatConversationHash();
+            }
             showChatToast('加载对话失败: ' + (conversation.error || '未知错误'), 'error');
             return;
         }
@@ -5898,42 +6437,7 @@ async function loadConversation(conversationId) {
         if (seq !== loadConversationRequestSeq) {
             return;
         }
-        
-        // 如果当前在分组详情页面，切换到对话界面
-        // 退出分组详情模式，显示所有最近对话，提供更好的用户体验
-        if (currentGroupId) {
-            const sidebar = document.querySelector('.conversation-sidebar');
-            const groupDetailPage = document.getElementById('group-detail-page');
-            const chatContainer = document.querySelector('.chat-container');
-            
-            // 确保侧边栏始终可见
-            if (sidebar) sidebar.style.display = 'flex';
-            // 隐藏分组详情页，显示对话界面
-            if (groupDetailPage) groupDetailPage.style.display = 'none';
-            if (chatContainer) chatContainer.style.display = 'flex';
-            
-            // 退出分组详情模式，这样最近对话列表会显示所有对话
-            // 用户可以在侧边栏看到所有对话，方便切换
-            const previousGroupId = currentGroupId;
-            currentGroupId = null;
-            
-            // 刷新最近对话列表，显示所有对话（包括分组中的）
-            loadConversationsWithGroups();
-        }
-        
-        // 获取当前对话所属的分组ID（用于高亮显示）
-        // 确保分组映射已加载（使用缓存避免重复请求）
-        if (Object.keys(conversationGroupMappingCache).length === 0) {
-            await loadConversationGroupMapping();
-        }
-        if (seq !== loadConversationRequestSeq) {
-            return;
-        }
-        currentConversationGroupId = conversationGroupMappingCache[conversationId] || null;
 
-        // 异步刷新分组列表高亮状态（不阻塞消息渲染）
-        loadGroups();
-        
         // 更新当前对话ID
         currentConversationId = conversationId;
         window._loadedConversationProjectId = conversation.projectId || conversation.project_id || '';
@@ -5945,6 +6449,7 @@ async function loadConversation(conversationId) {
         try {
             window.currentConversationId = conversationId;
         } catch (e) { /* ignore */ }
+        window.dispatchEvent(new CustomEvent('conversation-changed', { detail: { conversationId: conversationId } }));
         updateChatPrimaryActionState();
         if (typeof refreshChatProjectSelector === 'function') {
             refreshChatProjectSelector({ reloadFolders: false, renderFolders: false });
@@ -5957,9 +6462,14 @@ async function loadConversation(conversationId) {
                 }
             }).catch(() => {})
             : Promise.resolve();
-        void hitlSyncPromise;
+        hitlConfigSyncConversationId = conversationId;
+        hitlConfigSyncPromise = Promise.resolve(hitlSyncPromise);
+        await hitlConfigSyncPromise;
+        if (seq !== loadConversationRequestSeq || currentConversationId !== conversationId) {
+            return;
+        }
         updateActiveConversation();
-        
+
         // 如果攻击链模态框打开且显示的不是当前对话，关闭它
         const attackChainModal = document.getElementById('attack-chain-modal');
         if (attackChainModal && isAppModalOpen('attack-chain-modal')) {
@@ -5967,14 +6477,14 @@ async function loadConversation(conversationId) {
                 closeAttackChainModal();
             }
         }
-        
+
         // 清空消息区域
         const messagesDiv = document.getElementById('chat-messages');
         if (seq !== loadConversationRequestSeq) {
             return;
         }
         messagesDiv.innerHTML = '';
-        
+
         // 检查对话中是否有最近的消息，如果有，清除草稿（避免恢复已发送的消息）
         let hasRecentUserMessage = false;
         if (conversation.messages && conversation.messages.length > 0) {
@@ -5998,7 +6508,7 @@ async function loadConversation(conversationId) {
                 adjustTextareaHeight(chatInput);
             }
         }
-        
+
         // 加载消息 — 分批渲染避免长时间阻塞主线程
         if (conversation.messages && conversation.messages.length > 0) {
             const FIRST_BATCH = 20;  // 首批同步渲染（用户可见区域）
@@ -6122,6 +6632,11 @@ async function loadConversation(conversationId) {
             if (seq !== loadConversationRequestSeq) {
                 return;
             }
+            hydrateConversationTokenUsage(conversationId, seq, conversationLoadController.signal).catch((e) => {
+                if (!e || e.name !== 'AbortError') {
+                    console.warn('hydrateConversationTokenUsage failed', e);
+                }
+            });
             if (currentConversationId === conversationId && typeof window.restoreHitlInlineForConversation === 'function') {
                 await window.restoreHitlInlineForConversation(conversationId);
             }
@@ -6169,8 +6684,16 @@ async function loadConversation(conversationId) {
         }
     } catch (error) {
         if (error && error.name === 'AbortError') return;
-        if (seq === loadConversationRequestSeq && typeof window.selectChatProjectConversationItem === 'function') {
-            window.selectChatProjectConversationItem(previousConversationId);
+        if (seq === loadConversationRequestSeq) {
+            currentConversationId = previousConversationId;
+            try {
+                window.currentConversationId = previousConversationId || '';
+            } catch (e) { /* ignore */ }
+            if (previousConversationId) syncChatConversationHash(previousConversationId);
+            else clearChatConversationHash();
+            if (typeof window.selectChatProjectConversationItem === 'function') {
+                window.selectChatProjectConversationItem(previousConversationId);
+            }
         }
         console.error('加载对话失败:', error);
         showChatToast('加载对话失败: ' + (error && error.message ? error.message : String(error)), 'error');
@@ -6180,6 +6703,9 @@ async function loadConversation(conversationId) {
         }
         if (loadConversationAbortController === conversationLoadController) {
             loadConversationAbortController = null;
+        }
+        if (seq === loadConversationRequestSeq && loadConversationPendingId === conversationId) {
+            loadConversationPendingId = '';
         }
     }
 }
@@ -6237,9 +6763,7 @@ async function deleteConversationTurnFromUI(anchorBackendMessageId) {
         }
         invalidateConversationLiteCache(currentConversationId);
         await loadConversation(currentConversationId);
-        if (typeof loadConversationsWithGroups === 'function') {
-            loadConversationsWithGroups();
-        } else if (typeof loadConversations === 'function') {
+        if (typeof loadConversations === 'function') {
             loadConversations();
         }
     } catch (error) {
@@ -6257,17 +6781,17 @@ async function deleteConversation(conversationId, skipConfirm = false) {
             return;
         }
     }
-    
+
     try {
         const response = await apiFetch(`/api/conversations/${conversationId}`, {
             method: 'DELETE'
         });
-        
+
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || '删除失败');
         }
-        
+
         // 如果删除的是当前对话，清空对话界面
         if (conversationId === currentConversationId) {
             currentConversationId = null;
@@ -6278,28 +6802,17 @@ async function deleteConversation(conversationId, skipConfirm = false) {
             renderChatWelcomeEmptyState();
             addAttackChainButton(null);
         }
-        
-        // 更新缓存 - 立即删除，确保后续加载时能正确识别
-        delete conversationGroupMappingCache[conversationId];
+
         invalidateConversationLiteCache(conversationId);
-        // 同时从待保留映射中移除
-        delete pendingGroupMappings[conversationId];
 
         // 先同步所有侧栏的本地状态，再执行网络刷新。项目文件夹使用独立的
         // conversation cache；如果只刷新“最近对话”，删除项会一直残留到整页刷新。
         try {
             document.dispatchEvent(new CustomEvent('conversation-deleted', { detail: { conversationId } }));
         } catch (e) { /* ignore */ }
-        
-        // 如果当前在分组详情页面，重新加载分组对话
-        if (currentGroupId) {
-            await loadGroupConversations(currentGroupId);
-        }
-        
-        // 刷新对话列表（使用分组接口以与其他入口一致）
-        if (typeof loadConversationsWithGroups === 'function') {
-            loadConversationsWithGroups();
-        } else if (typeof loadConversations === 'function') {
+
+        // 刷新对话列表
+        if (typeof loadConversations === 'function') {
             loadConversations();
         }
 
@@ -6406,14 +6919,14 @@ async function showAttackChain(conversationId) {
             return;
         }
     }
-    
+
     currentAttackChainConversationId = conversationId;
     const modal = document.getElementById('attack-chain-modal');
     if (!modal) {
         console.error('攻击链模态框未找到');
         return;
     }
-    
+
     openAppModal('attack-chain-modal', { focus: false });
     updateAttackChainStats({ nodes: [], edges: [] });
 
@@ -6422,13 +6935,13 @@ async function showAttackChain(conversationId) {
     if (container) {
         container.innerHTML = '<div class="loading-spinner">' + (typeof window.t === 'function' ? window.t('chat.loading') : '加载中...') + '</div>';
     }
-    
+
     // 隐藏详情面板
     const detailsPanel = document.getElementById('attack-chain-details');
     if (detailsPanel) {
         detailsPanel.style.display = 'none';
     }
-    
+
     // 禁用重新生成按钮
     const regenerateBtn = document.querySelector('button[onclick="regenerateAttackChain()"]');
     if (regenerateBtn) {
@@ -6436,7 +6949,7 @@ async function showAttackChain(conversationId) {
         regenerateBtn.style.opacity = '0.5';
         regenerateBtn.style.cursor = 'not-allowed';
     }
-    
+
     // 加载攻击链数据
     await loadAttackChain(conversationId);
 }
@@ -6446,12 +6959,12 @@ async function loadAttackChain(conversationId) {
     if (isAttackChainLoading(conversationId)) {
         return; // 防止重复调用
     }
-    
+
     setAttackChainLoading(conversationId, true);
-    
+
     try {
         const response = await apiFetch(`/api/attack-chain/${conversationId}`);
-        
+
         if (!response.ok) {
             // 处理 409 Conflict（正在生成中）
             if (response.status === 409) {
@@ -6490,13 +7003,13 @@ async function loadAttackChain(conversationId) {
                 }
                 return; // 提前返回，不执行 finally 块中的 setAttackChainLoading(conversationId, false)
             }
-            
+
             const error = await response.json();
             throw new Error(error.error || '加载攻击链失败');
         }
-        
+
         const chainData = await response.json();
-        
+
         // 检查当前显示的对话ID是否匹配，防止串台
         if (currentAttackChainConversationId !== conversationId) {
             console.log('攻击链数据已返回，但当前显示的对话已切换，忽略此次渲染', {
@@ -6506,16 +7019,16 @@ async function loadAttackChain(conversationId) {
             setAttackChainLoading(conversationId, false);
             return;
         }
-        
+
         // 渲染攻击链
         renderAttackChain(chainData);
-        
+
         // 更新统计信息
         updateAttackChainStats(chainData);
-        
+
         // 成功加载后，重置加载状态
         setAttackChainLoading(conversationId, false);
-        
+
     } catch (error) {
         console.error('加载攻击链失败:', error);
         const container = document.getElementById('attack-chain-container');
@@ -6541,21 +7054,21 @@ function renderAttackChain(chainData) {
     if (!container) {
         return;
     }
-    
+
     // 清空容器
     container.innerHTML = '';
-    
+
     if (!chainData.nodes || chainData.nodes.length === 0) {
         container.innerHTML = '<div class="empty-message">' + (typeof window.t === 'function' ? window.t('chat.noAttackChainData') : '暂无攻击链数据') + '</div>';
         return;
     }
-    
+
     // 计算图的复杂度（用于动态调整布局和样式）
     const nodeCount = chainData.nodes.length;
     const edgeCount = chainData.edges.length;
     const isComplexGraph = nodeCount > 15 || edgeCount > 25;
     const isDarkTheme = document.documentElement.getAttribute('data-theme') === 'dark';
-    
+
     // 优化节点标签：智能截断和换行
     chainData.nodes.forEach(node => {
         if (node.label) {
@@ -6578,10 +7091,10 @@ function renderAttackChain(chainData) {
             }
         }
     });
-    
+
     // 准备Cytoscape数据
     const elements = [];
-    
+
     // 添加节点，并预计算样式信息（与导出保持一致的主题色）
     chainData.nodes.forEach(node => {
         const riskScore = node.risk_score || 0;
@@ -6722,10 +7235,10 @@ function renderAttackChain(chainData) {
             }
         });
     });
-    
+
     // 添加边（只添加源节点和目标节点都存在的边）
     const nodeIds = new Set(chainData.nodes.map(node => node.id));
-    
+
     // 保存有效的边用于ELK布局
     const validEdges = [];
     chainData.edges.forEach(edge => {
@@ -6751,7 +7264,7 @@ function renderAttackChain(chainData) {
             });
         }
     });
-    
+
     // 初始化Cytoscape - 现代卡片式节点设计（图标 + 文字 + 徽章）
     attackChainCytoscape = cytoscape({
         container: container,
@@ -6922,7 +7435,7 @@ function renderAttackChain(chainData) {
         minZoom: 0.2,
         maxZoom: 3
     });
-    
+
     // 使用ELK布局（高质量DAG布局，减少边交叉）
     let layoutOptions = {
         name: 'breadthfirst',
@@ -6930,7 +7443,7 @@ function renderAttackChain(chainData) {
         spacingFactor: isComplexGraph ? 3.0 : 2.5,
         padding: 40
     };
-    
+
     // 使用ELK.js进行布局计算
     // elk.bundled.js会暴露ELK对象，可以直接使用new ELK()
     let elkInstance = null;
@@ -6941,10 +7454,10 @@ function renderAttackChain(chainData) {
             console.warn('ELK初始化失败:', e);
         }
     }
-    
+
     if (elkInstance) {
         try {
-            
+
             // === 布局参数（始终使用 DOWN 纵向布局）===
             const isSmallGraph = chainData.nodes.length <= 8 && validEdges.length <= 12;
             // 同层节点间距（横向分散）
@@ -6994,7 +7507,7 @@ function renderAttackChain(chainData) {
                     targets: [edge.target]
                 }))
             };
-            
+
             // 使用ELK计算布局
             elkInstance.layout(elkGraph).then(laidOutGraph => {
                 // 应用ELK计算的布局到Cytoscape节点
@@ -7008,7 +7521,7 @@ function renderAttackChain(chainData) {
                             });
                         }
                     });
-                    
+
                     // 布局完成后，居中显示图
                     setTimeout(() => {
                         centerAttackChain();
@@ -7049,7 +7562,7 @@ function renderAttackChain(chainData) {
         });
         layout.run();
     }
-    
+
     // 居中攻击链的函数：始终让所有节点完整可见
     function centerAttackChain() {
         try {
@@ -7102,7 +7615,7 @@ function renderAttackChain(chainData) {
             console.warn('居中图表时出错:', error);
         }
     }
-    
+
     // 添加点击事件
     attackChainCytoscape.on('tap', 'node', function(evt) {
         const node = evt.target;
@@ -7158,12 +7671,12 @@ function getEdgeNodes(edge) {
     try {
         const source = edge.source();
         const target = edge.target();
-        
+
         // 检查源节点和目标节点是否存在
         if (!source || !target || source.length === 0 || target.length === 0) {
             return { source: null, target: null, valid: false };
         }
-        
+
         return { source: source, target: target, valid: true };
     } catch (error) {
         console.warn('获取边的节点时出错:', error, edge.id());
@@ -7176,7 +7689,7 @@ function filterAttackChainNodes(searchText) {
     if (!attackChainCytoscape || !window.attackChainOriginalData) {
         return;
     }
-    
+
     const searchLower = searchText.toLowerCase().trim();
     if (searchLower === '') {
         // 重置所有节点可见性
@@ -7186,7 +7699,7 @@ function filterAttackChainNodes(searchText) {
         attackChainCytoscape.nodes().style('border-width', 2);
         return;
     }
-    
+
     // 过滤节点
     attackChainCytoscape.nodes().forEach(node => {
         // 使用原始标签进行搜索，不包含类型标签
@@ -7194,7 +7707,7 @@ function filterAttackChainNodes(searchText) {
         const label = originalLabel.toLowerCase();
         const type = (node.data('type') || '').toLowerCase();
         const matches = label.includes(searchLower) || type.includes(searchLower);
-        
+
         if (matches) {
             node.style('display', 'element');
             // 高亮匹配的节点
@@ -7204,7 +7717,7 @@ function filterAttackChainNodes(searchText) {
             node.style('display', 'none');
         }
     });
-    
+
     // 隐藏没有可见源节点或目标节点的边
     attackChainCytoscape.edges().forEach(edge => {
         const { source, target, valid } = getEdgeNodes(edge);
@@ -7212,7 +7725,7 @@ function filterAttackChainNodes(searchText) {
             edge.style('display', 'none');
             return;
         }
-        
+
         const sourceVisible = source.style('display') !== 'none';
         const targetVisible = target.style('display') !== 'none';
         if (sourceVisible && targetVisible) {
@@ -7221,7 +7734,7 @@ function filterAttackChainNodes(searchText) {
             edge.style('display', 'none');
         }
     });
-    
+
     // 重新调整视图
     attackChainCytoscape.fit(undefined, 60);
 }
@@ -7231,7 +7744,7 @@ function filterAttackChainByType(type) {
     if (!attackChainCytoscape || !window.attackChainOriginalData) {
         return;
     }
-    
+
     if (type === 'all') {
         attackChainCytoscape.nodes().style('display', 'element');
         attackChainCytoscape.edges().style('display', 'element');
@@ -7239,7 +7752,7 @@ function filterAttackChainByType(type) {
         attackChainCytoscape.fit(undefined, 60);
         return;
     }
-    
+
     // 过滤节点
     attackChainCytoscape.nodes().forEach(node => {
         const nodeType = node.data('type') || '';
@@ -7249,7 +7762,7 @@ function filterAttackChainByType(type) {
             node.style('display', 'none');
         }
     });
-    
+
     // 隐藏没有可见源节点或目标节点的边
     attackChainCytoscape.edges().forEach(edge => {
         const { source, target, valid } = getEdgeNodes(edge);
@@ -7257,7 +7770,7 @@ function filterAttackChainByType(type) {
             edge.style('display', 'none');
             return;
         }
-        
+
         const sourceVisible = source.style('display') !== 'none';
         const targetVisible = target.style('display') !== 'none';
         if (sourceVisible && targetVisible) {
@@ -7266,7 +7779,7 @@ function filterAttackChainByType(type) {
             edge.style('display', 'none');
         }
     });
-    
+
     // 重新调整视图
     attackChainCytoscape.fit(undefined, 60);
 }
@@ -7276,7 +7789,7 @@ function filterAttackChainByRisk(riskLevel) {
     if (!attackChainCytoscape || !window.attackChainOriginalData) {
         return;
     }
-    
+
     if (riskLevel === 'all') {
         attackChainCytoscape.nodes().style('display', 'element');
         attackChainCytoscape.edges().style('display', 'element');
@@ -7284,7 +7797,7 @@ function filterAttackChainByRisk(riskLevel) {
         attackChainCytoscape.fit(undefined, 60);
         return;
     }
-    
+
     // 定义风险范围
     const riskRanges = {
         'high': [80, 100],
@@ -7292,9 +7805,9 @@ function filterAttackChainByRisk(riskLevel) {
         'medium': [40, 59],
         'low': [0, 39]
     };
-    
+
     const [minRisk, maxRisk] = riskRanges[riskLevel] || [0, 100];
-    
+
     // 过滤节点
     attackChainCytoscape.nodes().forEach(node => {
         const riskScore = node.data('riskScore') || 0;
@@ -7304,7 +7817,7 @@ function filterAttackChainByRisk(riskLevel) {
             node.style('display', 'none');
         }
     });
-    
+
     // 隐藏没有可见源节点或目标节点的边
     attackChainCytoscape.edges().forEach(edge => {
         const { source, target, valid } = getEdgeNodes(edge);
@@ -7312,7 +7825,7 @@ function filterAttackChainByRisk(riskLevel) {
             edge.style('display', 'none');
             return;
         }
-        
+
         const sourceVisible = source.style('display') !== 'none';
         const targetVisible = target.style('display') !== 'none';
         if (sourceVisible && targetVisible) {
@@ -7321,7 +7834,7 @@ function filterAttackChainByRisk(riskLevel) {
             edge.style('display', 'none');
         }
     });
-    
+
     // 重新调整视图
     attackChainCytoscape.fit(undefined, 60);
 }
@@ -7333,19 +7846,19 @@ function resetAttackChainFilters() {
     if (searchInput) {
         searchInput.value = '';
     }
-    
+
     // 重置类型筛选
     const typeFilter = document.getElementById('attack-chain-type-filter');
     if (typeFilter) {
         typeFilter.value = 'all';
     }
-    
+
     // 重置风险筛选
     const riskFilter = document.getElementById('attack-chain-risk-filter');
     if (riskFilter) {
         riskFilter.value = 'all';
     }
-    
+
     // 重置所有节点可见性
     if (attackChainCytoscape) {
         attackChainCytoscape.nodes().forEach(node => {
@@ -7361,7 +7874,7 @@ function resetAttackChainFilters() {
 function showNodeDetails(nodeData) {
     const detailsPanel = document.getElementById('attack-chain-details');
     const detailsContent = document.getElementById('attack-chain-details-content');
-    
+
     if (!detailsPanel || !detailsContent) {
         return;
     }
@@ -7377,7 +7890,7 @@ function showNodeDetails(nodeData) {
             detailsPanel.style.opacity = '1';
         });
     });
-    
+
     let html = `
         <div class="node-detail-item">
             <strong>节点ID:</strong> <code>${nodeData.id}</code>
@@ -7392,7 +7905,7 @@ function showNodeDetails(nodeData) {
             <strong>风险评分:</strong> ${nodeData.riskScore}/100
         </div>
     `;
-    
+
     // 显示action节点信息（工具执行 + AI分析）
     if (nodeData.type === 'action' && nodeData.metadata) {
         if (nodeData.metadata.tool_name) {
@@ -7434,7 +7947,7 @@ function showNodeDetails(nodeData) {
             `;
         }
     }
-    
+
     // 显示目标信息（如果是目标节点）
     if (nodeData.type === 'target' && nodeData.metadata && nodeData.metadata.target) {
         html += `
@@ -7443,7 +7956,7 @@ function showNodeDetails(nodeData) {
             </div>
         `;
     }
-    
+
     // 显示漏洞信息（如果是漏洞节点）
     if (nodeData.type === 'vulnerability' && nodeData.metadata) {
         if (nodeData.metadata.vulnerability_type) {
@@ -7475,7 +7988,7 @@ function showNodeDetails(nodeData) {
             `;
         }
     }
-    
+
     if (nodeData.toolExecutionId) {
         html += `
             <div class="node-detail-item">
@@ -7483,7 +7996,7 @@ function showNodeDetails(nodeData) {
             </div>
         `;
     }
-    
+
     // 详情占满 sidebar 后，内容区滚动由自身处理，重置到顶部
     if (detailsContent) {
         detailsContent.scrollTop = 0;
@@ -7574,16 +8087,16 @@ function closeNodeDetails() {
 // 关闭攻击链模态框
 function closeAttackChainModal() {
     closeAppModal('attack-chain-modal');
-    
+
     // 关闭节点详情
     closeNodeDetails();
-    
+
     // 清理Cytoscape实例
     if (attackChainCytoscape) {
         attackChainCytoscape.destroy();
         attackChainCytoscape = null;
     }
-    
+
     currentAttackChainConversationId = null;
 }
 
@@ -7611,22 +8124,22 @@ async function regenerateAttackChain() {
     if (!currentAttackChainConversationId) {
         return;
     }
-    
+
     // 防止重复点击（只检查当前对话的加载状态）
     if (isAttackChainLoading(currentAttackChainConversationId)) {
         console.log('攻击链正在生成中，请稍候...');
         return;
     }
-    
+
     // 保存请求时的对话ID，防止串台
     const savedConversationId = currentAttackChainConversationId;
     setAttackChainLoading(savedConversationId, true);
-    
+
     const container = document.getElementById('attack-chain-container');
     if (container) {
         container.innerHTML = '<div class="loading-spinner">重新生成中...</div>';
     }
-    
+
     // 禁用重新生成按钮
     const regenerateBtn = document.querySelector('button[onclick="regenerateAttackChain()"]');
     if (regenerateBtn) {
@@ -7634,13 +8147,13 @@ async function regenerateAttackChain() {
         regenerateBtn.style.opacity = '0.5';
         regenerateBtn.style.cursor = 'not-allowed';
     }
-    
+
     try {
         // 调用重新生成接口
         const response = await apiFetch(`/api/attack-chain/${savedConversationId}/regenerate`, {
             method: 'POST'
         });
-        
+
         if (!response.ok) {
             // 处理 409 Conflict（正在生成中）
             if (response.status === 409) {
@@ -7662,20 +8175,20 @@ async function regenerateAttackChain() {
                 // savedConversationId 已在函数开始处定义
                 setTimeout(() => {
                     // 检查当前显示的对话ID是否匹配，且仍在加载中
-                    if (currentAttackChainConversationId === savedConversationId && 
+                    if (currentAttackChainConversationId === savedConversationId &&
                         isAttackChainLoading(savedConversationId)) {
                         refreshAttackChain();
                     }
                 }, 5000);
                 return;
             }
-            
+
             const error = await response.json();
             throw new Error(error.error || '重新生成攻击链失败');
         }
-        
+
         const chainData = await response.json();
-        
+
         // 检查当前显示的对话ID是否匹配，防止串台
         if (currentAttackChainConversationId !== savedConversationId) {
             console.log('攻击链数据已返回，但当前显示的对话已切换，忽略此次渲染', {
@@ -7685,13 +8198,13 @@ async function regenerateAttackChain() {
             setAttackChainLoading(savedConversationId, false);
             return;
         }
-        
+
         // 渲染攻击链
         renderAttackChain(chainData);
-        
+
         // 更新统计信息
         updateAttackChainStats(chainData);
-        
+
     } catch (error) {
         console.error('重新生成攻击链失败:', error);
         if (container) {
@@ -7699,7 +8212,7 @@ async function regenerateAttackChain() {
         }
     } finally {
         setAttackChainLoading(savedConversationId, false);
-        
+
         // 恢复重新生成按钮
         if (regenerateBtn) {
             regenerateBtn.disabled = false;
@@ -8517,18 +9030,11 @@ function exportAttackChain(format) {
 }
 
 // ============================================
-// 对话分组和批量管理功能
+// 对话批量管理功能
 // ============================================
 
-// 分组数据管理（使用API）
-let currentGroupId = null; // 当前正在查看的分组详情页面
-let currentConversationGroupId = null; // 当前对话所属的分组ID（用于高亮显示）
 let contextMenuConversationId = null;
 let contextMenuConversationTitle = '';
-let contextMenuGroupId = null;
-let groupsCache = [];
-let conversationGroupMappingCache = {};
-let pendingGroupMappings = {}; // 待保留的分组映射（用于处理后端API延迟的情况）
 let conversationsListLoadSeq = 0; // 对话列表加载序号，避免并发请求导致重复渲染
 let conversationsListNavigateGen = 0; // 用户主动翻页代数，防止后台刷新覆盖翻页结果
 const CONVERSATIONS_PAGE_SIZE_KEY = 'cyberstrike.conversations_page_size';
@@ -8538,9 +9044,6 @@ const CONVERSATION_PROJECT_FILTER_NONE = '__none__';
 const CONVERSATION_PROJECT_FILTER_SELECT_ID = 'conversation-project-filter';
 const CONVERSATION_PROJECT_FILTER_CARET = '<svg class="conversation-project-filter-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const BATCH_PROJECT_FILTER_SELECT_ID = 'batch-project-filter';
-const BATCH_GROUP_FILTER_SELECT_ID = 'batch-move-group-select';
-const BATCH_GROUP_HEADER_FILTER_SELECT_ID = 'batch-group-filter';
-const BATCH_GROUP_NONE = '__none__';
 const projectFilterCustomSelectRegistry = {};
 let projectFilterCustomSelectDocBound = false;
 
@@ -8832,14 +9335,6 @@ function initSimpleCustomSelect(selectId) {
     syncSimpleCustomSelect(selectId);
 }
 
-function initBatchGroupCustomSelect() {
-    initSimpleCustomSelect(BATCH_GROUP_FILTER_SELECT_ID);
-}
-
-function initBatchGroupHeaderFilterCustomSelect() {
-    initSimpleCustomSelect(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
-}
-
 function initProjectFilterCustomSelect(selectId) {
     const select = document.getElementById(selectId);
     if (!select) return;
@@ -9010,17 +9505,13 @@ async function refreshConversationProjectFilter() {
 function onConversationProjectFilterChange(projectId) {
     setConversationProjectFilter(projectId || '');
     commitConversationsPage(1, { bumpNavigateGen: true });
-    loadConversationsWithGroups(conversationsSearchQuery);
+    loadConversations(conversationsSearchQuery);
 }
 
 function updateConversationSidebarFilterUI() {
-    const groupsSection = document.querySelector('.conversation-groups-section');
     const titleEl = document.querySelector('.recent-conversations-section .section-title');
     const filter = getConversationProjectFilter();
     const hasSearch = !!(conversationsSearchQuery && conversationsSearchQuery.trim());
-    if (groupsSection) {
-        groupsSection.hidden = !!filter || hasSearch;
-    }
     if (!titleEl) return;
     const tFn = typeof window.t === 'function' ? window.t.bind(window) : null;
     if (filter && filter !== CONVERSATION_PROJECT_FILTER_NONE) {
@@ -9045,7 +9536,7 @@ function updateConversationSidebarFilterUI() {
 }
 
 window.onConversationProjectBindingChanged = function onConversationProjectBindingChanged() {
-    loadConversationsWithGroups(conversationsSearchQuery);
+    loadConversations(conversationsSearchQuery);
 };
 
 function getConversationSortBy() {
@@ -9117,7 +9608,7 @@ function setConversationSortBy(sortBy) {
     updateConversationSortMenuUI();
     closeConversationSortMenu();
     commitConversationsPage(1, { bumpNavigateGen: true });
-    loadConversationsWithGroups(conversationsSearchQuery);
+    loadConversations(conversationsSearchQuery);
 }
 
 if (!window.__conversationSortMenuBound) {
@@ -9161,7 +9652,7 @@ function getConversationsTotalPages() {
 /**
  * 分页状态约定：
  * - conversationsPagination.page 仅在此处（用户操作 / reconcile 钳制 / clamp）写入
- * - loadConversationsWithGroups 只读页码，用 intentPage 或当前 page 计算 offset
+ * - loadConversations 只读页码，用 intentPage 或当前 page 计算 offset
  * - isStaleConversationListLoad 丢弃页码或 navigateGen 已变的在途请求
  */
 function commitConversationsPage(page, { bumpNavigateGen = false } = {}) {
@@ -9395,7 +9886,7 @@ function goConversationsPage(page) {
     const requestedPage = Math.max(1, parseInt(page, 10) || 1);
     const scrollToTop = requestedPage !== conversationsPagination.page;
     commitConversationsPage(requestedPage, { bumpNavigateGen: true });
-    loadConversationsWithGroups(conversationsSearchQuery, {
+    loadConversations(conversationsSearchQuery, {
         refreshMeta: false,
         scrollToTop,
         intentPage: requestedPage,
@@ -9413,108 +9904,14 @@ function changeConversationsPageSize() {
     } catch (e) { /* ignore */ }
     conversationsPagination.pageSize = newSize;
     commitConversationsPage(1, { bumpNavigateGen: true });
-    loadConversationsWithGroups(conversationsSearchQuery);
+    loadConversations(conversationsSearchQuery);
 }
 
 window.goConversationsPage = goConversationsPage;
 window.changeConversationsPageSize = changeConversationsPageSize;
 
-// 加载分组列表
-async function loadGroups() {
-    try {
-        const response = await apiFetch('/api/groups');
-        if (!response.ok) {
-            groupsCache = [];
-            return;
-        }
-        const data = await response.json();
-        // 确保groupsCache是有效数组
-        if (Array.isArray(data)) {
-            groupsCache = data;
-        } else {
-            // 如果返回的不是数组，使用空数组（不打印警告，因为可能后端返回了错误格式但我们要优雅处理）
-            groupsCache = [];
-        }
-
-        const groupsList = document.getElementById('conversation-groups-list');
-        if (!groupsList) return;
-
-        groupsList.innerHTML = '';
-
-        if (!Array.isArray(groupsCache) || groupsCache.length === 0) {
-            return;
-        }
-
-        // 对分组进行排序：置顶的分组在前（后端已经排序，这里只需要按顺序显示）
-        const sortedGroups = [...groupsCache];
-
-            sortedGroups.forEach(group => {
-            const groupItem = document.createElement('div');
-            groupItem.className = 'group-item';
-            // 高亮逻辑：
-            // 1. 如果当前在分组详情页面，只高亮当前分组（currentGroupId）
-            // 2. 如果不在分组详情页面，高亮当前对话所属的分组（currentConversationGroupId）
-            const shouldHighlight = currentGroupId 
-                ? (currentGroupId === group.id)
-                : (currentConversationGroupId === group.id);
-            if (shouldHighlight) {
-                groupItem.classList.add('active');
-            }
-            const isPinned = group.pinned || false;
-            if (isPinned) {
-                groupItem.classList.add('pinned');
-            }
-            groupItem.dataset.groupId = group.id;
-
-            const content = document.createElement('div');
-            content.className = 'group-item-content';
-
-            const icon = document.createElement('span');
-            icon.className = 'group-item-icon';
-            icon.textContent = group.icon || '📁';
-
-            const name = document.createElement('span');
-            name.className = 'group-item-name';
-            name.textContent = group.name;
-
-            content.appendChild(icon);
-            content.appendChild(name);
-
-            // 如果是置顶分组，添加图钉图标
-            if (isPinned) {
-                const pinIcon = document.createElement('span');
-                pinIcon.className = 'group-item-pinned';
-                pinIcon.innerHTML = '📌';
-                pinIcon.title = '已置顶';
-                name.appendChild(pinIcon);
-            }
-            groupItem.appendChild(content);
-
-            const menuBtn = document.createElement('button');
-            menuBtn.type = 'button';
-            menuBtn.className = 'group-item-menu';
-            menuBtn.innerHTML = '⋯';
-            menuBtn.title = typeof window.t === 'function' ? window.t('common.actions') : '操作';
-            menuBtn.setAttribute('aria-label', menuBtn.title);
-            menuBtn.onclick = (e) => {
-                e.stopPropagation();
-                showGroupContextMenu(e, group.id);
-            };
-            groupItem.appendChild(menuBtn);
-
-            groupItem.onclick = () => {
-                enterGroupDetail(group.id);
-            };
-
-            groupsList.appendChild(groupItem);
-        });
-    } catch (error) {
-        console.error('加载分组列表失败:', error);
-    }
-}
-
-// 加载对话列表（修改为支持分组和置顶）
-async function loadConversationsWithGroups(searchQuery = '', options = {}) {
+// 加载对话列表（支持置顶）
+async function loadConversations(searchQuery = '', options = {}) {
     const refreshMeta = options.refreshMeta !== false;
     const scrollToTop = options.scrollToTop === true;
     const intentPage = Number.isFinite(options.intentPage) ? options.intentPage : null;
@@ -9536,17 +9933,10 @@ async function loadConversationsWithGroups(searchQuery = '', options = {}) {
         }
         if (searchQuery && searchQuery.trim()) {
             convParams.set('search', searchQuery.trim());
-        } else if (!projectFilter) {
-            convParams.set('exclude_grouped', 'true');
         }
         updateConversationSidebarFilterUI();
         const url = `/api/conversations?${convParams}`;
-        const fetchTasks = [apiFetch(url)];
-        if (refreshMeta) {
-            fetchTasks.unshift(loadGroups(), loadConversationGroupMapping());
-        }
-        const results = await Promise.all(fetchTasks);
-        const response = results[results.length - 1];
+        const response = await apiFetch(url);
         if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
 
         const listContainer = document.getElementById('conversations-list');
@@ -9588,7 +9978,7 @@ async function loadConversationsWithGroups(searchQuery = '', options = {}) {
             if (intentPage != null) {
                 commitConversationsPage(pageCheck.clampedPage, { bumpNavigateGen: true });
             }
-            loadConversationsWithGroups(searchQuery, {
+            loadConversations(searchQuery, {
                 ...options,
                 intentPage: pageCheck.clampedPage,
                 scrollToTop: options.scrollToTop === true || activePage !== pageCheck.clampedPage,
@@ -9597,7 +9987,7 @@ async function loadConversationsWithGroups(searchQuery = '', options = {}) {
         }
         if (intentPage == null && clampConversationsPageToTotal()) {
             if (isStaleConversationListLoad(loadSeq, intentPage, navigateGenAtStart, activePage)) return;
-            loadConversationsWithGroups(searchQuery, options);
+            loadConversations(searchQuery, options);
             return;
         }
 
@@ -9612,11 +10002,6 @@ async function loadConversationsWithGroups(searchQuery = '', options = {}) {
             uniqueConversations.push(conv);
         });
 
-        const hasSearchQuery = searchQuery && searchQuery.trim();
-        const hasProjectFilter = !!getConversationProjectFilter();
-        // 与请求参数 exclude_grouped 一致：后端已排除分组内对话，勿再用 mapping 缓存二次过滤（易导致 2→1 等页被滤空）
-        const listUsesUngroupedApi = !hasSearchQuery && !hasProjectFilter;
-
         if (uniqueConversations.length === 0) {
             listContainer.innerHTML = emptyStateHtml;
             if (typeof window.applyTranslations === 'function') window.applyTranslations(listContainer);
@@ -9629,32 +10014,6 @@ async function loadConversationsWithGroups(searchQuery = '', options = {}) {
         const normalConvs = [];
 
         uniqueConversations.forEach(conv => {
-            // 如果有搜索关键词，显示所有匹配的对话（全局搜索，包括分组中的）
-            if (hasSearchQuery) {
-                // 搜索时显示所有匹配的对话，不管是否在分组中
-                if (conv.pinned) {
-                    pinnedConvs.push(conv);
-                } else {
-                    normalConvs.push(conv);
-                }
-                return;
-            }
-
-            // 按项目筛选时展示该项目下全部对话（含分组内）
-            if (hasProjectFilter) {
-                if (conv.pinned) {
-                    pinnedConvs.push(conv);
-                } else {
-                    normalConvs.push(conv);
-                }
-                return;
-            }
-
-            // 未走 exclude_grouped 接口时，才用 mapping 缓存过滤分组内对话
-            if (!listUsesUngroupedApi && conversationGroupMappingCache[conv.id]) {
-                return;
-            }
-
             if (conv.pinned) {
                 pinnedConvs.push(conv);
             } else {
@@ -9747,7 +10106,7 @@ async function loadConversationsWithGroups(searchQuery = '', options = {}) {
         listContainer.appendChild(fragment);
         updateActiveConversation();
         renderConversationsPagination(visibleCount);
-        
+
         // 翻页时回到列表顶部；后台刷新保留滚动位置
         if (sidebarContent) {
             requestAnimationFrame(() => {
@@ -9810,26 +10169,6 @@ function createConversationListItemWithMenu(conversation, isPinned) {
     time.textContent = conversation._timeText || formatConversationTimestamp(dateObj);
     contentWrapper.appendChild(time);
 
-    // 如果对话属于某个分组，显示分组标签
-    const groupId = conversationGroupMappingCache[conversation.id];
-    if (groupId) {
-        const group = groupsCache.find(g => g.id === groupId);
-        if (group) {
-            const groupTag = document.createElement('div');
-            groupTag.className = 'conversation-group-tag';
-            const groupTagIcon = document.createElement('span');
-            groupTagIcon.className = 'group-tag-icon';
-            groupTagIcon.textContent = group.icon || '📁';
-            const groupTagName = document.createElement('span');
-            groupTagName.className = 'group-tag-name';
-            groupTagName.textContent = group.name;
-            groupTag.appendChild(groupTagIcon);
-            groupTag.appendChild(groupTagName);
-            groupTag.title = `分组: ${group.name}`;
-            contentWrapper.appendChild(groupTag);
-        }
-    }
-
     item.appendChild(contentWrapper);
 
     const menuBtn = document.createElement('button');
@@ -9841,10 +10180,8 @@ function createConversationListItemWithMenu(conversation, isPinned) {
     item.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (currentGroupId) {
-            exitGroupDetail();
-        }
-        loadConversation(conversation.id);
+        const targetConversationId = String(item.dataset.conversationId || '').trim();
+        if (targetConversationId) loadConversation(targetConversationId);
     };
 
     return item;
@@ -9858,29 +10195,75 @@ function openConversationContextMenuForId(event, conversationId, conversationTit
     return showConversationContextMenu(event);
 }
 
+let downloadMarkdownSubmenuHideTimer = null;
+
+function clearDownloadMarkdownSubmenuHideTimeout() {
+    if (!downloadMarkdownSubmenuHideTimer) return;
+    clearTimeout(downloadMarkdownSubmenuHideTimer);
+    downloadMarkdownSubmenuHideTimer = null;
+}
+
+function hideDownloadMarkdownSubmenu() {
+    clearDownloadMarkdownSubmenuHideTimeout();
+    downloadMarkdownSubmenuHideTimer = setTimeout(() => {
+        const submenu = document.getElementById('download-markdown-submenu');
+        if (submenu) submenu.style.display = 'none';
+        downloadMarkdownSubmenuHideTimer = null;
+    }, 120);
+}
+
+function handleDownloadMarkdownSubmenuEnter() {
+    clearDownloadMarkdownSubmenuHideTimeout();
+    const submenu = document.getElementById('download-markdown-submenu');
+    if (submenu) submenu.style.display = 'block';
+}
+
+function handleDownloadMarkdownSubmenuLeave(event) {
+    const submenu = document.getElementById('download-markdown-submenu');
+    if (submenu && event?.relatedTarget && submenu.contains(event.relatedTarget)) return;
+    hideDownloadMarkdownSubmenu();
+}
+
+function updateConversationContextPinText(isPinned) {
+    const pinMenuText = document.getElementById('pin-conversation-menu-text');
+    if (!pinMenuText) return;
+    if (typeof window.t === 'function') {
+        pinMenuText.textContent = isPinned ? window.t('contextMenu.unpinConversation') : window.t('contextMenu.pinConversation');
+    } else {
+        pinMenuText.textContent = isPinned ? '取消置顶' : '置顶此对话';
+    }
+}
+
+async function refreshConversationContextPinText(convId) {
+    if (!convId) {
+        updateConversationContextPinText(false);
+        return;
+    }
+    try {
+        const response = await apiFetch(`/api/conversations/${convId}`);
+        if (!response.ok) return;
+        const conv = await response.json();
+        updateConversationContextPinText(!!conv.pinned);
+    } catch (error) {
+        console.error('获取对话置顶状态失败:', error);
+    }
+}
+
 // 显示对话上下文菜单
 async function showConversationContextMenu(event) {
     const menu = document.getElementById('conversation-context-menu');
     if (!menu) return;
 
-    // 先隐藏子菜单，确保每次打开菜单时子菜单都是关闭状态
-    const submenu = document.getElementById('move-to-group-submenu');
-    if (submenu) {
-        submenu.style.display = 'none';
-        submenuVisible = false;
-    }
     const downloadSubmenu = document.getElementById('download-markdown-submenu');
     if (downloadSubmenu) {
         downloadSubmenu.style.display = 'none';
     }
     // 清除所有定时器
-    clearSubmenuHideTimeout();
-    clearSubmenuShowTimeout();
     clearDownloadMarkdownSubmenuHideTimeout();
-    submenuLoading = false;
 
     const convId = contextMenuConversationId;
-    
+    updateConversationContextPinText(false);
+
     // 更新攻击链菜单项的启用状态
     const attackChainMenuItem = document.getElementById('attack-chain-menu-item');
     if (attackChainMenuItem) {
@@ -9906,80 +10289,26 @@ async function showConversationContextMenu(event) {
             attackChainMenuItem.title = (typeof window.t === 'function' ? window.t('chat.viewAttackChainSelectConv') : '请选择一个对话以查看攻击链');
         }
     }
-    
-    // 先获取对话的置顶状态并更新菜单文本（在显示菜单之前）
-    if (convId) {
-        try {
-            let isPinned = false;
-            // 检查对话是否真的在当前分组中
-            const conversationGroupId = conversationGroupMappingCache[convId];
-            const isInCurrentGroup = currentGroupId && conversationGroupId === currentGroupId;
-            
-            if (isInCurrentGroup) {
-                // 对话在当前分组中，获取分组内置顶状态
-                const response = await apiFetch(`/api/groups/${currentGroupId}/conversations`);
-                if (response.ok) {
-                    const groupConvs = await response.json();
-                    const conv = groupConvs.find(c => c.id === convId);
-                    if (conv) {
-                        isPinned = conv.groupPinned || false;
-                    }
-                }
-            } else {
-                // 不在分组详情页面，或者对话不在当前分组中，获取全局置顶状态
-                const response = await apiFetch(`/api/conversations/${convId}`);
-                if (response.ok) {
-                    const conv = await response.json();
-                    isPinned = conv.pinned || false;
-                }
-            }
-            
-            // 更新菜单文本
-            const pinMenuText = document.getElementById('pin-conversation-menu-text');
-            if (pinMenuText && typeof window.t === 'function') {
-                pinMenuText.textContent = isPinned ? window.t('contextMenu.unpinConversation') : window.t('contextMenu.pinConversation');
-            } else if (pinMenuText) {
-                pinMenuText.textContent = isPinned ? '取消置顶' : '置顶此对话';
-            }
-        } catch (error) {
-            console.error('获取对话置顶状态失败:', error);
-            const pinMenuText = document.getElementById('pin-conversation-menu-text');
-            if (pinMenuText && typeof window.t === 'function') {
-                pinMenuText.textContent = window.t('contextMenu.pinConversation');
-            } else if (pinMenuText) {
-                pinMenuText.textContent = '置顶此对话';
-            }
-        }
-    } else {
-        const pinMenuText = document.getElementById('pin-conversation-menu-text');
-        if (pinMenuText && typeof window.t === 'function') {
-            pinMenuText.textContent = window.t('contextMenu.pinConversation');
-        } else if (pinMenuText) {
-            pinMenuText.textContent = '置顶此对话';
-        }
-    }
 
-    // 在状态获取完成后再显示菜单
+    // 先显示菜单，置顶状态随后异步刷新，避免接口慢时点击没有任何反馈。
     menu.style.display = 'block';
     menu.style.visibility = 'visible';
     menu.style.opacity = '1';
-    
+
     // 强制重排以获取正确尺寸
     void menu.offsetHeight;
-    
+
     // 计算菜单位置，确保不超出屏幕
     const menuRect = menu.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    
-    // 获取子菜单的宽度（如果存在，重用之前获取的submenu变量）
-    const submenuWidth = submenu ? 180 : 0; // 子菜单宽度 + 间距
-    
+
+    const submenuWidth = 0;
+
     let left = event.clientX;
     let top = event.clientY;
-    
+
     // 如果菜单会超出右边界，调整到左侧
-    // 考虑子菜单的宽度
     if (left + menuRect.width + submenuWidth > viewportWidth) {
         left = event.clientX - menuRect.width;
         // 如果调整后仍然超出，则放在按钮左侧
@@ -9987,33 +10316,27 @@ async function showConversationContextMenu(event) {
             left = Math.max(8, event.clientX - menuRect.width - submenuWidth);
         }
     }
-    
+
     // 如果菜单会超出下边界，调整到上方
     if (top + menuRect.height > viewportHeight) {
         top = Math.max(8, event.clientY - menuRect.height);
     }
-    
+
     // 确保不超出左边界
     if (left < 0) {
         left = 8;
     }
-    
+
     // 确保不超出上边界
     if (top < 0) {
         top = 8;
     }
-    
+
     menu.style.left = left + 'px';
     menu.style.top = top + 'px';
-    
+
     // 如果菜单在右侧，子菜单应该在左侧显示
     if (left < event.clientX) {
-        if (submenu) {
-            submenu.style.left = 'auto';
-            submenu.style.right = '100%';
-            submenu.style.marginLeft = '0';
-            submenu.style.marginRight = '4px';
-        }
         if (downloadSubmenu) {
             downloadSubmenu.style.left = 'auto';
             downloadSubmenu.style.right = '100%';
@@ -10021,12 +10344,6 @@ async function showConversationContextMenu(event) {
             downloadSubmenu.style.marginRight = '4px';
         }
     } else {
-        if (submenu) {
-            submenu.style.left = '100%';
-            submenu.style.right = 'auto';
-            submenu.style.marginLeft = '4px';
-            submenu.style.marginRight = '0';
-        }
         if (downloadSubmenu) {
             downloadSubmenu.style.left = '100%';
             downloadSubmenu.style.right = 'auto';
@@ -10038,14 +10355,11 @@ async function showConversationContextMenu(event) {
     // 点击外部关闭菜单
     const closeMenu = (e) => {
         // 检查点击是否在主菜单或子菜单内
-        const moveToGroupSubmenuEl = document.getElementById('move-to-group-submenu');
         const downloadMarkdownSubmenuEl = document.getElementById('download-markdown-submenu');
         const clickedInMenu = menu.contains(e.target);
-        const clickedInSubmenu = moveToGroupSubmenuEl && moveToGroupSubmenuEl.contains(e.target);
         const clickedInDownloadSubmenu = downloadMarkdownSubmenuEl && downloadMarkdownSubmenuEl.contains(e.target);
-        
-        if (!clickedInMenu && !clickedInSubmenu && !clickedInDownloadSubmenu) {
-            // 使用 closeContextMenu 确保同时关闭主菜单和子菜单
+
+        if (!clickedInMenu && !clickedInDownloadSubmenu) {
             closeContextMenu();
             document.removeEventListener('click', closeMenu);
         }
@@ -10053,98 +10367,8 @@ async function showConversationContextMenu(event) {
     setTimeout(() => {
         document.addEventListener('click', closeMenu);
     }, 0);
-}
 
-// 显示分组上下文菜单
-async function showGroupContextMenu(event, groupId) {
-    const menu = document.getElementById('group-context-menu');
-    if (!menu) return;
-
-    contextMenuGroupId = groupId;
-
-    // 先获取分组的置顶状态并更新菜单文本（在显示菜单之前）
-    try {
-        // 先从缓存中查找
-        let group = groupsCache.find(g => g.id === groupId);
-        let isPinned = false;
-        
-        if (group) {
-            isPinned = group.pinned || false;
-        } else {
-            // 如果缓存中没有，从API获取
-            const response = await apiFetch(`/api/groups/${groupId}`);
-            if (response.ok) {
-                group = await response.json();
-                isPinned = group.pinned || false;
-            }
-        }
-        
-        // 更新菜单文本
-        const pinMenuText = document.getElementById('pin-group-menu-text');
-        if (pinMenuText && typeof window.t === 'function') {
-            pinMenuText.textContent = isPinned ? window.t('contextMenu.unpinGroup') : window.t('contextMenu.pinGroup');
-        } else if (pinMenuText) {
-            pinMenuText.textContent = isPinned ? '取消置顶' : '置顶此分组';
-        }
-    } catch (error) {
-        console.error('获取分组置顶状态失败:', error);
-        const pinMenuText = document.getElementById('pin-group-menu-text');
-        if (pinMenuText && typeof window.t === 'function') {
-            pinMenuText.textContent = window.t('contextMenu.pinGroup');
-        } else if (pinMenuText) {
-            pinMenuText.textContent = '置顶此分组';
-        }
-    }
-
-    // 在状态获取完成后再显示菜单
-    menu.style.display = 'block';
-    menu.style.visibility = 'visible';
-    menu.style.opacity = '1';
-    
-    // 强制重排以获取正确尺寸
-    void menu.offsetHeight;
-    
-    // 计算菜单位置，确保不超出屏幕
-    const menuRect = menu.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    
-    let left = event.clientX;
-    let top = event.clientY;
-    
-    // 如果菜单会超出右边界，调整到左侧
-    if (left + menuRect.width > viewportWidth) {
-        left = event.clientX - menuRect.width;
-    }
-    
-    // 如果菜单会超出下边界，调整到上方
-    if (top + menuRect.height > viewportHeight) {
-        top = event.clientY - menuRect.height;
-    }
-    
-    // 确保不超出左边界
-    if (left < 0) {
-        left = 8;
-    }
-    
-    // 确保不超出上边界
-    if (top < 0) {
-        top = 8;
-    }
-    
-    menu.style.left = left + 'px';
-    menu.style.top = top + 'px';
-
-    // 点击外部关闭菜单
-    const closeMenu = (e) => {
-        if (!menu.contains(e.target)) {
-            menu.style.display = 'none';
-            document.removeEventListener('click', closeMenu);
-        }
-    };
-    setTimeout(() => {
-        document.addEventListener('click', closeMenu);
-    }, 0);
+    refreshConversationContextPinText(convId);
 }
 
 let renameConversationTargetId = null;
@@ -10251,21 +10475,12 @@ async function saveConversationRename() {
         // 更新前端显示
         document.querySelectorAll('[data-conversation-id]').forEach((item) => {
             if (item.dataset.conversationId !== convId) return;
-            item.querySelectorAll('.conversation-title, .group-conversation-title, .project-conversation-title')
+            item.querySelectorAll('.conversation-title, .project-conversation-title')
                 .forEach((titleEl) => {
                     titleEl.textContent = newTitle.trim();
                     titleEl.title = newTitle.trim();
                 });
         });
-
-        // 如果在分组详情页，也需要更新
-        const groupItem = document.querySelector(`.group-conversation-item[data-conversation-id="${convId}"]`);
-        if (groupItem) {
-            const groupTitleEl = groupItem.querySelector('.group-conversation-title');
-            if (groupTitleEl) {
-                groupTitleEl.textContent = newTitle.trim();
-            }
-        }
 
         // 同步更新顶栏正在运行的任务名称
         if (typeof updateActiveTaskConversationTitle === 'function') {
@@ -10273,7 +10488,7 @@ async function saveConversationRename() {
         }
 
         // 重新加载对话列表
-        await loadConversationsWithGroups();
+        await loadConversations();
         if (typeof window.refreshChatProjectFolders === 'function') {
             await window.refreshChatProjectFolders();
         }
@@ -10281,7 +10496,7 @@ async function saveConversationRename() {
     } catch (error) {
         console.error('重命名对话失败:', error);
         const failedLabel = typeof window.t === 'function' ? window.t('chat.renameFailed') : '重命名失败';
-        const unknownErr = typeof window.t === 'function' ? window.t('createGroupModal.unknownError') : '未知错误';
+        const unknownErr = '未知错误';
         alert(failedLabel + ': ' + (error.message || unknownErr));
     } finally {
         if (submitButton) submitButton.disabled = false;
@@ -10314,58 +10529,22 @@ async function pinConversation() {
     closeContextMenu();
 
     try {
-        // 检查对话是否真的在当前分组中
-        // 如果对话已经从分组移出，conversationGroupMappingCache 中不会有该对话的映射
-        // 或者映射的分组ID不等于当前分组ID
-        const conversationGroupId = conversationGroupMappingCache[convId];
-        const isInCurrentGroup = currentGroupId && conversationGroupId === currentGroupId;
-        
-        // 如果当前在分组详情页面，且对话确实在当前分组中，使用分组内置顶
-        if (isInCurrentGroup) {
-            // 获取当前对话在分组中的置顶状态
-            const response = await apiFetch(`/api/groups/${currentGroupId}/conversations`);
-            await assertConversationActionResponse(response, '获取分组对话失败');
-            const groupConvs = await response.json();
-            const conv = groupConvs.find(c => c.id === convId);
-            
-            // 如果找不到对话，说明可能有问题，使用默认值
-            const currentPinned = conv && conv.groupPinned !== undefined ? conv.groupPinned : false;
-            const newPinned = !currentPinned;
+        const response = await apiFetch(`/api/conversations/${convId}`);
+        await assertConversationActionResponse(response, '获取对话失败');
+        const conv = await response.json();
+        const newPinned = !conv.pinned;
 
-            // 更新分组内置顶状态
-            const updateResponse = await apiFetch(`/api/groups/${currentGroupId}/conversations/${convId}/pinned`, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ pinned: newPinned }),
-            });
-            await assertConversationActionResponse(updateResponse, '更新分组内置顶状态失败');
+        const updateResponse = await apiFetch(`/api/conversations/${convId}/pinned`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ pinned: newPinned }),
+        });
+        await assertConversationActionResponse(updateResponse, '更新置顶状态失败');
 
-            // 重新加载分组对话
-            await loadGroupConversations(currentGroupId);
-        } else {
-            // 不在分组详情页面，或者对话不在当前分组中，使用全局置顶
-            const response = await apiFetch(`/api/conversations/${convId}`);
-            await assertConversationActionResponse(response, '获取对话失败');
-            const conv = await response.json();
-            const newPinned = !conv.pinned;
-
-            // 更新全局置顶状态
-            const updateResponse = await apiFetch(`/api/conversations/${convId}/pinned`, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ pinned: newPinned }),
-            });
-            await assertConversationActionResponse(updateResponse, '更新置顶状态失败');
-
-            // 项目文件夹侧栏与“最近对话”使用不同缓存；先发事件做即时更新，
-            // projects.js 再后台拉取服务端数据校准。
-            notifyConversationPinnedChanged(convId, newPinned);
-            loadConversationsWithGroups();
-        }
+        notifyConversationPinnedChanged(convId, newPinned);
+        loadConversations();
     } catch (error) {
         console.error('置顶对话失败:', error);
         alert('置顶失败: ' + (error.message || '未知错误'));
@@ -10373,438 +10552,11 @@ async function pinConversation() {
 
 }
 
-// 显示移动到分组子菜单
-async function showMoveToGroupSubmenu() {
-    const submenu = document.getElementById('move-to-group-submenu');
-    if (!submenu) return;
-
-    // 如果子菜单已经显示，不需要重复渲染
-    if (submenuVisible && submenu.style.display === 'block') {
-        return;
-    }
-
-    // 如果正在加载中，避免重复调用
-    if (submenuLoading) {
-        return;
-    }
-
-    // 清除隐藏定时器
-    clearSubmenuHideTimeout();
-    
-    // 标记为加载中
-    submenuLoading = true;
-    submenu.innerHTML = '';
-
-    // 确保分组列表已加载 - 强制重新加载以确保数据是最新的
-    try {
-        // 如果缓存为空，强制加载
-        if (!Array.isArray(groupsCache) || groupsCache.length === 0) {
-            await loadGroups();
-        } else {
-            // 即使缓存不为空，也尝试刷新一次，确保数据是最新的
-            // 但使用静默方式，不显示错误
-            try {
-                const response = await apiFetch('/api/groups');
-                if (response.ok) {
-                    const freshGroups = await response.json();
-                    if (Array.isArray(freshGroups)) {
-                        groupsCache = freshGroups;
-                    }
-                }
-            } catch (err) {
-                // 如果刷新失败，使用缓存的数据
-                console.warn('刷新分组列表失败，使用缓存数据:', err);
-            }
-        }
-        
-        // 再次验证缓存
-        if (!Array.isArray(groupsCache)) {
-            console.warn('groupsCache 不是有效数组，重置为空数组');
-            groupsCache = [];
-            // 如果仍然无效，尝试重新加载
-            if (groupsCache.length === 0) {
-                await loadGroups();
-            }
-        }
-    } catch (error) {
-        console.error('加载分组列表失败:', error);
-        // 即使加载失败，也继续显示菜单，使用现有缓存
-    }
-
-    // 如果当前在分组详情页面，显示"移出本组"选项
-    if (currentGroupId && contextMenuConversationId) {
-        // 检查对话是否在当前分组中
-        const convInGroup = conversationGroupMappingCache[contextMenuConversationId] === currentGroupId;
-        if (convInGroup) {
-            const removeItem = document.createElement('div');
-            removeItem.className = 'context-submenu-item';
-            removeItem.innerHTML = `
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M9 12l6 6M15 12l-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <span>移出本组</span>
-            `;
-            removeItem.onclick = () => {
-                removeConversationFromGroup(contextMenuConversationId, currentGroupId);
-            };
-            submenu.appendChild(removeItem);
-            
-            // 添加分隔线
-            const divider = document.createElement('div');
-            divider.className = 'context-menu-divider';
-            submenu.appendChild(divider);
-        }
-    }
-
-    // 验证 groupsCache 是否为有效数组
-    if (!Array.isArray(groupsCache)) {
-        console.warn('groupsCache 不是有效数组，重置为空数组');
-        groupsCache = [];
-    }
-
-    // 如果有分组，显示所有分组（排除对话已所在的分组）
-    if (groupsCache.length > 0) {
-        // 检查对话当前所在的分组ID
-        const conversationCurrentGroupId = contextMenuConversationId 
-            ? conversationGroupMappingCache[contextMenuConversationId] 
-            : null;
-        
-        groupsCache.forEach(group => {
-            // 验证分组对象是否有效
-            if (!group || !group.id || !group.name) {
-                console.warn('无效的分组对象:', group);
-                return;
-            }
-            
-            // 如果对话已经在当前分组中，不显示该分组（因为已经在里面了）
-            if (conversationCurrentGroupId && group.id === conversationCurrentGroupId) {
-                return;
-            }
-            
-            const item = document.createElement('div');
-            item.className = 'context-submenu-item';
-            const folderIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            folderIcon.setAttribute('width', '16');
-            folderIcon.setAttribute('height', '16');
-            folderIcon.setAttribute('viewBox', '0 0 24 24');
-            folderIcon.setAttribute('fill', 'none');
-            folderIcon.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-            const folderPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            folderPath.setAttribute('d', 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z');
-            folderPath.setAttribute('stroke', 'currentColor');
-            folderPath.setAttribute('stroke-width', '2');
-            folderPath.setAttribute('stroke-linecap', 'round');
-            folderPath.setAttribute('stroke-linejoin', 'round');
-            folderIcon.appendChild(folderPath);
-            const label = document.createElement('span');
-            label.textContent = group.name;
-            item.appendChild(folderIcon);
-            item.appendChild(label);
-            item.onclick = () => {
-                moveConversationToGroup(contextMenuConversationId, group.id);
-            };
-            submenu.appendChild(item);
-        });
-    } else {
-        // 如果仍然没有分组，记录日志以便调试
-        console.warn('showMoveToGroupSubmenu: groupsCache 为空，无法显示分组列表');
-    }
-
-    // 始终显示"创建分组"选项
-    const addGroupLabel = typeof window.t === 'function' ? window.t('chat.addNewGroup') : '+ 新增分组';
-    const addItem = document.createElement('div');
-    addItem.className = 'context-submenu-item add-group-item';
-    addItem.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span>${addGroupLabel}</span>
-    `;
-    addItem.onclick = () => {
-        showCreateGroupModal(true);
-    };
-    submenu.appendChild(addItem);
-
-    submenu.style.display = 'block';
-    submenuVisible = true;
-    submenuLoading = false;
-    
-    // 计算子菜单位置，防止溢出
-    setTimeout(() => {
-        const submenuRect = submenu.getBoundingClientRect();
-        const viewportWidth = window.innerWidth;
-        const viewportHeight = window.innerHeight;
-        
-        // 如果子菜单超出右边界，调整到左侧
-        if (submenuRect.right > viewportWidth) {
-            submenu.style.left = 'auto';
-            submenu.style.right = '100%';
-            submenu.style.marginLeft = '0';
-            submenu.style.marginRight = '4px';
-        }
-        
-        // 如果子菜单超出下边界，调整位置
-        if (submenuRect.bottom > viewportHeight) {
-            const overflow = submenuRect.bottom - viewportHeight;
-            const currentTop = parseInt(submenu.style.top) || 0;
-            submenu.style.top = (currentTop - overflow - 8) + 'px';
-        }
-    }, 0);
-}
-
-// 隐藏移动到分组子菜单的定时器
-let submenuHideTimeout = null;
-// 显示子菜单的防抖定时器
-let submenuShowTimeout = null;
-// 子菜单是否正在加载中
-let submenuLoading = false;
-// 子菜单是否已显示
-let submenuVisible = false;
-// 下载Markdown子菜单隐藏定时器
-let downloadMarkdownSubmenuHideTimeout = null;
-
-// 隐藏移动到分组子菜单
-function hideMoveToGroupSubmenu() {
-    const submenu = document.getElementById('move-to-group-submenu');
-    if (submenu) {
-        submenu.style.display = 'none';
-        submenuVisible = false;
-    }
-}
-
-// 清除隐藏子菜单的定时器
-function clearSubmenuHideTimeout() {
-    if (submenuHideTimeout) {
-        clearTimeout(submenuHideTimeout);
-        submenuHideTimeout = null;
-    }
-}
-
-// 清除显示子菜单的定时器
-function clearSubmenuShowTimeout() {
-    if (submenuShowTimeout) {
-        clearTimeout(submenuShowTimeout);
-        submenuShowTimeout = null;
-    }
-}
-
-function clearDownloadMarkdownSubmenuHideTimeout() {
-    if (downloadMarkdownSubmenuHideTimeout) {
-        clearTimeout(downloadMarkdownSubmenuHideTimeout);
-        downloadMarkdownSubmenuHideTimeout = null;
-    }
-}
-
-function showDownloadMarkdownSubmenu() {
-    const submenu = document.getElementById('download-markdown-submenu');
-    if (!submenu) return;
-    clearDownloadMarkdownSubmenuHideTimeout();
-    submenu.style.display = 'block';
-}
-
-function hideDownloadMarkdownSubmenu() {
-    const submenu = document.getElementById('download-markdown-submenu');
-    if (!submenu) return;
-    submenu.style.display = 'none';
-}
-
-function handleDownloadMarkdownSubmenuEnter() {
-    clearDownloadMarkdownSubmenuHideTimeout();
-    showDownloadMarkdownSubmenu();
-}
-
-function handleDownloadMarkdownSubmenuLeave(event) {
-    const submenu = document.getElementById('download-markdown-submenu');
-    if (!submenu) return;
-    const relatedTarget = event.relatedTarget;
-    if (relatedTarget && submenu.contains(relatedTarget)) {
-        return;
-    }
-    clearDownloadMarkdownSubmenuHideTimeout();
-    downloadMarkdownSubmenuHideTimeout = setTimeout(() => {
-        hideDownloadMarkdownSubmenu();
-        downloadMarkdownSubmenuHideTimeout = null;
-    }, 200);
-}
-
-// 处理鼠标进入"移动到分组"菜单项（带防抖）
-function handleMoveToGroupSubmenuEnter() {
-    // 清除隐藏定时器
-    clearSubmenuHideTimeout();
-    
-    // 如果子菜单已经显示，不需要重复调用
-    const submenu = document.getElementById('move-to-group-submenu');
-    if (submenu && submenuVisible && submenu.style.display === 'block') {
-        return;
-    }
-    
-    // 清除之前的显示定时器
-    clearSubmenuShowTimeout();
-    
-    // 使用防抖延迟显示，避免频繁触发
-    submenuShowTimeout = setTimeout(() => {
-        showMoveToGroupSubmenu();
-        submenuShowTimeout = null;
-    }, 100);
-}
-
-// 处理鼠标离开"移动到分组"菜单项
-function handleMoveToGroupSubmenuLeave(event) {
-    const submenu = document.getElementById('move-to-group-submenu');
-    if (!submenu) return;
-    
-    // 清除显示定时器
-    clearSubmenuShowTimeout();
-    
-    // 检查鼠标是否移动到子菜单
-    const relatedTarget = event.relatedTarget;
-    if (relatedTarget && submenu.contains(relatedTarget)) {
-        // 鼠标移动到子菜单，不清除
-        return;
-    }
-    
-    // 清除之前的隐藏定时器
-    clearSubmenuHideTimeout();
-    
-    // 延迟隐藏，给用户时间移动到子菜单
-    submenuHideTimeout = setTimeout(() => {
-        hideMoveToGroupSubmenu();
-        submenuHideTimeout = null;
-    }, 200);
-}
-
-// 移动对话到分组
-async function moveConversationToGroup(convId, groupId) {
-    try {
-        await apiFetch('/api/groups/conversations', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                conversationId: convId,
-                groupId: groupId,
-            }),
-        });
-
-        // 更新缓存
-        const oldGroupId = conversationGroupMappingCache[convId];
-        conversationGroupMappingCache[convId] = groupId;
-        
-        // 将新移动的对话添加到待保留映射中，防止后端API延迟导致映射丢失
-        pendingGroupMappings[convId] = groupId;
-        
-        // 如果移动的是当前对话，更新 currentConversationGroupId
-        if (currentConversationId === convId) {
-            currentConversationGroupId = groupId;
-        }
-        
-        // 如果当前在分组详情页面，重新加载分组对话
-        if (currentGroupId) {
-            // 如果从当前分组移出，或者移动到当前分组，都需要重新加载
-            if (currentGroupId === oldGroupId || currentGroupId === groupId) {
-                await loadGroupConversations(currentGroupId);
-            }
-        }
-        
-        // 无论是否在分组详情页面，都需要刷新最近对话列表
-        // 因为最近对话列表会根据分组映射缓存来过滤显示，需要立即更新
-        // loadConversationsWithGroups 内部会调用 loadConversationGroupMapping，
-        // loadConversationGroupMapping 会保留 pendingGroupMappings 中的映射
-        await loadConversationsWithGroups();
-        
-        // 注意：pendingGroupMappings 中的映射会在下次 loadConversationGroupMapping 
-        // 成功从后端加载时自动清理（在 loadConversationGroupMapping 中处理）
-        
-        // 刷新分组列表，更新高亮状态
-        await loadGroups();
-    } catch (error) {
-        console.error('移动对话到分组失败:', error);
-        alert('移动失败: ' + (error.message || '未知错误'));
-    }
-
-    closeContextMenu();
-}
-
-// 从分组中移除对话
-async function removeConversationFromGroup(convId, groupId) {
-    try {
-        await apiFetch(`/api/groups/${groupId}/conversations/${convId}`, {
-            method: 'DELETE',
-        });
-
-        // 更新缓存 - 立即删除，确保后续加载时能正确识别
-        delete conversationGroupMappingCache[convId];
-        // 同时从待保留映射中移除
-        delete pendingGroupMappings[convId];
-        
-        // 如果移除的是当前对话，清除 currentConversationGroupId
-        if (currentConversationId === convId) {
-            currentConversationGroupId = null;
-        }
-        
-        // 如果当前在分组详情页面，重新加载分组对话
-        if (currentGroupId === groupId) {
-            await loadGroupConversations(groupId);
-        }
-        
-        // 重新加载分组映射，确保缓存是最新的
-        await loadConversationGroupMapping();
-        
-        // 刷新分组列表，更新高亮状态
-        await loadGroups();
-        
-        // 刷新最近对话列表，让移出的对话立即显示
-        // 使用临时变量保存 currentGroupId，然后临时设置为 null，确保显示所有不在分组的对话
-        const savedGroupId = currentGroupId;
-        currentGroupId = null;
-        await loadConversationsWithGroups();
-        currentGroupId = savedGroupId;
-    } catch (error) {
-        console.error('从分组中移除对话失败:', error);
-        alert('移除失败: ' + (error.message || '未知错误'));
-    }
-
-    closeContextMenu();
-}
-
-// 加载对话分组映射
-async function loadConversationGroupMapping() {
-    try {
-        // 使用批量 API 一次性获取所有映射（消除 N+1 串行请求）
-        const response = await apiFetch('/api/groups/mappings');
-
-        // 保存待保留的映射
-        const preservedMappings = { ...pendingGroupMappings };
-
-        conversationGroupMappingCache = {};
-
-        if (response.ok) {
-            const mappings = await response.json();
-            if (Array.isArray(mappings)) {
-                mappings.forEach(m => {
-                    conversationGroupMappingCache[m.conversationId] = m.groupId;
-                    // 如果这个对话在待保留映射中，从待保留映射中移除（因为已经从后端加载了）
-                    if (preservedMappings[m.conversationId] === m.groupId) {
-                        delete pendingGroupMappings[m.conversationId];
-                    }
-                });
-            }
-        }
-
-        // 恢复待保留的映射（这些是后端API尚未同步的映射）
-        Object.assign(conversationGroupMappingCache, preservedMappings);
-    } catch (error) {
-        console.error('加载对话分组映射失败:', error);
-    }
-}
-
 // 从上下文菜单查看攻击链
 function showAttackChainFromContext() {
     const convId = contextMenuConversationId;
     if (!convId) return;
-    
+
     closeContextMenu();
     showAttackChain(convId);
 }
@@ -10983,20 +10735,12 @@ function closeContextMenu() {
     if (menu) {
         menu.style.display = 'none';
     }
-    const submenu = document.getElementById('move-to-group-submenu');
-    if (submenu) {
-        submenu.style.display = 'none';
-        submenuVisible = false;
-    }
     const downloadSubmenu = document.getElementById('download-markdown-submenu');
     if (downloadSubmenu) {
         downloadSubmenu.style.display = 'none';
     }
     // 清除所有定时器
-    clearSubmenuHideTimeout();
-    clearSubmenuShowTimeout();
     clearDownloadMarkdownSubmenuHideTimeout();
-    submenuLoading = false;
     contextMenuConversationId = null;
     contextMenuConversationTitle = '';
 }
@@ -11016,22 +10760,6 @@ function getConversationProjectLabel(conv) {
     const name = window.projectNameById && window.projectNameById[pid];
     if (name) return name;
     return typeof window.t === 'function' ? window.t('batchManageModal.unknownProject') : '未知项目';
-}
-
-function getConversationGroupId(conv) {
-    return (conv && conversationGroupMappingCache[conv.id]) || '';
-}
-
-function getConversationGroupLabel(conv) {
-    const groupId = getConversationGroupId(conv);
-    if (!groupId) {
-        return typeof window.t === 'function' ? window.t('batchManageModal.noGroup') : '无分组';
-    }
-    const group = Array.isArray(groupsCache) ? groupsCache.find(g => g.id === groupId) : null;
-    if (group) {
-        return `${group.icon || '📁'} ${group.name}`;
-    }
-    return typeof window.t === 'function' ? window.t('batchManageModal.unknownGroup') : '未知分组';
 }
 
 async function prefetchProjectNamesForConversations(conversations) {
@@ -11063,83 +10791,9 @@ async function refreshBatchProjectFilter() {
     syncProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
 }
 
-async function refreshBatchGroupSelect() {
-    const sel = document.getElementById('batch-move-group-select');
-    if (!sel) return;
-
-    if (!Array.isArray(groupsCache) || groupsCache.length === 0) {
-        await loadGroups();
-    }
-
-    const saved = sel.value || BATCH_GROUP_NONE;
-    sel.innerHTML = '';
-
-    const noneOpt = document.createElement('option');
-    noneOpt.value = BATCH_GROUP_NONE;
-    noneOpt.textContent = projectFilterT('batchManageModal.noGroupOption', '无分组');
-    sel.appendChild(noneOpt);
-
-    (groupsCache || []).forEach((group) => {
-        const opt = document.createElement('option');
-        opt.value = group.id;
-        opt.textContent = `${group.icon || '📁'} ${group.name}`;
-        sel.appendChild(opt);
-    });
-
-    if (saved === BATCH_GROUP_NONE || (groupsCache || []).some((group) => group.id === saved)) {
-        sel.value = saved;
-    } else {
-        sel.value = BATCH_GROUP_NONE;
-    }
-    syncSimpleCustomSelect(BATCH_GROUP_FILTER_SELECT_ID);
-}
-
-function appendBatchGroupHeaderFilterNativeOptions(sel) {
-    const allLabel = projectFilterT('batchManageModal.filterAllGroups', '全部分组');
-    const ungroupedLabel = projectFilterT('batchManageModal.filterUngrouped', '无分组');
-    sel.innerHTML = '';
-    const allOpt = document.createElement('option');
-    allOpt.value = '';
-    allOpt.textContent = allLabel;
-    allOpt.setAttribute('data-i18n', 'batchManageModal.filterAllGroups');
-    sel.appendChild(allOpt);
-    const ungroupedOpt = document.createElement('option');
-    ungroupedOpt.value = BATCH_GROUP_NONE;
-    ungroupedOpt.textContent = ungroupedLabel;
-    ungroupedOpt.setAttribute('data-i18n', 'batchManageModal.filterUngrouped');
-    sel.appendChild(ungroupedOpt);
-}
-
-async function refreshBatchGroupHeaderFilter() {
-    const sel = document.getElementById(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
-    if (!sel) return;
-
-    if (!Array.isArray(groupsCache) || groupsCache.length === 0) {
-        await loadGroups();
-    }
-
-    const saved = sel.value || '';
-    appendBatchGroupHeaderFilterNativeOptions(sel);
-
-    (groupsCache || []).forEach((group) => {
-        const opt = document.createElement('option');
-        opt.value = group.id;
-        opt.textContent = `${group.icon || '📁'} ${group.name}`;
-        sel.appendChild(opt);
-    });
-
-    if (saved === '' || saved === BATCH_GROUP_NONE || (groupsCache || []).some((group) => group.id === saved)) {
-        sel.value = saved;
-    } else {
-        sel.value = '';
-    }
-    syncSimpleCustomSelect(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
-}
-
 function getBatchFilteredConversations() {
     const query = (document.getElementById('batch-search-input')?.value || '').trim().toLowerCase();
     const projectFilter = (document.getElementById('batch-project-filter')?.value || '').trim();
-    const groupFilter = (document.getElementById(BATCH_GROUP_HEADER_FILTER_SELECT_ID)?.value || '').trim();
     return allConversationsForBatch.filter((conv) => {
         const pid = getConversationProjectId(conv);
         if (projectFilter) {
@@ -11149,19 +10803,10 @@ function getBatchFilteredConversations() {
                 return false;
             }
         }
-        const gid = getConversationGroupId(conv);
-        if (groupFilter) {
-            if (groupFilter === BATCH_GROUP_NONE) {
-                if (gid) return false;
-            } else if (gid !== groupFilter) {
-                return false;
-            }
-        }
         if (!query) return true;
         const title = (conv.title || '').toLowerCase();
         const projectName = getConversationProjectLabel(conv).toLowerCase();
-        const groupName = getConversationGroupLabel(conv).toLowerCase();
-        return title.includes(query) || projectName.includes(query) || groupName.includes(query);
+        return title.includes(query) || projectName.includes(query);
     });
 }
 
@@ -11184,16 +10829,8 @@ async function showBatchManageModal() {
     try {
         initProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
         allConversationsForBatch = await fetchAllConversations('');
-        await Promise.all([
-            prefetchProjectNamesForConversations(allConversationsForBatch),
-            loadGroups(),
-            loadConversationGroupMapping(),
-        ]);
+        await prefetchProjectNamesForConversations(allConversationsForBatch);
         await refreshBatchProjectFilter();
-        initBatchGroupHeaderFilterCustomSelect();
-        await refreshBatchGroupHeaderFilter();
-        initBatchGroupCustomSelect();
-        await refreshBatchGroupSelect();
         const sidebarFilter = getConversationProjectFilter();
         const batchSel = document.getElementById('batch-project-filter');
         if (batchSel && sidebarFilter && (
@@ -11209,10 +10846,8 @@ async function showBatchManageModal() {
     } catch (error) {
         console.error('加载对话列表失败:', error);
         initProjectFilterCustomSelect(BATCH_PROJECT_FILTER_SELECT_ID);
-        initBatchGroupHeaderFilterCustomSelect();
-        initBatchGroupCustomSelect();
         allConversationsForBatch = [];
-        await Promise.all([refreshBatchProjectFilter(), refreshBatchGroupHeaderFilter(), refreshBatchGroupSelect()]);
+        await refreshBatchProjectFilter();
         applyBatchConversationFilters();
         openAppModal('batch-manage-modal', { focus: false });
     }
@@ -11223,36 +10858,36 @@ function safeTruncateText(text, maxLength = 50) {
     if (!text || typeof text !== 'string') {
         return text || '';
     }
-    
+
     // 使用 Array.from 将字符串转换为字符数组（正确处理 Unicode 代理对）
     const chars = Array.from(text);
-    
+
     // 如果文本长度未超过限制，直接返回
     if (chars.length <= maxLength) {
         return text;
     }
-    
+
     // 截断到最大长度（基于字符数，而不是代码单元）
     let truncatedChars = chars.slice(0, maxLength);
-    
+
     // 尝试在标点符号或空格处截断，使截断更自然
     // 在截断点往前查找合适的断点（不超过20%的长度）
     const searchRange = Math.floor(maxLength * 0.2);
     const breakChars = ['，', '。', '、', ' ', ',', '.', ';', ':', '!', '?', '！', '？', '/', '\\', '-', '_'];
     let bestBreakPos = truncatedChars.length;
-    
+
     for (let i = truncatedChars.length - 1; i >= truncatedChars.length - searchRange && i >= 0; i--) {
         if (breakChars.includes(truncatedChars[i])) {
             bestBreakPos = i + 1; // 在标点符号后断开
             break;
         }
     }
-    
+
     // 如果找到合适的断点，使用它；否则使用原截断位置
     if (bestBreakPos < truncatedChars.length) {
         truncatedChars = truncatedChars.slice(0, bestBreakPos);
     }
-    
+
     // 将字符数组转换回字符串，并添加省略号
     return truncatedChars.join('') + '...';
 }
@@ -11297,16 +10932,6 @@ function renderBatchConversations(filtered = null) {
             project.classList.add('is-unbound');
         }
 
-        const group = document.createElement('div');
-        group.className = 'batch-table-col-group';
-        const groupLabel = getConversationGroupLabel(conv);
-        const truncatedGroup = safeTruncateText(groupLabel, 24);
-        group.textContent = truncatedGroup;
-        group.title = groupLabel;
-        if (!getConversationGroupId(conv)) {
-            group.classList.add('is-unbound');
-        }
-
         const time = document.createElement('div');
         time.className = 'batch-table-col-time';
         const dateObj = conv.updatedAt ? new Date(conv.updatedAt) : new Date();
@@ -11342,7 +10967,6 @@ function renderBatchConversations(filtered = null) {
         row.appendChild(checkboxCol);
         row.appendChild(name);
         row.appendChild(project);
-        row.appendChild(group);
         row.appendChild(time);
         row.appendChild(action);
 
@@ -11390,133 +11014,6 @@ function syncSelectAllBatchCheckbox() {
     }
 }
 
-// 批量设置对话分组（选「无分组」即移出）
-async function applyBatchGroupChange() {
-    const checkboxes = document.querySelectorAll('.batch-conversation-checkbox:checked');
-    if (checkboxes.length === 0) {
-        alert(typeof window.t === 'function' ? window.t('batchManageModal.confirmGroupChangeNone') : '请先选择要操作的对话');
-        return;
-    }
-
-    const groupSelect = document.getElementById('batch-move-group-select');
-    const groupId = (groupSelect?.value || BATCH_GROUP_NONE).trim();
-
-    if (groupId === BATCH_GROUP_NONE) {
-        const items = Array.from(checkboxes).map((cb) => ({
-            id: cb.dataset.conversationId,
-            groupId: conversationGroupMappingCache[cb.dataset.conversationId] || '',
-        })).filter((item) => item.groupId);
-
-        if (items.length === 0) {
-            alert(typeof window.t === 'function' ? window.t('batchManageModal.confirmRemoveNoGroup') : '所选对话均未归属分组');
-            return;
-        }
-
-        const confirmMsg = typeof window.t === 'function'
-            ? window.t('batchManageModal.confirmRemoveN', { count: items.length })
-            : `确定将选中的 ${items.length} 条对话移出分组吗？`;
-        if (!confirm(confirmMsg)) {
-            return;
-        }
-
-        try {
-            for (const item of items) {
-                await apiFetch(`/api/groups/${item.groupId}/conversations/${item.id}`, {
-                    method: 'DELETE',
-                });
-
-                delete conversationGroupMappingCache[item.id];
-                delete pendingGroupMappings[item.id];
-
-                if (currentConversationId === item.id) {
-                    currentConversationGroupId = null;
-                }
-            }
-
-            await finishBatchGroupChangeAfterRemove();
-        } catch (error) {
-            console.error('批量移出分组失败:', error);
-            await loadConversationGroupMapping();
-            applyBatchConversationFilters();
-            const failedMsg = typeof window.t === 'function' ? window.t('batchManageModal.removeFailed') : '移出失败';
-            const unknownErr = typeof window.t === 'function' ? window.t('createGroupModal.unknownError') : '未知错误';
-            alert(failedMsg + ': ' + (error.message || unknownErr));
-        }
-        return;
-    }
-
-    const targetGroup = (groupsCache || []).find((group) => group.id === groupId);
-    const groupName = targetGroup ? targetGroup.name : groupId;
-    const confirmMsg = typeof window.t === 'function'
-        ? window.t('batchManageModal.confirmMoveN', { count: checkboxes.length, group: groupName })
-        : `确定将选中的 ${checkboxes.length} 条对话移动到「${groupName}」吗？`;
-    if (!confirm(confirmMsg)) {
-        return;
-    }
-
-    const ids = Array.from(checkboxes).map((cb) => cb.dataset.conversationId);
-
-    try {
-        for (const id of ids) {
-            await apiFetch('/api/groups/conversations', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    conversationId: id,
-                    groupId,
-                }),
-            });
-
-            conversationGroupMappingCache[id] = groupId;
-            pendingGroupMappings[id] = groupId;
-
-            if (currentConversationId === id) {
-                currentConversationGroupId = groupId;
-            }
-        }
-
-        if (currentGroupId) {
-            await loadGroupConversations(currentGroupId);
-        }
-        await loadConversationsWithGroups();
-        await loadGroups();
-        resetBatchSelectionAfterGroupChange();
-    } catch (error) {
-        console.error('批量移动对话失败:', error);
-        await loadConversationGroupMapping();
-        applyBatchConversationFilters();
-        const failedMsg = typeof window.t === 'function' ? window.t('batchManageModal.moveFailed') : '移动失败';
-        const unknownErr = typeof window.t === 'function' ? window.t('createGroupModal.unknownError') : '未知错误';
-        alert(failedMsg + ': ' + (error.message || unknownErr));
-    }
-}
-
-function resetBatchSelectionAfterGroupChange() {
-    applyBatchConversationFilters();
-    const selectAll = document.getElementById('batch-select-all');
-    if (selectAll) {
-        selectAll.checked = false;
-        selectAll.indeterminate = false;
-    }
-}
-
-async function finishBatchGroupChangeAfterRemove() {
-    if (currentGroupId) {
-        await loadGroupConversations(currentGroupId);
-    }
-    await loadConversationGroupMapping();
-    await loadGroups();
-
-    const savedGroupId = currentGroupId;
-    currentGroupId = null;
-    await loadConversationsWithGroups();
-    currentGroupId = savedGroupId;
-
-    resetBatchSelectionAfterGroupChange();
-}
-
 // 删除选中的对话
 async function deleteSelectedConversations() {
     if (typeof requirePermission === 'function' && !requirePermission('chat:delete')) return;
@@ -11532,7 +11029,7 @@ async function deleteSelectedConversations() {
     }
 
     const ids = Array.from(checkboxes).map(cb => cb.dataset.conversationId);
-    
+
     try {
         for (const id of ids) {
             await deleteConversation(id, true); // 跳过内部确认，因为批量删除时已经确认过了
@@ -11546,7 +11043,7 @@ async function deleteSelectedConversations() {
     } catch (error) {
         console.error('删除失败:', error);
         const failedMsg = typeof window.t === 'function' ? window.t('batchManageModal.deleteFailed') : '删除失败';
-        const unknownErr = typeof window.t === 'function' ? window.t('createGroupModal.unknownError') : '未知错误';
+        const unknownErr = '未知错误';
         alert(failedMsg + ': ' + (error.message || unknownErr));
     }
 }
@@ -11564,12 +11061,6 @@ function closeBatchManageModal() {
     if (searchInput) searchInput.value = '';
     const batchProj = document.getElementById('batch-project-filter');
     if (batchProj) batchProj.value = '';
-    const batchGroupFilter = document.getElementById(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
-    if (batchGroupFilter) batchGroupFilter.value = '';
-    syncSimpleCustomSelect(BATCH_GROUP_HEADER_FILTER_SELECT_ID);
-    const batchGroup = document.getElementById('batch-move-group-select');
-    if (batchGroup) batchGroup.value = BATCH_GROUP_NONE;
-    syncSimpleCustomSelect(BATCH_GROUP_FILTER_SELECT_ID);
     allConversationsForBatch = [];
 }
 
@@ -11654,927 +11145,13 @@ document.addEventListener('languagechange', function () {
             }
         });
     }
-    if (typeof refreshBatchGroupSelect === 'function') {
-        refreshBatchGroupSelect().then(() => syncSimpleCustomSelect(BATCH_GROUP_FILTER_SELECT_ID));
-    }
-    if (typeof refreshBatchGroupHeaderFilter === 'function') {
-        refreshBatchGroupHeaderFilter();
-    }
     // 侧边栏最近对话等列表的时间戳会随语言变化（24h/12h 等），重新拉列表以统一格式
-    if (typeof loadConversationsWithGroups === 'function') {
-        loadConversationsWithGroups();
-    } else if (typeof loadConversations === 'function') {
+    if (typeof loadConversations === 'function') {
         loadConversations();
     }
 });
 
-// 显示创建分组模态框
-function showCreateGroupModal(andMoveConversation = false) {
-    const modal = document.getElementById('create-group-modal');
-    const input = document.getElementById('create-group-name-input');
-    const iconBtn = document.getElementById('create-group-icon-btn');
-    const iconPicker = document.getElementById('group-icon-picker');
-    const customInput = document.getElementById('custom-icon-input');
-    
-    if (input) {
-        input.value = '';
-    }
-    // 重置图标为默认值
-    if (iconBtn) {
-        iconBtn.textContent = '📁';
-    }
-    // 清空自定义图标输入框
-    if (customInput) {
-        customInput.value = '';
-    }
-    // 关闭图标选择器
-    if (iconPicker) {
-        iconPicker.style.display = 'none';
-    }
-    if (modal) {
-        openAppModal('create-group-modal', { focusEl: input });
-        modal.dataset.moveConversation = andMoveConversation ? 'true' : 'false';
-    }
-}
-
-// 关闭创建分组模态框
-function closeCreateGroupModal() {
-    closeAppModal('create-group-modal');
-    const input = document.getElementById('create-group-name-input');
-    if (input) {
-        input.value = '';
-    }
-    // 重置图标为默认值
-    const iconBtn = document.getElementById('create-group-icon-btn');
-    if (iconBtn) {
-        iconBtn.textContent = '📁';
-    }
-    // 清空自定义图标输入框
-    const customInput = document.getElementById('custom-icon-input');
-    if (customInput) {
-        customInput.value = '';
-    }
-    // 关闭图标选择器
-    const iconPicker = document.getElementById('group-icon-picker');
-    if (iconPicker) {
-        iconPicker.style.display = 'none';
-    }
-}
-
-// 选择建议标签
-function selectSuggestion(name) {
-    const input = document.getElementById('create-group-name-input');
-    if (input) {
-        input.value = name;
-        input.focus();
-    }
-}
-
-// 按 i18n key 选择建议标签（用于国际化下填充当前语言的文案）
-function selectSuggestionByKey(i18nKey) {
-    const input = document.getElementById('create-group-name-input');
-    if (input && typeof window.t === 'function') {
-        input.value = window.t(i18nKey);
-        input.focus();
-    }
-}
-
-// 切换图标选择器显示状态
-function toggleGroupIconPicker() {
-    const picker = document.getElementById('group-icon-picker');
-    if (picker) {
-        const isVisible = picker.style.display !== 'none';
-        picker.style.display = isVisible ? 'none' : 'block';
-    }
-}
-
-// 选择分组图标
-function selectGroupIcon(icon) {
-    const iconBtn = document.getElementById('create-group-icon-btn');
-    if (iconBtn) {
-        iconBtn.textContent = icon;
-    }
-    // 清空自定义输入框
-    const customInput = document.getElementById('custom-icon-input');
-    if (customInput) {
-        customInput.value = '';
-    }
-    // 关闭选择器
-    const picker = document.getElementById('group-icon-picker');
-    if (picker) {
-        picker.style.display = 'none';
-    }
-}
-
-// 应用自定义图标
-function applyCustomIcon() {
-    const customInput = document.getElementById('custom-icon-input');
-    if (!customInput) return;
-    
-    const customIcon = customInput.value.trim();
-    if (!customIcon) {
-        return;
-    }
-    
-    const iconBtn = document.getElementById('create-group-icon-btn');
-    if (iconBtn) {
-        iconBtn.textContent = customIcon;
-    }
-    
-    // 清空输入框并关闭选择器
-    customInput.value = '';
-    const picker = document.getElementById('group-icon-picker');
-    if (picker) {
-        picker.style.display = 'none';
-    }
-}
-
-// 自定义图标输入框回车键处理
-document.addEventListener('DOMContentLoaded', function() {
-    mountChatSessionSettingsPopover();
-    initSessionSettingsSelects();
-    initChatReasoningBarHeightSync();
-    initChatPrimaryActionButton();
-    const customInput = document.getElementById('custom-icon-input');
-    if (customInput) {
-        customInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                applyCustomIcon();
-            }
-        });
-    }
-    initChatAgentModeFromConfig()
-        .then(function () {
-            refreshHitlConfigByCurrentConversation();
-        })
-        .catch(function () {
-            refreshHitlConfigByCurrentConversation();
-        });
-});
-
-document.addEventListener('languagechange', function () {
-    refreshHitlConfigByCurrentConversation();
-    updateChatPrimaryActionState();
-});
-
-document.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape') closeChatSystemModelPicker();
-});
-
-// 点击外部关闭图标选择器、对话模式面板、侧栏折叠卡片
-document.addEventListener('click', function(event) {
-    const picker = document.getElementById('group-icon-picker');
-    const iconBtn = document.getElementById('create-group-icon-btn');
-    if (picker && iconBtn) {
-        // 如果点击的不是图标按钮和选择器本身，则关闭选择器
-        if (!picker.contains(event.target) && !iconBtn.contains(event.target)) {
-            picker.style.display = 'none';
-        }
-    }
-
-    const agentWrap = document.getElementById('agent-mode-wrapper');
-    const agentPanel = document.getElementById('agent-mode-panel');
-    if (agentWrap && agentPanel && agentPanel.style.display === 'flex') {
-        if (!agentWrap.contains(event.target)) {
-            closeAgentModePanel();
-        }
-    }
-
-    const modelWrap = document.getElementById('chat-model-shortcut-wrap');
-    const modelMenu = document.getElementById('chat-system-model-menu');
-    if (modelWrap && modelMenu && !modelMenu.hidden && !modelWrap.contains(event.target)) {
-        closeChatSystemModelPicker();
-    }
-
-    const reasoningWrap = document.getElementById('chat-reasoning-wrapper');
-    if (reasoningWrap && reasoningWrap.style.display !== 'none' &&
-        !reasoningWrap.classList.contains('conversation-reasoning-collapsed')) {
-        if (!reasoningWrap.contains(event.target)) {
-            closeChatReasoningPanel();
-        }
-    }
-
-    const hitlCard = document.getElementById('hitl-sidebar-card');
-    if (hitlCard && !hitlCard.classList.contains('hitl-sidebar-collapsed')) {
-        if (!hitlCard.contains(event.target)) {
-            closeHitlSidebarCard();
-        }
-    }
-});
-
-// 创建分组
-async function createGroup(event) {
-    if (typeof requirePermission === 'function' && !requirePermission('group:write')) return;
-    // 阻止事件冒泡
-    if (event) {
-        event.preventDefault();
-        event.stopPropagation();
-    }
-
-    const input = document.getElementById('create-group-name-input');
-    if (!input) {
-        console.error('找不到输入框');
-        return;
-    }
-
-    const name = input.value.trim();
-    if (!name) {
-        alert(typeof window.t === 'function' ? window.t('createGroupModal.groupNamePlaceholder') : '请输入分组名称');
-        return;
-    }
-
-    // 前端校验：检查名称是否已存在
-    try {
-        let groups;
-        if (Array.isArray(groupsCache) && groupsCache.length > 0) {
-            groups = groupsCache;
-        } else {
-            const response = await apiFetch('/api/groups');
-            groups = await response.json();
-        }
-        
-        // 确保groups是有效数组
-        if (!Array.isArray(groups)) {
-            groups = [];
-        }
-        
-        const nameExists = groups.some(g => g.name === name);
-        if (nameExists) {
-            alert(typeof window.t === 'function' ? window.t('createGroupModal.nameExists') : '分组名称已存在，请使用其他名称');
-            return;
-        }
-    } catch (error) {
-        console.error('检查分组名称失败:', error);
-    }
-
-    // 获取选中的图标
-    const iconBtn = document.getElementById('create-group-icon-btn');
-    const selectedIcon = iconBtn ? iconBtn.textContent.trim() : '📁';
-
-    try {
-        const response = await apiFetch('/api/groups', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                name: name,
-                icon: selectedIcon,
-            }),
-        });
-
-        if (!response.ok) {
-            const error = await response.json();
-            const nameExistsMsg = typeof window.t === 'function' ? window.t('createGroupModal.nameExists') : '分组名称已存在，请使用其他名称';
-            if (error.error && error.error.includes('已存在')) {
-                alert(nameExistsMsg);
-                return;
-            }
-            const createFailedMsg = typeof window.t === 'function' ? window.t('createGroupModal.createFailed') : '创建失败';
-            throw new Error(error.error || createFailedMsg);
-        }
-
-        const newGroup = await response.json();
-        
-        // 检查"移动到分组"子菜单是否打开
-        const submenu = document.getElementById('move-to-group-submenu');
-        const isSubmenuOpen = submenu && submenu.style.display !== 'none';
-
-        await loadGroups();
-
-        const modal = document.getElementById('create-group-modal');
-        const shouldMove = modal && modal.dataset.moveConversation === 'true';
-        
-        closeCreateGroupModal();
-
-        if (shouldMove && contextMenuConversationId) {
-            moveConversationToGroup(contextMenuConversationId, newGroup.id);
-        }
-
-        // 如果子菜单是打开的，刷新它，让新创建的分组立即显示
-        if (isSubmenuOpen) {
-            await showMoveToGroupSubmenu();
-        }
-    } catch (error) {
-        console.error('创建分组失败:', error);
-        const createFailedMsg = typeof window.t === 'function' ? window.t('createGroupModal.createFailed') : '创建失败';
-        const unknownErr = typeof window.t === 'function' ? window.t('createGroupModal.unknownError') : '未知错误';
-        alert(createFailedMsg + ': ' + (error.message || unknownErr));
-    }
-}
-
-// 进入分组详情
-async function enterGroupDetail(groupId) {
-    currentGroupId = groupId;
-    // 进入分组详情页面时，清除当前对话所属的分组ID，避免高亮冲突
-    // 因为此时用户是在查看分组详情，而不是在查看分组中的某个对话
-    currentConversationGroupId = null;
-    
-    try {
-        const response = await apiFetch(`/api/groups/${groupId}`);
-        const group = await response.json();
-        
-        if (!group) {
-            currentGroupId = null;
-            return;
-        }
-
-        // 显示分组详情页，隐藏对话界面，但保持侧边栏可见
-        const sidebar = document.querySelector('.conversation-sidebar');
-        const groupDetailPage = document.getElementById('group-detail-page');
-        const chatContainer = document.querySelector('.chat-container');
-        const titleEl = document.getElementById('group-detail-title');
-
-        // 保持侧边栏可见
-        if (sidebar) sidebar.style.display = 'flex';
-        // 隐藏对话界面，显示分组详情页
-        if (chatContainer) chatContainer.style.display = 'none';
-        if (groupDetailPage) groupDetailPage.style.display = 'flex';
-        if (titleEl) titleEl.textContent = group.name;
-
-        // 刷新分组列表，确保当前分组高亮显示
-        await loadGroups();
-
-        // 加载分组对话（如果有搜索查询则使用搜索查询）
-        loadGroupConversations(groupId, currentGroupSearchQuery);
-    } catch (error) {
-        console.error('加载分组失败:', error);
-        currentGroupId = null;
-    }
-}
-
-// 退出分组详情
-function exitGroupDetail() {
-    currentGroupId = null;
-    currentGroupSearchQuery = ''; // 清除搜索状态
-    
-    // 隐藏搜索框并清除搜索内容
-    const searchContainer = document.getElementById('group-search-container');
-    const searchInput = document.getElementById('group-search-input');
-    if (searchContainer) searchContainer.style.display = 'none';
-    if (searchInput) searchInput.value = '';
-    
-    const sidebar = document.querySelector('.conversation-sidebar');
-    const groupDetailPage = document.getElementById('group-detail-page');
-    const chatContainer = document.querySelector('.chat-container');
-
-    // 保持侧边栏可见
-    if (sidebar) sidebar.style.display = 'flex';
-    // 隐藏分组详情页，显示对话界面
-    if (groupDetailPage) groupDetailPage.style.display = 'none';
-    if (chatContainer) chatContainer.style.display = 'flex';
-
-    loadConversationsWithGroups();
-}
-
-// 加载分组中的对话
-async function loadGroupConversations(groupId, searchQuery = '') {
-    try {
-        if (!groupId) {
-            console.error('loadGroupConversations: groupId is null or undefined');
-            return;
-        }
-        
-        // 确保分组映射已加载
-        if (Object.keys(conversationGroupMappingCache).length === 0) {
-            await loadConversationGroupMapping();
-        }
-        
-        // 先清空列表，避免显示旧数据
-        const list = document.getElementById('group-conversations-list');
-        if (!list) {
-            console.error('group-conversations-list element not found');
-            return;
-        }
-        
-        // 显示加载状态
-        if (searchQuery) {
-            list.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">' + (typeof window.t === 'function' ? window.t('chat.searching') : '搜索中...') + '</div>';
-        } else {
-            list.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">' + (typeof window.t === 'function' ? window.t('chat.loading') : '加载中...') + '</div>';
-        }
-
-        // 构建URL，如果有搜索关键词则添加search参数
-        let url = `/api/groups/${groupId}/conversations`;
-        if (searchQuery && searchQuery.trim()) {
-            url += '?search=' + encodeURIComponent(searchQuery.trim());
-        }
-        
-        const response = await apiFetch(url);
-        if (!response.ok) {
-            console.error(`Failed to load conversations for group ${groupId}:`, response.statusText);
-            list.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">' + (typeof window.t === 'function' ? window.t('chat.loadFailedRetry') : '加载失败，请重试') + '</div>';
-            return;
-        }
-        
-        let groupConvs = await response.json();
-        
-        // 处理 null 或 undefined 的情况，将其视为空数组
-        if (!groupConvs) {
-            groupConvs = [];
-        }
-        
-        // 验证返回的数据类型
-        if (!Array.isArray(groupConvs)) {
-            console.error(`Invalid response for group ${groupId}:`, groupConvs);
-            list.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">' + (typeof window.t === 'function' ? window.t('chat.dataFormatError') : '数据格式错误') + '</div>';
-            return;
-        }
-        
-        // 更新分组映射缓存（只更新当前分组的对话）
-        // 先清理该分组之前的映射（如果有对话被移出）
-        Object.keys(conversationGroupMappingCache).forEach(convId => {
-            if (conversationGroupMappingCache[convId] === groupId) {
-                // 如果这个对话不在新的列表中，说明已被移出
-                if (!groupConvs.find(c => c.id === convId)) {
-                    delete conversationGroupMappingCache[convId];
-                }
-            }
-        });
-        
-        // 更新当前分组的对话映射
-        groupConvs.forEach(conv => {
-            conversationGroupMappingCache[conv.id] = groupId;
-        });
-
-        // 再次清空列表（清除"加载中"提示）
-        list.innerHTML = '';
-
-        if (groupConvs.length === 0) {
-            const emptyMsg = typeof window.t === 'function' ? window.t('chat.emptyGroupConversations') : '该分组暂无对话';
-            const noMatchMsg = typeof window.t === 'function' ? window.t('chat.noMatchingConversationsInGroup') : '未找到匹配的对话';
-            if (searchQuery && searchQuery.trim()) {
-                list.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">' + (noMatchMsg || '未找到匹配的对话') + '</div>';
-            } else {
-                list.innerHTML = '<div style="padding: 40px; text-align: center; color: var(--text-muted);">' + (emptyMsg || '该分组暂无对话') + '</div>';
-            }
-            return;
-        }
-
-        // 加载每个对话的详细信息以获取消息
-        for (const conv of groupConvs) {
-            try {
-                // 验证对话ID存在
-                if (!conv.id) {
-                    console.warn('Conversation missing id:', conv);
-                    continue;
-                }
-                
-                const convResponse = await apiFetch(`/api/conversations/${conv.id}`);
-                if (!convResponse.ok) {
-                    console.error(`Failed to load conversation ${conv.id}:`, convResponse.statusText);
-                    continue;
-                }
-                
-                const fullConv = await convResponse.json();
-                
-                const item = document.createElement('div');
-                item.className = 'group-conversation-item';
-                item.dataset.conversationId = conv.id;
-                // 只有在分组详情页面且对话ID匹配时才显示active状态
-                // 如果不在分组详情页面，不应该显示active状态
-                if (currentGroupId && conv.id === currentConversationId) {
-                    item.classList.add('active');
-                } else {
-                    item.classList.remove('active');
-                }
-
-                // 创建内容包装器
-                const contentWrapper = document.createElement('div');
-                contentWrapper.className = 'group-conversation-content-wrapper';
-
-                const titleWrapper = document.createElement('div');
-                titleWrapper.style.display = 'flex';
-                titleWrapper.style.alignItems = 'center';
-                titleWrapper.style.gap = '4px';
-
-                const title = document.createElement('div');
-                title.className = 'group-conversation-title';
-                const titleText = fullConv.title || conv.title || '未命名对话';
-                title.textContent = safeTruncateText(titleText, 60);
-                title.title = titleText; // 设置完整标题以便悬停查看
-                titleWrapper.appendChild(title);
-
-                // 如果对话在分组中置顶，显示置顶图标
-                if (conv.groupPinned) {
-                    const pinIcon = document.createElement('span');
-                    pinIcon.className = 'conversation-item-pinned';
-                    pinIcon.innerHTML = '📌';
-                    pinIcon.title = '在分组中已置顶';
-                    titleWrapper.appendChild(pinIcon);
-                }
-
-                contentWrapper.appendChild(titleWrapper);
-
-                const timeWrapper = document.createElement('div');
-                timeWrapper.className = 'group-conversation-time';
-                const dateObj = fullConv.updatedAt ? new Date(fullConv.updatedAt) : new Date();
-                const convListLocale = (typeof window.__locale === 'string' && window.__locale.startsWith('zh')) ? 'zh-CN' : 'en-US';
-                timeWrapper.textContent = dateObj.toLocaleString(convListLocale, {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                });
-
-                contentWrapper.appendChild(timeWrapper);
-
-                // 如果有第一条消息，显示内容预览
-                if (fullConv.messages && fullConv.messages.length > 0) {
-                    const firstMsg = fullConv.messages.find(m => m.role === 'user' && m.content);
-                    if (firstMsg && firstMsg.content) {
-                        const content = document.createElement('div');
-                        content.className = 'group-conversation-content';
-                        let preview = firstMsg.content.substring(0, 200);
-                        if (firstMsg.content.length > 200) {
-                            preview += '...';
-                        }
-                        content.textContent = preview;
-                        contentWrapper.appendChild(content);
-                    }
-                }
-
-                item.appendChild(contentWrapper);
-
-                // 添加三个点菜单按钮
-                const menuBtn = document.createElement('button');
-                menuBtn.className = 'conversation-item-menu';
-                menuBtn.innerHTML = '⋯';
-                menuBtn.onclick = (e) => openConversationContextMenuForId(e, conv.id, fullConv.title || conv.title || '');
-                item.appendChild(menuBtn);
-
-                item.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // 切换到对话界面，但保持分组详情状态
-                    const groupDetailPage = document.getElementById('group-detail-page');
-                    const chatContainer = document.querySelector('.chat-container');
-                    if (groupDetailPage) groupDetailPage.style.display = 'none';
-                    if (chatContainer) chatContainer.style.display = 'flex';
-                    loadConversation(conv.id);
-                };
-
-                list.appendChild(item);
-            } catch (err) {
-                console.error(`加载对话 ${conv.id} 失败:`, err);
-            }
-        }
-    } catch (error) {
-        console.error('加载分组对话失败:', error);
-    }
-}
-
-// 编辑分组
-async function editGroup() {
-    if (!currentGroupId) return;
-
-    try {
-        const response = await apiFetch(`/api/groups/${currentGroupId}`);
-        const group = await response.json();
-        if (!group) return;
-
-        const renamePrompt = typeof window.t === 'function' ? window.t('chat.renameGroupPrompt') : '请输入新名称：';
-        const newName = prompt(renamePrompt, group.name);
-        if (newName === null || !newName.trim()) return;
-
-        const trimmedName = newName.trim();
-        
-        // 前端校验：检查名称是否已存在（排除当前分组）
-        let groups;
-        if (Array.isArray(groupsCache) && groupsCache.length > 0) {
-            groups = groupsCache;
-        } else {
-            const response = await apiFetch('/api/groups');
-            groups = await response.json();
-        }
-        
-        // 确保groups是有效数组
-        if (!Array.isArray(groups)) {
-            groups = [];
-        }
-        
-        const nameExists = groups.some(g => g.name === trimmedName && g.id !== currentGroupId);
-        if (nameExists) {
-            alert(typeof window.t === 'function' ? window.t('createGroupModal.nameExists') : '分组名称已存在，请使用其他名称');
-            return;
-        }
-
-        const updateResponse = await apiFetch(`/api/groups/${currentGroupId}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                name: trimmedName,
-                icon: group.icon || '📁',
-            }),
-        });
-
-        if (!updateResponse.ok) {
-            const error = await updateResponse.json();
-            if (error.error && error.error.includes('已存在')) {
-                alert('分组名称已存在，请使用其他名称');
-                return;
-            }
-            throw new Error(error.error || '更新失败');
-        }
-
-        loadGroups();
-        
-        const titleEl = document.getElementById('group-detail-title');
-        if (titleEl) {
-            titleEl.textContent = trimmedName;
-        }
-    } catch (error) {
-        console.error('编辑分组失败:', error);
-        alert('编辑失败: ' + (error.message || '未知错误'));
-    }
-}
-
-function removeConversationGroupFromLocalState(groupId) {
-    groupsCache = groupsCache.filter(group => group.id !== groupId);
-    Object.keys(conversationGroupMappingCache).forEach(convId => {
-        if (conversationGroupMappingCache[convId] === groupId) {
-            delete conversationGroupMappingCache[convId];
-        }
-    });
-    document.querySelectorAll('.group-item[data-group-id]').forEach(item => {
-        if (item.dataset.groupId === groupId) item.remove();
-    });
-}
-
-async function deleteConversationGroupById(groupId, options = {}) {
-    if (typeof requirePermission === 'function' && !requirePermission('group:delete')) {
-        if (options.closeContextMenu) closeGroupContextMenu();
-        return;
-    }
-    if (!groupId) return;
-
-    const deleteConfirmMsg = typeof window.t === 'function' ? window.t('chat.deleteGroupConfirm') : '确定要删除此分组吗？分组中的对话不会被删除，但会从分组中移除。';
-    if (!confirm(deleteConfirmMsg)) {
-        if (options.closeContextMenu) closeGroupContextMenu();
-        return;
-    }
-
-    try {
-        const deleteResponse = await apiFetch(`/api/groups/${groupId}`, {
-            method: 'DELETE',
-        });
-        await assertConversationActionResponse(deleteResponse, '删除分组失败');
-
-        // 删除成功后先同步本地界面，再做服务端列表校准。
-        removeConversationGroupFromLocalState(groupId);
-        if (currentGroupId === groupId) exitGroupDetail();
-
-        // 如果"移动到分组"子菜单是打开的，刷新它
-        const submenu = document.getElementById('move-to-group-submenu');
-        await loadGroups();
-        if (submenu && submenu.style.display !== 'none') {
-            await showMoveToGroupSubmenu();
-        }
-
-        // 刷新对话列表，确保之前被分组的对话能立即显示
-        await loadConversationsWithGroups();
-    } catch (error) {
-        console.error('删除分组失败:', error);
-        alert('删除失败: ' + (error.message || '未知错误'));
-    } finally {
-        if (options.closeContextMenu) closeGroupContextMenu();
-    }
-}
-
-// 删除当前分组详情中的分组
-async function deleteGroup() {
-    await deleteConversationGroupById(currentGroupId);
-}
-
-// 从上下文菜单重命名分组
-async function renameGroupFromContext() {
-    const groupId = contextMenuGroupId;
-    if (!groupId) return;
-
-    try {
-        const response = await apiFetch(`/api/groups/${groupId}`);
-        const group = await response.json();
-        if (!group) return;
-
-        const renamePrompt = typeof window.t === 'function' ? window.t('chat.renameGroupPrompt') : '请输入新名称：';
-        const newName = prompt(renamePrompt, group.name);
-        if (newName === null || !newName.trim()) {
-            closeGroupContextMenu();
-            return;
-        }
-
-        const trimmedName = newName.trim();
-        
-        // 前端校验：检查名称是否已存在（排除当前分组）
-        let groups;
-        if (Array.isArray(groupsCache) && groupsCache.length > 0) {
-            groups = groupsCache;
-        } else {
-            const response = await apiFetch('/api/groups');
-            groups = await response.json();
-        }
-        
-        // 确保groups是有效数组
-        if (!Array.isArray(groups)) {
-            groups = [];
-        }
-        
-        const nameExists = groups.some(g => g.name === trimmedName && g.id !== groupId);
-        if (nameExists) {
-            alert(typeof window.t === 'function' ? window.t('createGroupModal.nameExists') : '分组名称已存在，请使用其他名称');
-            return;
-        }
-
-        const updateResponse = await apiFetch(`/api/groups/${groupId}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                name: trimmedName,
-                icon: group.icon || '📁',
-            }),
-        });
-
-        if (!updateResponse.ok) {
-            const error = await updateResponse.json();
-            if (error.error && error.error.includes('已存在')) {
-                alert('分组名称已存在，请使用其他名称');
-                return;
-            }
-            throw new Error(error.error || '更新失败');
-        }
-
-        loadGroups();
-        
-        // 如果当前在分组详情页，更新标题
-        if (currentGroupId === groupId) {
-            const titleEl = document.getElementById('group-detail-title');
-            if (titleEl) {
-                titleEl.textContent = trimmedName;
-            }
-        }
-    } catch (error) {
-        console.error('重命名分组失败:', error);
-        const failedLabel = typeof window.t === 'function' ? window.t('chat.renameFailed') : '重命名失败';
-        const unknownErr = typeof window.t === 'function' ? window.t('createGroupModal.unknownError') : '未知错误';
-        alert(failedLabel + ': ' + (error.message || unknownErr));
-    }
-
-    closeGroupContextMenu();
-}
-
-// 从上下文菜单置顶分组
-async function pinGroupFromContext() {
-    const groupId = contextMenuGroupId;
-    if (!groupId) return;
-
-    try {
-        // 获取当前分组信息
-        const response = await apiFetch(`/api/groups/${groupId}`);
-        const group = await response.json();
-        if (!group) return;
-
-        const newPinnedState = !group.pinned;
-
-        // 调用 API 更新置顶状态
-        const updateResponse = await apiFetch(`/api/groups/${groupId}/pinned`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                pinned: newPinnedState,
-            }),
-        });
-
-        if (!updateResponse.ok) {
-            const error = await updateResponse.json();
-            throw new Error(error.error || '更新失败');
-        }
-
-        // 重新加载分组列表以更新显示顺序
-        loadGroups();
-    } catch (error) {
-        console.error('置顶分组失败:', error);
-        alert('置顶失败: ' + (error.message || '未知错误'));
-    }
-
-    closeGroupContextMenu();
-}
-
-// 从上下文菜单删除分组
-async function deleteGroupFromContext() {
-    const groupId = contextMenuGroupId;
-    if (!groupId) return;
-    await deleteConversationGroupById(groupId, { closeContextMenu: true });
-}
-
-// 关闭分组上下文菜单
-function closeGroupContextMenu() {
-    const menu = document.getElementById('group-context-menu');
-    if (menu) {
-        menu.style.display = 'none';
-    }
-    contextMenuGroupId = null;
-}
-
-
-// 分组搜索相关变量
-let groupSearchTimer = null;
-let currentGroupSearchQuery = '';
-
-// 切换分组搜索框显示/隐藏
-function toggleGroupSearch() {
-    const searchContainer = document.getElementById('group-search-container');
-    const searchInput = document.getElementById('group-search-input');
-    
-    if (!searchContainer || !searchInput) return;
-    
-    if (searchContainer.style.display === 'none') {
-        searchContainer.style.display = 'block';
-        searchInput.focus();
-    } else {
-        searchContainer.style.display = 'none';
-        clearGroupSearch();
-    }
-}
-
-// 处理分组搜索输入
-function handleGroupSearchInput(event) {
-    // 支持回车键搜索
-    if (event.key === 'Enter') {
-        event.preventDefault();
-        performGroupSearch();
-        return;
-    }
-    
-    // 支持ESC键关闭搜索
-    if (event.key === 'Escape') {
-        clearGroupSearch();
-        toggleGroupSearch();
-        return;
-    }
-    
-    const searchInput = document.getElementById('group-search-input');
-    const clearBtn = document.getElementById('group-search-clear-btn');
-    
-    if (!searchInput) return;
-    
-    const query = searchInput.value.trim();
-    
-    // 显示/隐藏清除按钮
-    if (clearBtn) {
-        clearBtn.style.display = query ? 'block' : 'none';
-    }
-    
-    // 防抖搜索
-    if (groupSearchTimer) {
-        clearTimeout(groupSearchTimer);
-    }
-    
-    groupSearchTimer = setTimeout(() => {
-        performGroupSearch();
-    }, 300); // 300ms 防抖
-}
-
-// 执行分组搜索
-async function performGroupSearch() {
-    const searchInput = document.getElementById('group-search-input');
-    if (!searchInput || !currentGroupId) return;
-    
-    const query = searchInput.value.trim();
-    currentGroupSearchQuery = query;
-    
-    // 加载搜索结果
-    await loadGroupConversations(currentGroupId, query);
-}
-
-// 清除分组搜索
-function clearGroupSearch() {
-    const searchInput = document.getElementById('group-search-input');
-    const clearBtn = document.getElementById('group-search-clear-btn');
-    
-    if (searchInput) {
-        searchInput.value = '';
-    }
-    if (clearBtn) {
-        clearBtn.style.display = 'none';
-    }
-    
-    currentGroupSearchQuery = '';
-    
-    // 重新加载分组对话（不搜索）
-    if (currentGroupId) {
-        loadGroupConversations(currentGroupId, '');
-    }
-}
-
-// 初始化时加载分组
+// 初始化时加载对话列表
 document.addEventListener('DOMContentLoaded', async () => {
     ensureProjectSidebarStructure();
     if (window.i18nReady) await window.i18nReady;
@@ -12588,25 +11165,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     initConversationProjectCustomSelect();
     initConversationsPaginationEvents();
     await refreshConversationProjectFilter();
-    await loadGroups();
-    await loadConversationsWithGroups();
-    
+    await loadConversations();
+
     // 添加页面焦点时自动刷新对话列表的功能
     // 这样当通过OpenAPI创建对话后，切换回页面时能自动看到新对话
     let lastFocusTime = Date.now();
     const CONVERSATION_REFRESH_INTERVAL = 30000; // 30秒内最多刷新一次，避免过于频繁
-    
+
     window.addEventListener('focus', () => {
         const now = Date.now();
         // 如果距离上次刷新超过30秒，才刷新对话列表
         if (now - lastFocusTime > CONVERSATION_REFRESH_INTERVAL) {
             lastFocusTime = now;
-            if (typeof loadConversationsWithGroups === 'function') {
-                loadConversationsWithGroups();
+            if (typeof loadConversations === 'function') {
+                loadConversations();
             }
         }
     });
-    
+
     // 监听页面可见性变化（当用户切换标签页回来时）
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
@@ -12614,8 +11190,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const now = Date.now();
             if (now - lastFocusTime > CONVERSATION_REFRESH_INTERVAL) {
                 lastFocusTime = now;
-                if (typeof loadConversationsWithGroups === 'function') {
-                    loadConversationsWithGroups();
+                if (typeof loadConversations === 'function') {
+                    loadConversations();
                 }
             }
         }
@@ -12626,7 +11202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const id = e.detail && e.detail.conversationId;
         if (!id) return;
         // API 已确认删除后立即移除可见列表项，网络刷新只负责校准分页和计数。
-        document.querySelectorAll('.conversation-item[data-conversation-id], .group-conversation-item[data-conversation-id]')
+        document.querySelectorAll('.conversation-item[data-conversation-id]')
             .forEach((item) => {
                 if (item.dataset.conversationId === id) item.remove();
             });
@@ -12640,9 +11216,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             renderChatWelcomeEmptyState();
             addAttackChainButton(null);
         }
-        if (typeof loadConversationsWithGroups === 'function') {
-            loadConversationsWithGroups();
-        } else if (typeof loadConversations === 'function') {
+        if (typeof loadConversations === 'function') {
             loadConversations();
         }
     });

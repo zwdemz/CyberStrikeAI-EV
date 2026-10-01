@@ -1,7 +1,6 @@
 package database
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,19 +44,25 @@ func TestBuildAuditLogsWhere_relatedUserID(t *testing.T) {
 }
 
 func TestListAuditLogs_timeFilterMixedStorageFormats(t *testing.T) {
-	root, err := os.Getwd()
-	if err != nil {
-		t.Skip(err)
-	}
-	dbPath := filepath.Join(root, "..", "..", "data", "conversations.db")
-	if _, err := os.Stat(dbPath); err != nil {
-		t.Skip("conversations.db not found")
-	}
-	db, err := NewDB(dbPath, zap.NewNop())
+	db, err := NewDB(filepath.Join(t.TempDir(), "audit-time.db"), zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	// Fixtures cover both stored timestamp formats without opening runtime data.
+	for _, fixture := range []struct{ id, timestamp string }{
+		{"utc", "2026-06-16T18:00:00Z"},
+		{"offset", "2026-06-17 02:00:00+08:00"},
+		{"before", "2026-06-16T16:00:00Z"},
+		{"after", "2026-06-17 04:00:00+00:00"},
+	} {
+		if err := db.AppendAuditLog(&AuditLog{ID: fixture.id, Category: "test", Action: "time-filter"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`UPDATE audit_logs SET created_at = ? WHERE id = ?`, fixture.timestamp, fixture.id); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	since, _ := ParseRFC3339Time("2026-06-16T17:02:00Z")
 	until, _ := ParseRFC3339Time("2026-06-17T03:03:00Z")
@@ -65,6 +70,9 @@ func TestListAuditLogs_timeFilterMixedStorageFormats(t *testing.T) {
 	logs, err := db.ListAuditLogs(filter)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("expected the two in-range fixtures, got %d", len(logs))
 	}
 	for _, row := range logs {
 		at := row.CreatedAt.UTC()

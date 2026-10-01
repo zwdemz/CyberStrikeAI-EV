@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS hitl_conversation_configs (
 // reconcileRestartInterruptedMessages completes durable terminal state for
 // historical assistant placeholders that have explicit evidence of being over:
 // a terminal HITL/process event, or a later message in the same conversation.
+// SQLite insertion order breaks ties when the system clock assigns equal times.
 // The evidence requirement avoids rewriting a placeholder that could still be
 // recoverable by another runtime.
 func (m *HITLManager) reconcileRestartInterruptedMessages() error {
@@ -153,7 +154,8 @@ SELECT msg.id, msg.conversation_id,
            SELECT MIN(later.created_at)
            FROM messages later
            WHERE later.conversation_id = msg.conversation_id
-             AND later.created_at > msg.created_at
+             AND (later.created_at > msg.created_at
+                  OR (later.created_at = msg.created_at AND later.rowid > msg.rowid))
        ), (
            SELECT MAX(pd.created_at)
            FROM process_details pd
@@ -177,7 +179,8 @@ WHERE msg.role = 'assistant'
       OR EXISTS (
           SELECT 1 FROM messages later
           WHERE later.conversation_id = msg.conversation_id
-            AND later.created_at > msg.created_at
+            AND (later.created_at > msg.created_at
+                 OR (later.created_at = msg.created_at AND later.rowid > msg.rowid))
       )
   )`)
 	if err != nil {
@@ -659,10 +662,13 @@ func (h *AgentHandler) waitHITLApproval(runCtx context.Context, cancelRun contex
 		expiresAt := approvalStartedAt.Add(cfg.Timeout)
 		approvalExpiresAt = &expiresAt
 	}
+	auditBackend, auditModel := h.hitlAuditEngineInfo()
 	payload["hitlApproval"] = map[string]interface{}{
 		"createdAt":      approvalStartedAt,
 		"timeoutSeconds": timeoutSeconds,
 		"expiresAt":      approvalExpiresAt,
+		"auditBackend":   auditBackend,
+		"auditModel":     auditModel,
 	}
 	payloadRaw, _ := json.Marshal(payload)
 	p, err := h.hitlManager.CreatePendingInterrupt(conversationID, assistantMessageID, cfg.Mode, toolName, toolCallID, string(payloadRaw), cfg.Reviewer)
@@ -1072,15 +1078,18 @@ type setHitlDefaultConfigReq struct {
 }
 
 func (h *AgentHandler) hitlDefaultConfigResponse() gin.H {
+	backend, model := h.hitlAuditEngineInfo()
 	return gin.H{
 		"defaultMode":             h.hitlEffectiveDefaultMode(),
 		"defaultReviewer":         h.hitlEffectiveDefaultReviewer(),
 		"defaultTimeoutSeconds":   h.hitlEffectiveDefaultTimeoutSeconds(),
 		"hitlGlobalToolWhitelist": h.hitlConfigGlobalToolWhitelist(),
+		"auditBackend":            backend,
+		"auditModel":              model,
 	}
 }
 
-// GetHITLDefaultConfig 返回全局默认人机协同配置。
+// GetHITLDefaultConfig 返回 config.yaml 中的全局默认人机协同配置。
 func (h *AgentHandler) GetHITLDefaultConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, h.hitlDefaultConfigResponse())
 }
@@ -1098,27 +1107,31 @@ func (h *AgentHandler) UpdateHITLDefaultConfig(c *gin.Context) {
 	}
 	mode := normalizeHitlDefaultMode(req.Mode)
 	reviewer := normalizeHitlReviewer(req.Reviewer)
-	if err := h.hitlDefaultReviewerSaver.UpdateHitlDefaultConfig(mode, reviewer, req.TimeoutSeconds); err != nil {
+	timeoutSeconds := req.TimeoutSeconds
+	if timeoutSeconds < 0 {
+		timeoutSeconds = 0
+	}
+	if err := h.hitlDefaultReviewerSaver.UpdateHitlDefaultConfig(mode, reviewer, timeoutSeconds); err != nil {
+		h.logger.Warn("写入 HITL 默认配置到 config.yaml 失败", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if h.config != nil {
 		h.config.Hitl.DefaultMode = mode
 		h.config.Hitl.DefaultReviewer = reviewer
-		timeout := req.TimeoutSeconds
-		if timeout < 0 {
-			timeout = 0
-		}
-		h.config.Hitl.DefaultTimeoutSeconds = &timeout
+		h.config.Hitl.DefaultTimeoutSeconds = &timeoutSeconds
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	if h.audit != nil {
+		h.audit.RecordOK(c, "hitl", "default_config_update", "HITL 全局默认配置更新", "hitl_config", "default", nil)
+	}
+	out := h.hitlDefaultConfigResponse()
+	out["ok"] = true
+	c.JSON(http.StatusOK, out)
 }
 
 // GetHITLDefaultReviewer 返回 config.yaml 中的全局默认审批方。
 func (h *AgentHandler) GetHITLDefaultReviewer(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"defaultReviewer": h.hitlEffectiveDefaultReviewer(),
-	})
+	c.JSON(http.StatusOK, h.hitlDefaultConfigResponse())
 }
 
 // UpdateHITLDefaultReviewer 将全局默认审批方写入 config.yaml（未选会话时切换审批方）。
@@ -1144,10 +1157,9 @@ func (h *AgentHandler) UpdateHITLDefaultReviewer(c *gin.Context) {
 	if h.audit != nil {
 		h.audit.RecordOK(c, "hitl", "default_reviewer_update", "HITL 全局默认审批方更新", "hitl_config", "default_reviewer", nil)
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"ok":              true,
-		"defaultReviewer": reviewer,
-	})
+	out := h.hitlDefaultConfigResponse()
+	out["ok"] = true
+	c.JSON(http.StatusOK, out)
 }
 
 // SetHITLGlobalToolWhitelist 整表替换 config.yaml 中的全局免审批工具白名单。

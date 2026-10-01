@@ -2923,7 +2923,7 @@ function ensureProjectFolderPreview() {
             <span class="project-folder-preview-title"></span>
         </div>
         <div class="project-folder-preview-stats">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 12a8.5 8.5 0 0 1-9 8.48A8.5 8.5 0 1 1 20.48 11H21v5l-2-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.5"/></svg>
             <span></span>
         </div>
         <div class="project-folder-preview-details">
@@ -3084,6 +3084,15 @@ function getProjectConversationModeLabel(conversation) {
     );
 }
 
+function getProjectConversationModeIconClass(conversation) {
+    const mode = String(conversation?.agentMode || conversation?.agent_mode || '').trim().toLowerCase();
+    if (mode === 'eino_single') return 'eino';
+    if (mode === 'deep') return 'deep';
+    if (mode === 'plan_execute') return 'plan';
+    if (mode === 'supervisor') return 'supervisor';
+    return 'default';
+}
+
 function ensureProjectConversationPreview() {
     let preview = document.getElementById('project-conversation-preview');
     if (preview) return preview;
@@ -3102,7 +3111,7 @@ function ensureProjectConversationPreview() {
             <span class="project-conversation-preview-project"></span>
         </div>
         <div class="project-conversation-preview-meta">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="6" cy="5" r="2" stroke="currentColor" stroke-width="1.7"/><circle cx="6" cy="19" r="2" stroke="currentColor" stroke-width="1.7"/><circle cx="18" cy="9" r="2" stroke="currentColor" stroke-width="1.7"/><path d="M6 7v10M8 15c5 0 3-6 8-6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span class="project-conversation-preview-mode-icon agent-mode-logo agent-mode-logo--default" aria-hidden="true"><svg class="agent-mode-logo__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><path d="M8 16h.01"/><path d="M16 16h.01"/></svg></span>
             <span class="project-conversation-preview-mode"></span>
             <span class="project-conversation-preview-separator" aria-hidden="true">·</span>
             <span class="project-conversation-preview-status"></span>
@@ -3165,6 +3174,10 @@ function showProjectConversationPreview(conversation, project, row) {
     ageEl.hidden = !ageEl.textContent;
     preview.querySelector('.project-conversation-preview-project').textContent = project?.name
         || pickerMessage(tp, 'chat.conversationPreviewNoProject', '未绑定项目');
+    const modeIcon = preview.querySelector('.project-conversation-preview-mode-icon');
+    if (modeIcon) {
+        modeIcon.className = 'project-conversation-preview-mode-icon agent-mode-logo agent-mode-logo--' + getProjectConversationModeIconClass(conversation);
+    }
     preview.querySelector('.project-conversation-preview-mode').textContent = getProjectConversationModeLabel(conversation);
     statusEl.textContent = status;
     statusEl.className = 'project-conversation-preview-status'
@@ -3352,15 +3365,17 @@ function appendChatProjectConversationItem(list, conversation, project) {
     });
     button.appendChild(label);
 
-    button.addEventListener('click', async () => {
+    button.addEventListener('click', async (event) => {
+        const targetConversationId = String(event.currentTarget && event.currentTarget.dataset.conversationId || '').trim();
+        if (!targetConversationId) return;
         projectConversationPreviewSuppressedUntil = Date.now() + 700;
         hideProjectConversationPreview(true);
-        selectChatProjectConversationItem(conversation.id);
+        selectChatProjectConversationItem(targetConversationId);
         if (typeof window.loadConversation === 'function') {
-            await window.loadConversation(conversation.id);
+            await window.loadConversation(targetConversationId);
         }
-        if (window.currentConversationId === conversation.id && completed) {
-            markProjectConversationViewed(conversation.id, completed.completedAt);
+        if (window.currentConversationId === targetConversationId && completed) {
+            markProjectConversationViewed(targetConversationId, completed.completedAt);
             renderChatProjectFolders(projectsCacheAll);
         }
     });

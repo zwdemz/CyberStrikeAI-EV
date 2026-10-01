@@ -101,6 +101,12 @@ func TestEnsureSchemaFinalizesOnlyHistoricalPlaceholdersWithTerminalEvidence(t *
 	if _, err := db.AddMessage(supersededConversation.ID, "user", "继续", nil); err != nil {
 		t.Fatalf("create later message: %v", err)
 	}
+	// Clock resolution can give successive messages identical timestamps; their
+	// insertion order must still identify the earlier placeholder as superseded.
+	if _, err := db.Exec(`UPDATE messages SET created_at = ? WHERE conversation_id = ?`,
+		"2026-01-01 00:00:00", supersededConversation.ID); err != nil {
+		t.Fatalf("set identical message timestamps: %v", err)
+	}
 
 	timeoutConversation, err := db.CreateConversation("timeout placeholder", database.ConversationCreateMeta{})
 	if err != nil {
