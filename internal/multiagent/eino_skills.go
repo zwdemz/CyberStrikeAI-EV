@@ -2,6 +2,7 @@ package multiagent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,24 +11,23 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/einomcp"
 	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai/internal/tooloutput"
 
 	localbk "github.com/cloudwego/eino-ext/adk/backend/local"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/skill"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
 
-// prepareEinoSkills builds Eino official skill backend + middleware, and a shared local disk backend.
-// The local backend is also required by reduction, so reduction must not silently disappear merely
-// because Skills are disabled or skills_dir is unavailable.
-// skillsRoot is the absolute skills directory (empty when skills are not active).
-func prepareEinoSkills(
+func prepareEinoAgenticSkills(
 	ctx context.Context,
 	skillsDir string,
 	ma *config.MultiAgentConfig,
 	logger *zap.Logger,
-) (loc *localbk.Local, skillMW adk.ChatModelAgentMiddleware, fsTools bool, skillsRoot string, err error) {
+) (loc *localbk.Local, skillMW adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], fsTools bool, skillsRoot string, err error) {
 	if ma == nil {
 		return nil, nil, false, "", nil
 	}
@@ -49,7 +49,7 @@ func prepareEinoSkills(
 	root := strings.TrimSpace(skillsDir)
 	if root == "" {
 		if logger != nil {
-			logger.Warn("eino skills: skills_dir empty, skip")
+			logger.Warn("eino agentic skills: skills_dir empty, skip")
 		}
 		if !needLocalBackend {
 			return nil, nil, false, "", nil
@@ -63,7 +63,7 @@ func prepareEinoSkills(
 	}
 	if st, err := os.Stat(abs); err != nil || !st.IsDir() {
 		if logger != nil {
-			logger.Warn("eino skills: directory missing, skip", zap.String("dir", abs), zap.Error(err))
+			logger.Warn("eino agentic skills: directory missing, skip", zap.String("dir", abs), zap.Error(err))
 		}
 		if !needLocalBackend {
 			return nil, nil, false, "", nil
@@ -82,30 +82,32 @@ func prepareEinoSkills(
 		BaseDir: abs,
 	})
 	if err != nil {
-		return nil, nil, false, "", fmt.Errorf("eino skill filesystem backend: %w", err)
+		return nil, nil, false, "", fmt.Errorf("eino agentic skill filesystem backend: %w", err)
 	}
 
-	sc := &skill.Config{Backend: skillBE}
+	sc := &skill.TypedConfig[*schema.AgenticMessage]{Backend: skillBE}
 	if name := strings.TrimSpace(ma.EinoSkills.SkillToolName); name != "" {
 		sc.SkillToolName = &name
 	}
-	skillMW, err = skill.NewMiddleware(ctx, sc)
+	skillMW, err = skill.NewTyped[*schema.AgenticMessage](ctx, sc)
 	if err != nil {
-		return nil, nil, false, "", fmt.Errorf("eino skill middleware: %w", err)
+		return nil, nil, false, "", fmt.Errorf("eino agentic skill middleware: %w", err)
 	}
 
 	fsTools = ma.EinoSkills.EinoSkillFilesystemToolsEffective()
 	return loc, skillMW, fsTools, abs, nil
 }
 
-// subAgentFilesystemMiddleware returns filesystem middleware for a sub-agent when Deep itself
-// does not set Backend (fsTools false on orchestrator) but we still want tools on subs — not used;
-// when orchestrator has Backend, builtin FS is only on outer agent; subs need explicit FS for parity.
-func subAgentFilesystemMiddleware(
+func subAgentAgenticFilesystemMiddleware(
 	ctx context.Context,
 	loc *localbk.Local,
 	invokeNotify *einomcp.ToolInvokeNotifyHolder,
 	einoAgentName string,
+	conversationID string,
+	projectID string,
+	reductionRootDir string,
+	toolMaxBytes int,
+	binder *MCPExecutionBinder,
 	beginMonitor func(toolCallID, command string) string,
 	appendPartialMonitor func(executionID, toolCallID, chunk string),
 	registerCancelMonitor func(executionID string, cancel context.CancelFunc),
@@ -115,11 +117,11 @@ func subAgentFilesystemMiddleware(
 	toolWaitTimeoutSeconds int,
 	shellNoOutputTimeoutSec int,
 	outputChunk func(toolName, toolCallID, chunk string),
-) (adk.ChatModelAgentMiddleware, error) {
+) (adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage], error) {
 	if loc == nil {
 		return nil, nil
 	}
-	return filesystem.New(ctx, &filesystem.MiddlewareConfig{
+	mw, err := filesystem.NewTyped[*schema.AgenticMessage](ctx, &filesystem.MiddlewareConfig{
 		Backend: loc,
 		StreamingShell: &einoStreamingShellWrap{
 			inner:                   security.NewEinoStreamingShell(),
@@ -136,6 +138,71 @@ func subAgentFilesystemMiddleware(
 			shellNoOutputTimeoutSec: shellNoOutputTimeoutSec,
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &einoAgenticFilesystemToolMiddleware{
+		TypedChatModelAgentMiddleware: mw,
+		conversationID:                conversationID,
+		projectID:                     projectID,
+		reductionRootDir:              reductionRootDir,
+		toolMaxBytes:                  toolMaxBytes,
+		binder:                        binder,
+	}, nil
+}
+
+type einoAgenticFilesystemToolMiddleware struct {
+	adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]
+	conversationID   string
+	projectID        string
+	reductionRootDir string
+	toolMaxBytes     int
+	binder           *MCPExecutionBinder
+}
+
+func (m *einoAgenticFilesystemToolMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint adk.InvokableToolCallEndpoint, tCtx *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {
+	wrapped, err := m.TypedChatModelAgentMiddleware.WrapInvokableToolCall(ctx, endpoint, tCtx)
+	if err != nil {
+		return nil, err
+	}
+	if tCtx == nil || !isBuiltinEinoADKFilesystemToolName(tCtx.Name) {
+		return wrapped, nil
+	}
+	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+		args := parseToolArgumentsObject(argumentsInJSON)
+		if len(args) > 0 && m.binder != nil {
+			m.binder.BindArguments(tCtx.CallID, args)
+		}
+		result, runErr := wrapped(ctx, argumentsInJSON, opts...)
+		if runErr != nil {
+			return result, runErr
+		}
+		return m.boundToolResult(tCtx.CallID, result), nil
+	}, nil
+}
+
+func (m *einoAgenticFilesystemToolMiddleware) boundToolResult(toolCallID, result string) string {
+	if m == nil || m.toolMaxBytes <= 0 || len(result) <= m.toolMaxBytes {
+		return result
+	}
+	return tooloutput.BoundWithSpill(result, m.toolMaxBytes, tooloutput.SpillOpts{
+		RootDir:        m.reductionRootDir,
+		ProjectID:      m.projectID,
+		ConversationID: m.conversationID,
+		ExecutionID:    toolCallID,
+	})
+}
+
+func parseToolArgumentsObject(raw string) map[string]interface{} {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" || raw == "null" {
+		return nil
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil || len(args) == 0 {
+		return nil
+	}
+	return args
 }
 
 // agentToolTimeoutMinutes 返回 agent.tool_timeout_minutes（与 executeToolViaMCP 一致）；cfg 为 nil 时 0。

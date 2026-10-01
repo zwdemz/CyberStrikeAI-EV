@@ -75,6 +75,34 @@ func TestLoadIgnoresLegacyAuthPasswordField(t *testing.T) {
 	}
 }
 
+func TestHitlEffectiveAuditBackend(t *testing.T) {
+	if got := (HitlConfig{}).EffectiveAuditBackend(); got != HitlAuditBackendOpenAI {
+		t.Fatalf("empty backend = %q, want openai", got)
+	}
+	if got := (HitlConfig{AuditBackend: "Jev"}).EffectiveAuditBackend(); got != HitlAuditBackendTypeSafe {
+		t.Fatalf("jev alias = %q, want typesafe", got)
+	}
+	if got := (HitlConfig{AuditBackend: "claude"}).EffectiveAuditBackend(); got != HitlAuditBackendOpenAI {
+		t.Fatalf("unknown backend = %q, want openai", got)
+	}
+}
+
+func TestHitlTypeSafeConfigEffectiveDoesNotInheritMainKey(t *testing.T) {
+	gotURL, gotKey, gotModel := (HitlConfig{
+		AuditBackend: "typesafe",
+		AuditModel:   OpenAIConfig{APIKey: "ts-key"},
+	}).TypeSafeConfigEffective()
+	if gotURL != TypeSafeDefaultBaseURL {
+		t.Fatalf("base url = %q, want default", gotURL)
+	}
+	if gotKey != "ts-key" {
+		t.Fatalf("api key = %q, want ts-key", gotKey)
+	}
+	if gotModel != TypeSafeDefaultModel {
+		t.Fatalf("model = %q, want default", gotModel)
+	}
+}
+
 func TestHitlAuditModelEffectiveFallsBackToMainConfig(t *testing.T) {
 	main := OpenAIConfig{
 		Provider: "openai",
@@ -92,6 +120,29 @@ func TestHitlAuditModelEffectiveFallsBackToMainConfig(t *testing.T) {
 	}
 	if got.Model != "small-reviewer" {
 		t.Fatalf("expected audit model override, got %q", got.Model)
+	}
+}
+
+func TestHitlDefaultConfigEffectiveValues(t *testing.T) {
+	if got := (HitlConfig{}).EffectiveDefaultMode(); got != "off" {
+		t.Fatalf("empty default mode = %q, want off", got)
+	}
+	if got := (HitlConfig{DefaultMode: "review-edit"}).EffectiveDefaultMode(); got != "off" {
+		t.Fatalf("unknown default mode = %q, want off", got)
+	}
+	if got := (HitlConfig{DefaultMode: "review_edit"}).EffectiveDefaultMode(); got != "review_edit" {
+		t.Fatalf("review_edit default mode = %q, want review_edit", got)
+	}
+	if got := (HitlConfig{}).EffectiveDefaultTimeoutSeconds(); got != 300 {
+		t.Fatalf("empty default timeout = %d, want 300", got)
+	}
+	zero := 0
+	if got := (HitlConfig{DefaultTimeoutSeconds: &zero}).EffectiveDefaultTimeoutSeconds(); got != 0 {
+		t.Fatalf("zero default timeout = %d, want 0", got)
+	}
+	neg := -1
+	if got := (HitlConfig{DefaultTimeoutSeconds: &neg}).EffectiveDefaultTimeoutSeconds(); got != 0 {
+		t.Fatalf("negative default timeout = %d, want 0", got)
 	}
 }
 
@@ -137,6 +188,84 @@ func TestLoadUsesAIDefaultChannelAsRuntimeOpenAI(t *testing.T) {
 	}
 }
 
+func TestNormalizeAIProviderProfilesForOfficialDeepSeekEndpoint(t *testing.T) {
+	cfg := &Config{
+		OpenAI: OpenAIConfig{
+			BaseURL: "https://api.deepseek.com/v1",
+			Model:   "deepseek-chat",
+			Reasoning: OpenAIReasoningConfig{
+				Profile: "openai_compat",
+			},
+		},
+		AI: AIConfig{
+			Channels: map[string]AIChannelConfig{
+				"official": {
+					BaseURL: "api.deepseek.com/v1",
+					Model:   "deepseek-chat",
+					Reasoning: OpenAIReasoningConfig{
+						Profile: "auto",
+					},
+				},
+				"gateway": {
+					BaseURL: "https://compatible.example.com/v1",
+					Model:   "deepseek-chat",
+					Reasoning: OpenAIReasoningConfig{
+						Profile: "openai_compat",
+					},
+				},
+			},
+		},
+	}
+
+	cfg.NormalizeAIProviderProfiles()
+
+	if cfg.OpenAI.Reasoning.Profile != "deepseek" {
+		t.Fatalf("openai profile = %q, want deepseek", cfg.OpenAI.Reasoning.Profile)
+	}
+	if got := cfg.AI.Channels["official"].Reasoning.Profile; got != "deepseek" {
+		t.Fatalf("official channel profile = %q, want deepseek", got)
+	}
+	if got := cfg.AI.Channels["gateway"].Reasoning.Profile; got != "openai_compat" {
+		t.Fatalf("gateway profile should be preserved, got %q", got)
+	}
+}
+
+func TestLoadNormalizesDefaultChannelForOfficialDeepSeekEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	initial := strings.Join([]string{
+		"ai:",
+		"  default_channel: deepseek",
+		"  channels:",
+		"    deepseek:",
+		"      name: DeepSeek",
+		"      provider: openai_compatible",
+		"      base_url: https://api.deepseek.com/v1",
+		"      api_key: deepseek-key",
+		"      model: deepseek-chat",
+		"      reasoning:",
+		"        profile: openai_compat",
+		"server:",
+		"  host: 127.0.0.1",
+		"  port: 8080",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.OpenAI.Reasoning.Profile != "deepseek" {
+		t.Fatalf("runtime OpenAI profile = %q, want deepseek", cfg.OpenAI.Reasoning.Profile)
+	}
+	if got := cfg.AI.Channels["deepseek"].Reasoning.Profile; got != "deepseek" {
+		t.Fatalf("channel profile = %q, want deepseek", got)
+	}
+}
+
 func TestSummarizationUserIntentLedgerRunesEffective(t *testing.T) {
 	var zero MultiAgentEinoMiddlewareConfig
 	if got := zero.SummarizationUserIntentLedgerMaxRunesEffective(); got != DefaultSummarizationUserIntentLedgerMaxRunes {
@@ -169,18 +298,11 @@ func TestSummarizationOutputReserveTokensEffective(t *testing.T) {
 	}
 }
 
-func TestModelOutputLimitDefaultsAndValidation(t *testing.T) {
+func TestOpenAIOutputLimitValidation(t *testing.T) {
 	if got := (OpenAIConfig{}).MaxCompletionTokensEffective(); got != DefaultMaxCompletionTokens {
 		t.Fatalf("max completion default=%d", got)
 	}
-	mw := MultiAgentEinoMiddlewareConfig{}
-	if mw.MaxToolArgumentsBytesEffective() != 65536 || mw.MaxShellCommandBytesEffective() != 65536 || mw.ModelOutputRepairMaxAttemptsEffective() != 1 {
-		t.Fatalf("unexpected guard defaults: %+v", mw)
-	}
-	if err := validateModelOutputLimits(OpenAIConfig{}, MultiAgentEinoMiddlewareConfig{MaxShellCommandBytes: 100, MaxToolArgumentsBytes: 99}); err == nil {
-		t.Fatal("shell limit greater than generic limit must fail")
-	}
-	if err := validateModelOutputLimits(OpenAIConfig{MaxCompletionTokens: -1}, MultiAgentEinoMiddlewareConfig{}); err == nil {
+	if err := validateOpenAIOutputLimits(OpenAIConfig{MaxCompletionTokens: -1}); err == nil {
 		t.Fatal("negative completion limit must fail")
 	}
 }

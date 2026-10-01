@@ -125,6 +125,7 @@ CyberStrikeAI 将规划、执行、人工监督、证据与复盘连接在同一
 ### 安全治理与审计
 
 - 🧑‍⚖️ **人机协同**：支持审批模式、工具白名单、审计 Agent 复核和决策追踪。
+- 🛡️ **调用拦截**：「安全防护」下配置 MCP 执行前正则拦截、提醒模板和试匹配，默认启用政府域名保护。详见[调用拦截](docs/zh-CN/tool-call-guard.md)。
 - 🔐 **平台 RBAC**：支持多用户、系统及自定义角色、权限 Scope、资源归属和显式授权。
 - 🔒 **安全与审计**：提供登录保护、审计日志、SQLite 持久化和行动证据留存。
 - 📄 **结果治理**：数据库保存与 Agent 实际看到的同一份兜底后工具结果，恢复路径会再次防御历史超大输出，前端详情也有展示保护。详见[工具执行治理](docs/zh-CN/tool-execution-governance.md)。
@@ -325,7 +326,6 @@ CyberStrikeAI/
 ├── agents/              # 多代理 Markdown（orchestrator.md + 子代理 *.md）
 ├── docs/                # 专题文档（部署、配置、安全、API、知识库、C2、WebShell 等）
 ├── images/              # 文档配图
-├── scripts/             # 仓库维护检查，包括文档校验
 ├── config.yaml          # 运行配置
 ├── run.sh               # 启动脚本
 └── README*.md
@@ -373,15 +373,6 @@ CyberStrikeAI 现已加入 [404星链计划](https://github.com/knownsec/404Star
 <summary><strong>微信群</strong></summary>
 
 <img src="./images/wechat-group-cyberstrikeai-qr.jpg" alt="CyberStrikeAI 微信群二维码" width="280">
-
-</details>
-
-<details>
-<summary><strong>通过微信支付或支付宝赞助</strong></summary>
-
-<div align="center">
-  <img src="./images/sponsor-wechat-alipay-qr.jpg" alt="微信与支付宝赞助二维码" width="480">
-</div>
 
 </details>
 

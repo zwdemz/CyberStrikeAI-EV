@@ -3,11 +3,13 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/security"
 
@@ -65,7 +67,7 @@ func (h *ExternalMCPHandler) GetExternalMCPs(c *gin.Context) {
 		}
 
 		toolCount := toolCounts[name]
-		errorMsg := externalMCPStatusError(h.manager, name, status)
+		errorMsg := externalMCPStatusErrorForResponse(c, h.manager, name, status)
 
 		result[name] = ExternalMCPResponse{
 			Config:    externalMCPConfigForResponse(c, cfg),
@@ -117,15 +119,34 @@ func (h *ExternalMCPHandler) GetExternalMCP(c *gin.Context) {
 		Config:    externalMCPConfigForResponse(c, cfg),
 		Status:    status,
 		ToolCount: toolCount,
-		Error:     externalMCPStatusError(h.manager, name, status),
+		Error:     externalMCPStatusErrorForResponse(c, h.manager, name, status),
 	})
 }
 
+// externalMCPCredentialsAllowed limits editable credentials to global MCP writers.
+// Missing sessions or resource-scoped writers receive metadata only.
+func externalMCPCredentialsAllowed(c *gin.Context) bool {
+	session, ok := security.CurrentSession(c)
+	return ok && security.SessionHasPermission(c, "mcp:write") && session.ScopeFor("mcp:write") == database.RBACScopeAll
+}
+
+// externalMCPConfigForResponse returns editable settings for global writers and
+// an explicit metadata projection for other sessions. It never modifies stored
+// configuration; malformed URLs are omitted from read-only responses.
 func externalMCPConfigForResponse(c *gin.Context, cfg config.ExternalMCPServerConfig) config.ExternalMCPServerConfig {
-	if security.SessionHasPermission(c, "mcp:write") {
+	if externalMCPCredentialsAllowed(c) {
 		return cfg
 	}
-	copyCfg := cfg
+	copyCfg := config.ExternalMCPServerConfig{
+		Type: cfg.GetTransportType(), Disabled: cfg.Disabled, AutoApprove: cfg.AutoApprove,
+		MaxRetries: cfg.MaxRetries, TerminateDuration: cfg.TerminateDuration, KeepAlive: cfg.KeepAlive,
+		Description: cfg.Description, Timeout: cfg.Timeout,
+		ExternalMCPEnable: cfg.ExternalMCPEnable, ToolEnabled: cfg.ToolEnabled,
+	}
+	if endpoint, err := url.Parse(cfg.URL); err == nil && endpoint.Host != "" &&
+		(endpoint.Scheme == "https" || endpoint.Scheme == "http") {
+		copyCfg.URL = (&url.URL{Scheme: endpoint.Scheme, Host: endpoint.Host}).String()
+	}
 	if len(cfg.Env) > 0 {
 		copyCfg.Env = make(map[string]string, len(cfg.Env))
 		for key := range cfg.Env {
@@ -139,6 +160,16 @@ func externalMCPConfigForResponse(c *gin.Context, cfg config.ExternalMCPServerCo
 		}
 	}
 	return copyCfg
+}
+
+// externalMCPStatusErrorForResponse hides transport diagnostics that can include
+// credential-bearing URLs or process arguments from sessions without write access.
+func externalMCPStatusErrorForResponse(c *gin.Context, manager *mcp.ExternalMCPManager, name, status string) string {
+	detail := externalMCPStatusError(manager, name, status)
+	if detail != "" && !externalMCPCredentialsAllowed(c) {
+		return "连接失败，请联系 MCP 管理员查看详情"
+	}
+	return detail
 }
 
 // externalMCPStatusError 在 error/disconnected 状态下返回最近错误（含断连原因）。
@@ -379,6 +410,8 @@ func (h *ExternalMCPHandler) isEnabled(cfg config.ExternalMCPServerConfig) bool 
 
 // saveConfig 保存配置到文件
 func (h *ExternalMCPHandler) saveConfig() error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
 	data, err := os.ReadFile(h.configPath)
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败: %w", err)

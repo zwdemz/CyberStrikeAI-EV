@@ -10,11 +10,17 @@
 # ============================================
 
 # 前端显示的版本号（可选，不填则显示默认版本）
-version: "v1.7.17"
+version: "v1.7.20"
 # 服务器配置
 server:
   host: 0.0.0.0 # 监听地址，0.0.0.0 表示监听所有网络接口
   port: 8080 # 服务端口；未启用 TLS 时为 http://localhost:8080
+  # 默认不信任 X-Forwarded-For / X-Real-IP；反向代理部署时只填写实际代理的 IP/CIDR。
+  trusted_proxies: []
+  read_header_timeout_seconds: 10 # 读取请求头期限；0 使用默认值
+  read_timeout_seconds: 300 # 包含请求体的读取期限，大文件上传可按带宽调整
+  idle_timeout_seconds: 120 # keep-alive 空闲期限
+  webhook_max_body_bytes: 1048576 # 企业微信 POST 回调上限（1 MiB），不影响附件上传大小
   # 其他可信 Web 集成的精确 Origin。Chromium 浏览器插件会自动识别，无需配置；不要使用通配符。
   # cors_allowed_origins:
   #   - https://trusted-integration.example
@@ -36,6 +42,9 @@ auth:
 log:
   level: info # 日志级别: debug(调试), info(信息), warn(警告), error(错误)
   output: stdout # 日志输出位置: stdout(标准输出), stderr(标准错误), 或文件路径
+  diagnostic_dir: log # 额外保存 warn 及以上诊断日志，按本地日期拆分；相对于进程工作目录
+  diagnostic_retention_days: 14 # 保留天数（含当天）；省略或 <= 0 使用 14 天
+  diagnostic_disabled: false # true 关闭额外诊断日志；修改后需重启
 # 平台操作审计（系统设置 -> 日志审计；不记录对话正文与每次工具调用）
 audit:
   enabled: true
@@ -57,7 +66,7 @@ monitor:
 #   - DeepSeek: https://api.deepseek.com/v1
 #   - 其他兼容 OpenAI 协议的 API
 # 常用模型: gpt-4, gpt-3.5-turbo, deepseek-chat, claude-3-opus 等
-# provider: 可选值 openai_compatible(默认) | claude(自动桥接到 Anthropic Claude Messages API)
+# provider: 可选值 openai_compatible(默认) | claude(Eino 原生 Anthropic Messages API)
 ai:
   default_channel: qwen-max
   channels:
@@ -76,6 +85,14 @@ ai:
         allow_client_reasoning: true # false 时忽略对话请求体 reasoning，仅以下方为准
         profile: openai_compat # auto | deepseek_compat | openai_compat | output_config_effort
         # extra_request_fields: {} # 可选：管理员自定义根级 JSON 片段（高级）
+    # qwen-plus:
+    #   name: Qwen Plus Fallback
+    #   provider: openai_compatible
+    #   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    #   api_key: sk-xxxxxxx
+    #   model: qwen-plus
+    #   max_total_tokens: 120000
+    #   max_completion_tokens: 32768
 # 视觉分析（analyze_image MCP 工具；图片仅在单次 VL 调用中出现，Agent 上下文只保留文字摘要）
 vision:
   enabled: false # true 且 model 非空时注册 analyze_image
@@ -99,10 +116,10 @@ fofa:
   base_url: https://fofa.info/api/v1/search/all # 可选，留空则使用默认
   api_key: "" # FOFA API Key（可选，建议在系统设置中填写）
 zoomeye:
-  base_url: https://api.zoomeye.org/v2/search # 可选，留空则使用默认
+  base_url: https://api.zoomeye.ai/v2/search # 可选，留空则使用默认
   api_key: "" # ZoomEye API Key；也可通过 ZOOMEYE_API_KEY 环境变量配置
 quake:
-  base_url: https://quake.360.cn/api/v3/search/quake_service # 可选，留空则使用默认
+  base_url: https://quake.360.net/api/v3/search/quake_service # 可选，留空则使用默认
   api_key: "" # Quake API Token；也可通过 QUAKE_API_KEY 环境变量配置
 shodan:
   base_url: https://api.shodan.io # 可选，留空则使用默认
@@ -122,39 +139,44 @@ agent:
   # system_prompt_path: prompts/single-agent.md # 可选：单代理系统提示文件（相对本配置文件所在目录）；非空且可读时替换内置提示
 
   system_prompt_path: ""
-
-# 调用拦截：在工具执行前按规则检查工具名称与参数，默认保护政府域名。
+# 调用拦截：在「安全防护 → 调用拦截」编辑并保存后立即生效；与 HITL 审批白名单独立。
+# 旧配置省略 tool_guard 时也默认启用政府域名保护。手动修改 YAML 后需重启。
 tool_guard:
   enabled: true
   rules:
     - id: government-domains
       name: 政府网站保护
       enabled: true
-      pattern: '(?i)(?:^|[^[:alnum:]_.-])(?P<match>(?:(?:[[:alnum:]_*-]+\.)+gov(?:\.[[:alnum:]_*-]+)*|gov(?:\.[[:alnum:]_*-]+)+|\.gov(?:\.[[:alnum:]_*-]+)*)\.?)($|[^[:alnum:]_.-])'
-      message: '识别到 {match}，禁止攻击政府网站。请检查目标与授权范围。'
+      # Go/RE2 正则；命名捕获组 match 用于提醒中的 {match}。
+      pattern: '(?i)(?:^|[^\p{L}\p{M}\p{N}_.-])(?P<match>(?:(?:[\p{L}\p{M}\p{N}_*-]+\.)+gov(?:\.[\p{L}\p{M}\p{N}_*-]+)*|gov(?:\.[\p{L}\p{M}\p{N}_*-]+)+|\.gov(?:\.[\p{L}\p{M}\p{N}_*-]+)*)\.?)(?:$|[^\p{L}\p{M}\p{N}_.-])'
+      # 支持 {match}、{tool}、{rule}；留空使用通用提醒。
+      message: '识别到 {match}，禁止攻击政府网站。请检查目标与授权范围，并更换为已获授权的非政府目标。'
 
 # 人机协同（HITL）全局白名单：此处列出的工具始终免审批，与对话页「白名单工具（免审批，逗号分隔）」合并为并集；侧栏「应用」可合并写入本列表并立即生效。
 # 非白名单工具在审批方=审计 Agent 时，按会话 HITL 模式选用提示词：
 #   approval → audit_agent_prompt
 #   review_edit → audit_agent_prompt_review_edit（可改参后放行）
 hitl:
-  # 全局默认人机协同模式：off=关闭，approval=审批模式，review_edit=审查编辑
+  # 全局默认人机协同模式：off=关闭，approval=审批模式，review_edit=审查编辑；新建会话无独立配置时沿用
   default_mode: off
-  # 全局默认审批方：human=人工审批，audit_agent=审计 Agent；未选会话时切换会写入本项，重启后仍生效
+  # 全局默认审批方：human=人工审批，audit_agent=审计 Agent；新建会话无独立配置时沿用
   default_reviewer: human
-  # 全局默认审批等待时限（秒）：300=5分钟，0=不限时
+  # 全局默认审批等待时限（秒）：300=5分钟，0=不限时；新建会话无独立配置时沿用
   default_timeout_seconds: 300
-  # 审计 Agent 专用模型；字段留空则复用上方 openai 配置。建议 model 填小模型，用于降低审批成本。
+  # 审计 Agent 后端二选一：openai=兼容协议聊天模型（提示词 JSON）；typesafe=TypeSafe Jev 结构化放通/拦截。
+  audit_backend: openai
+  # 审计 Agent 专用模型。openai 后端字段留空则复用主模型；typesafe 后端 api_key 必填且不继承主模型密钥。
   audit_model:
-    provider: "" # openai / claude；留空跟随 openai.provider
-    base_url: "" # 留空跟随 openai.base_url
-    api_key: "" # 留空跟随 openai.api_key
-    model: "" # 留空跟随 openai.model，例如可填 gpt-4o-mini / qwen-turbo / deepseek-chat
+    provider: "" # openai / claude；仅 openai 后端生效，留空跟随 openai.provider
+    # TypeSafe 自定义地址须先加入服务器环境变量 CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS（逗号分隔）。
+    base_url: "" # openai 后端留空跟随主模型；typesafe 后端留空使用 https://api.typesafe.ai
+    api_key: "" # openai 后端留空跟随主模型；typesafe 后端填写 TypeSafe API Key
+    model: "" # openai 后端建议填小模型；typesafe 后端留空使用 jev-latest
   # 已决策审计日志保留天数（与 MCP 监控一致；省略默认 90；0 表示不自动清理）
   retention_days: 90
   # 按你环境里的真实工具名增删（与侧栏一致、小写不敏感）；不需要全局免审批可改为 []
-  tool_whitelist: [read_file, list_dir, glob, grep, tool_search, upsert_project_fact, get_project_fact]
-  # audit_agent_prompt: |  # 审批模式；留空使用内置默认，可在「人机协同」页编辑
+  tool_whitelist: [read_file, ls, list_dir, glob, grep, tool_search, upsert_project_fact, get_project_fact, list_project_facts, search_project_facts, list_vulnerabilities, get_vulnerability, get_asset, query_assets, list_knowledge_risk_types, get_tool_execution, wait_tool_execution, batch_task_list, batch_task_get, manage_webshell_list, c2_event, c2_file]
+  # audit_agent_prompt: |  # 审批模式；留空使用内置默认，可在「人机协同」页编辑。openai 后端作聊天提示词；typesafe 后端作为 Jev 组织策略
   # audit_agent_prompt_review_edit: |  # 审查编辑模式；留空使用内置默认
 
   audit_agent_prompt: |-
@@ -286,9 +308,6 @@ multi_agent:
   # Eino ADK 中间件与 Deep/Supervisor/plan_execute Executor 调参（结构体见 internal/config/config.go → MultiAgentEinoMiddlewareConfig）
   # plan_execute：下列 patch/reduction/tool_search/plantask 等同样作用于 Executor（经 ExecPreMiddlewares）；Planner/Replanner 不挂 MCP 前置中间件。
   eino_middleware:
-    max_tool_arguments_bytes: 65536 # 单个工具 arguments 硬上限；超出时禁止执行并要求模型改写
-    max_shell_command_bytes: 65536 # exec/execute.command 硬上限；与普通工具 arguments 上限一致
-    model_output_repair_max_attempts: 1 # 非法/截断模型输出最多自动修复一次，避免循环
     patch_tool_calls: true # true：修补历史中无 tool_result 的悬空 tool_call（流式中断/重试后更稳）；false：关闭；字段省略时默认等同 true
     tool_search_enable: true # true：工具数 ≥ min 时启用 tool_search，仅前 N 个工具常驻，其余按正则按需解锁，省 token、减误选；false：全量工具进上下文
     tool_search_min_tools: 20 # 达到该数量才启用 tool_search（避免工具很少时多此一举）；与 always_visible 配合使用
@@ -314,12 +333,13 @@ multi_agent:
     plan_execute_executed_steps_budget_ratio: 0.2 # plan_execute 中 executed_steps 预算比例
     plan_execute_max_step_result_runes: 4000 # plan_execute 每步结果最大字符数（超出截断）
     plan_execute_keep_last_steps: 8 # plan_execute 仅保留最近 N 步正文，早期步骤折叠为标题
-    checkpoint_dir: "" # 聊天链路不再使用 ADK checkpoint；跨轮模型态统一走 conversations.last_react_*
-    run_retry_max_attempts: 0 # 408/409/425/429/5xx/网络抖动时可退避重试次数；0=默认 4（永久性 4xx 不重试）
-    run_retry_max_backoff_sec: 0 # 单次退避上限秒数；0=默认 30
+    checkpoint_dir: "" # 聊天链路不再使用 ADK checkpoint；跨轮模型态统一走 conversations.last_react_*，便于排查 stale context
+    model_retry_max_retries: 0 # Eino 原生 ChatModel retry；408/409/425/429/5xx/网络抖动/空流式输出会重试；0=默认 4（永久性 4xx 不重试）
+    model_retry_max_backoff_sec: 0 # Eino 原生 ChatModel retry 单次退避上限秒数；0=默认 30
+    model_failover_channels: [] # Eino 原生 ChatModel failover；填写 ai.channels ID，例如 [qwen-plus]；retry 耗尽后按顺序切换
+    model_failover_max_retries: 0 # 备用通道最多尝试数；0=尝试全部 model_failover_channels
     empty_response_continue_max_attempts: 0 # Run 成功但未捕获助手正文（含流式中断）时 Handler 退避续跑次数；0=默认 5
     deep_output_key: final_answer # P0：Eino session 写入最终助手结论（框架内部；Deep/Supervisor 主/eino_single）
-    deep_model_retry_max_retries: 0 # 已废弃，请用 run_retry_max_attempts；保留字段仅为兼容旧配置
     task_tool_description_prefix: "" # 非空：仅 Deep 的 task 工具使用自定义描述前缀，运行时会拼接子代理名称；空则走 Eino 默认生成逻辑
   # Eino callbacks + OpenTelemetry：框架级 span（与 Zap 对齐）；默认不向终端用户 UI 推 eino_trace_*（见 sse_trace_to_client）
   eino_callbacks:
@@ -353,6 +373,15 @@ database:
 # 系统会从该目录加载所有 .yaml 格式的工具配置文件
 # 推荐方式：在 tools/ 目录下为每个工具创建独立的配置文件
 security:
+  # auto: native Job Object on Windows; Unix watchdog unless cgroup_root is set.
+  # Linux production: configure a systemd service with Delegate=cpu memory pids; set
+  # mode: required, cgroup_root: auto. Explicit isolation errors fail closed.
+  process_isolation:
+    mode: auto
+    cgroup_root: ""
+    max_processes: 256
+    memory_max_bytes: 2147483648
+    cpu_quota_micros: 0 # 0=no CPU cap; 100000=one core (100 ms period)
   tools_dir: tools # 工具配置文件目录（相对于配置文件所在目录）
   # 工具描述模式：加载 tools 下工具时，暴露给 AI/API 使用的描述来源
   #   short - 优先使用 short_description（简短描述，省 token），为空时用 description

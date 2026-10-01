@@ -221,13 +221,33 @@ func (h *AgentHandler) CancelRunningTaskForConversation(conversationID string) {
 	if h == nil || conversationID == "" || h.tasks == nil {
 		return
 	}
-	h.cancelRunningMCPToolsForConversation(conversationID)
-	h.tasks.AbortActiveEinoExecute(conversationID, "")
-	if ok, err := h.tasks.CancelTask(conversationID, ErrTaskCancelled); ok {
-		h.logger.Info("已取消会话运行中任务", zap.String("conversationId", conversationID))
-	} else if err != nil {
-		h.logger.Warn("取消会话运行中任务失败", zap.String("conversationId", conversationID), zap.Error(err))
+	ok, err := h.tasks.CancelTask(conversationID, ErrTaskCancelled)
+	if !ok {
+		h.cancelRunningMCPToolsForConversation(conversationID)
+		h.tasks.AbortActiveEinoExecute(conversationID, "")
 	}
+	if h.logger != nil {
+		if err != nil {
+			h.logger.Warn("取消会话运行中任务失败", zap.String("conversationId", conversationID), zap.Error(err))
+		} else if ok {
+			h.logger.Info("已取消会话运行中任务", zap.String("conversationId", conversationID))
+		}
+	}
+
+}
+
+// ConversationTaskRuntimeState exposes the authoritative live state and start
+// time used to scope persisted TaskCreate files to the current run. A task
+// already entering cancellation must stop driving progress UI immediately.
+func (h *AgentHandler) ConversationTaskRuntimeState(conversationID string) (bool, time.Time) {
+	if h == nil || h.tasks == nil || strings.TrimSpace(conversationID) == "" {
+		return false, time.Time{}
+	}
+	task := h.tasks.GetTaskSnapshot(strings.TrimSpace(conversationID))
+	if task == nil || !strings.EqualFold(strings.TrimSpace(task.Status), "running") {
+		return false, time.Time{}
+	}
+	return true, task.StartedAt
 }
 
 func (h *AgentHandler) cancelRunningMCPToolsForConversation(conversationID string) {
@@ -307,7 +327,7 @@ type HitlDefaultReviewerSaver interface {
 	UpdateHitlDefaultReviewer(reviewer string) error
 }
 
-// SetHitlDefaultReviewerSaver 设置 HITL 默认审批方落盘。
+// SetHitlDefaultReviewerSaver 设置 HITL 默认配置落盘。
 func (h *AgentHandler) SetHitlDefaultReviewerSaver(s HitlDefaultReviewerSaver) {
 	h.hitlDefaultReviewerSaver = s
 }
@@ -328,7 +348,11 @@ func (h *AgentHandler) hitlEffectiveDefaultMode() string {
 
 func (h *AgentHandler) hitlEffectiveDefaultTimeoutSeconds() int {
 	if h != nil && h.config != nil {
-		return h.config.Hitl.EffectiveDefaultTimeoutSeconds()
+		timeout := h.config.Hitl.EffectiveDefaultTimeoutSeconds()
+		if timeout < 0 {
+			return 0
+		}
+		return timeout
 	}
 	return 300
 }
@@ -710,25 +734,26 @@ func (h *AgentHandler) mergeAssistantMessagePartialOnCancel(messageID, partial s
 
 // ChatResponse 聊天响应
 type ChatResponse struct {
-	Response            string    `json:"response"`
-	MCPExecutionIDs     []string  `json:"mcpExecutionIds,omitempty"` // 本次对话中执行的MCP调用ID列表
-	ConversationID      string    `json:"conversationId"`            // 对话ID
-	Time                time.Time `json:"time"`
-	Finalizable         bool      `json:"finalizable"`
-	Finalized           bool      `json:"finalized"`
-	Status              string    `json:"status,omitempty"`
-	CompletionReason    string    `json:"completionReason,omitempty"`
-	EvidenceVerified    bool      `json:"evidenceVerified"`
-	EvidenceRefs        []string  `json:"evidenceRefs,omitempty"`
-	PendingExecutionIDs []string  `json:"pendingExecutionIds,omitempty"`
-	MissingChecks       []string  `json:"missingChecks,omitempty"`
+	Response                         string    `json:"response"`
+	MCPExecutionIDs                  []string  `json:"mcpExecutionIds,omitempty"` // 本次对话中执行的MCP调用ID列表
+	ConversationID                   string    `json:"conversationId"`            // 对话ID
+	Time                             time.Time `json:"time"`
+	Finalizable                      bool      `json:"finalizable"`
+	Finalized                        bool      `json:"finalized"`
+	Status                           string    `json:"status,omitempty"`
+	CompletionReason                 string    `json:"completionReason,omitempty"`
+	EvidenceVerified                 bool      `json:"evidenceVerified"`
+	EvidenceRefs                     []string  `json:"evidenceRefs,omitempty"`
+	PendingExecutionIDs              []string  `json:"pendingExecutionIds,omitempty"`
+	MissingChecks                    []string  `json:"missingChecks,omitempty"`
+	AutoCancelledPendingExecutionIDs []string  `json:"autoCancelledPendingExecutionIds,omitempty"`
 }
 
 func (h *AgentHandler) finalizeRobotAgentError(ctx context.Context, assistantMessageID, conversationID string, resultMA *multiagent.RunResult, errMA error) (string, string, error) {
 	if shouldPersistEinoAgentTraceAfterRunError(ctx) {
 		h.persistEinoAgentTraceForResume(conversationID, resultMA)
 	}
-	errMsg := "执行失败: " + errMA.Error()
+	errMsg := "执行失败: " + multiagent.EinoClientRunErrorMessage(errMA)
 	if assistantMessageID != "" {
 		_, _ = h.db.Exec("UPDATE messages SET content = ?, updated_at = ? WHERE id = ?", errMsg, time.Now(), assistantMessageID)
 		_ = h.db.AddProcessDetail(assistantMessageID, conversationID, "error", errMsg, nil)
@@ -736,8 +761,13 @@ func (h *AgentHandler) finalizeRobotAgentError(ctx context.Context, assistantMes
 	return "", conversationID, errMA
 }
 
-func (h *AgentHandler) finalizeRobotAgentSuccess(assistantMessageID, conversationID string, resultMA *multiagent.RunResult) (string, string, error) {
-	decision := h.finalizeAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, resultMA.MCPExecutionIDs, multiagent.AggregatedReasoningFromTraceJSON(resultMA.LastAgentTraceInput), true)
+func (h *AgentHandler) finalizeRobotAgentSuccess(taskCtx context.Context, assistantMessageID, conversationID string, resultMA *multiagent.RunResult) (string, string, error) {
+	reasoningContent := multiagent.AggregatedReasoningFromTraceJSON(resultMA.LastAgentTraceInput)
+	decision := h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, resultMA.MCPExecutionIDs, true)
+	if cancelled := h.cleanupPendingToolExecutionsAfterIteration(taskCtx, conversationID, decision, nil); len(cancelled) > 0 {
+		decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, resultMA.MCPExecutionIDs, true)
+	}
+	h.persistFinalizationDecision(conversationID, assistantMessageID, "robot", resultMA.MCPExecutionIDs, reasoningContent, decision)
 	responseText := decision.FinalText
 	if !decision.Finalizable {
 		responseText = finalizationBlockedMessage(decision)
@@ -770,7 +800,7 @@ func (h *AgentHandler) runRobotEinoSingleWithRetry(
 		*taskStatus = "failed"
 		return h.finalizeRobotAgentError(taskCtx, assistantMessageID, conversationID, resultMA, errMA)
 	}
-	return h.finalizeRobotAgentSuccess(assistantMessageID, conversationID, resultMA)
+	return h.finalizeRobotAgentSuccess(taskCtx, assistantMessageID, conversationID, resultMA)
 }
 
 func (h *AgentHandler) runRobotMultiAgentWithRetry(
@@ -791,7 +821,7 @@ func (h *AgentHandler) runRobotMultiAgentWithRetry(
 		*taskStatus = "failed"
 		return h.finalizeRobotAgentError(taskCtx, assistantMessageID, conversationID, resultMA, errMA)
 	}
-	return h.finalizeRobotAgentSuccess(assistantMessageID, conversationID, resultMA)
+	return h.finalizeRobotAgentSuccess(taskCtx, assistantMessageID, conversationID, resultMA)
 }
 
 // ProcessMessageForRobot 供机器人（企业微信/钉钉/飞书）调用：Eino 单/多代理执行路径（含 progressCallback、过程详情），仅不发送 SSE，最后返回完整回复
@@ -869,15 +899,24 @@ func (h *AgentHandler) ProcessMessageForRobot(ctx context.Context, platform stri
 	taskCtx, cancelWithCause := context.WithCancelCause(ctx)
 	defer cancelWithCause(nil)
 	taskStatus := "completed"
+	var taskRunID string
 	defer func() {
-		h.tasks.FinishTask(conversationID, taskStatus)
+		if taskRunID == "" {
+			return
+		}
+		if cleanupErr := h.tasks.FinishTaskRun(conversationID, taskRunID, taskStatus); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
 	}()
-	if _, err := h.tasks.StartTask(conversationID, message, cancelWithCause); err != nil {
+	if startedTask, err := h.tasks.StartTask(conversationID, message, cancelWithCause); err != nil {
 		if errors.Is(err, ErrTaskAlreadyRunning) {
 			return "", conversationID, fmt.Errorf("当前会话已有任务正在执行中，请稍后再试")
 		}
 		return "", conversationID, fmt.Errorf("无法启动任务: %w", err)
+	} else {
+		taskRunID = startedTask.RunID
 	}
+	taskCtx = h.tasks.BindProcessScope(taskCtx, conversationID, taskRunID)
 	progressCallback := h.createProgressCallback(taskCtx, cancelWithCause, conversationID, assistantMessageID, nil)
 
 	robotMode := config.NormalizeAgentMode(agentMode)
@@ -921,6 +960,32 @@ func (h *AgentHandler) publishProgressToTaskEventBus(conversationID, eventType, 
 	sseLine = append(sseLine, eventJSON...)
 	sseLine = append(sseLine, '\n', '\n')
 	h.taskEventBus.Publish(conversationID, sseLine)
+}
+
+func isInternalEinoDiagnosticProgress(eventType, message string, data interface{}) bool {
+	switch eventType {
+	case "model_output_rejected":
+		return true
+	case "progress":
+		msg := strings.TrimSpace(message)
+		if msg == "Eino TurnLoop 常驻多轮 runtime 已接管本轮会话。" ||
+			msg == "Eino TurnLoop 已在安全点切换到用户补充后的下一轮。" ||
+			msg == "已将用户补充推入 Eino TurnLoop，正在等待安全点切换…" {
+			return true
+		}
+		m, ok := data.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		switch strings.TrimSpace(fmt.Sprint(m["kind"])) {
+		case "turn_loop_takeover", "turn_loop_preempted":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 // enrichProgressEventData 为 SSE / taskEventBus 事件补齐 conversationId、messageId，便于前端懒加载过程详情。
@@ -1087,6 +1152,10 @@ func (h *AgentHandler) createProgressCallback(runCtx context.Context, cancelRun 
 	return func(eventType, message string, data interface{}) {
 		progressMu.Lock()
 		defer progressMu.Unlock()
+
+		if isInternalEinoDiagnosticProgress(eventType, message, data) {
+			return
+		}
 
 		// 上游在重试/补偿时可能重复回调相同 tool_call/tool_result。
 		// 这里做幂等过滤，保证前端展示和 process_details 都以唯一事件为准。
@@ -1795,6 +1864,7 @@ func filterSlice[T any](items []T, keep func(T) bool) []T {
 
 // BatchTaskRequest 批量任务请求
 type BatchTaskRequest struct {
+	HITLPolicy   string   `json:"hitlPolicy"`
 	Title        string   `json:"title"`                    // 任务标题（可选）
 	Tasks        []string `json:"tasks" binding:"required"` // 任务列表，每行一个任务
 	Role         string   `json:"role,omitempty"`           // 角色名称（可选，空字符串表示默认角色）
@@ -1869,7 +1939,7 @@ func (h *AgentHandler) CreateBatchQueue(c *gin.Context) {
 		nextRunAt = &next
 	}
 
-	queue, createErr := h.batchTaskManager.CreateBatchQueue(req.Title, req.Role, agentMode, scheduleMode, cronExpr, req.ProjectID, nextRunAt, req.Concurrency, validTasks)
+	queue, createErr := h.batchTaskManager.CreateBatchQueue(req.Title, req.Role, agentMode, scheduleMode, cronExpr, req.ProjectID, nextRunAt, req.Concurrency, validTasks, req.HITLPolicy)
 	if createErr != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": createErr.Error()})
 		return
@@ -2064,16 +2134,21 @@ func (h *AgentHandler) PauseBatchQueue(c *gin.Context) {
 func (h *AgentHandler) UpdateBatchQueueMetadata(c *gin.Context) {
 	queueID := c.Param("queueId")
 	var req struct {
-		Title       string `json:"title"`
-		Role        string `json:"role"`
-		AgentMode   string `json:"agentMode"`
-		Concurrency *int   `json:"concurrency"`
+		HITLPolicy  *string `json:"hitlPolicy"`
+		Title       string  `json:"title"`
+		Role        string  `json:"role"`
+		AgentMode   string  `json:"agentMode"`
+		Concurrency *int    `json:"concurrency"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.batchTaskManager.UpdateQueueMetadata(queueID, req.Title, req.Role, req.AgentMode, req.Concurrency); err != nil {
+	var policies []string
+	if req.HITLPolicy != nil {
+		policies = append(policies, *req.HITLPolicy)
+	}
+	if err := h.batchTaskManager.UpdateQueueMetadata(queueID, req.Title, req.Role, req.AgentMode, req.Concurrency, policies...); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

@@ -11,6 +11,7 @@ import (
 
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/toolguard"
 
 	"go.uber.org/zap"
 )
@@ -74,6 +75,7 @@ type ExternalMCPManager struct {
 	reconnectLastTry   map[string]time.Time
 	reconnectAttempts  map[string]int
 	toolAuthorizer     func(context.Context, string, map[string]interface{}) error
+	toolGuard          *toolguard.Manager
 	executionService   *ExecutionService
 	toolWaitTimeout    time.Duration
 	toolResultMaxBytes int
@@ -94,6 +96,23 @@ func (m *ExternalMCPManager) SetToolAuthorizer(authorizer func(context.Context, 
 	m.mu.Lock()
 	m.toolAuthorizer = authorizer
 	m.mu.Unlock()
+}
+
+// SetToolGuard installs safety rules evaluated before dispatch to external MCPs.
+func (m *ExternalMCPManager) SetToolGuard(guard *toolguard.Manager) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.toolGuard = guard
+	m.mu.Unlock()
+}
+
+func (m *ExternalMCPManager) checkToolGuard(toolName string, args map[string]interface{}) *ToolResult {
+	m.mu.RLock()
+	guard := m.toolGuard
+	m.mu.RUnlock()
+	return toolGuardBlockedResult(guard, toolName, args)
 }
 
 // NewExternalMCPManagerWithStorage 创建外部MCP管理器（带持久化存储）
@@ -685,7 +704,15 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 	}
 	var mcpName, actualToolName string
 	var client ExternalMCPClient
+	var blockedByGuard bool
 	handle, err := m.executionService.Submit(ctx, ExecutionRequest{
+		ConfirmCancellation: func(confirmCtx context.Context) error {
+			if confirmer, ok := client.(ExternalCancellationConfirmer); ok {
+				return confirmer.ConfirmToolCancellation(confirmCtx, actualToolName, args)
+			}
+			return fmt.Errorf("external MCP client has no cancellation acknowledgement")
+		},
+		Remote:         true,
 		ToolName:       toolName,
 		Arguments:      args,
 		ConversationID: MCPConversationIDFromContext(ctx),
@@ -701,6 +728,10 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 				}
 			} else if authenticated {
 				return nil, fmt.Errorf("external tool authorization policy is not configured")
+			}
+			if blocked := m.checkToolGuard(toolName, args); blocked != nil {
+				blockedByGuard = true
+				return nil, &toolGuardBlockError{result: blocked}
 			}
 
 			// 解析工具名称：name::toolName
@@ -741,6 +772,11 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 			return release, nil
 		},
 		Run: func(runCtx context.Context) (*ToolResult, error) {
+			// Rules may have changed while this execution waited for a slot.
+			if blocked := m.checkToolGuard(toolName, args); blocked != nil {
+				blockedByGuard = true
+				return blocked, nil
+			}
 			result, callErr := client.CallTool(runCtx, actualToolName, args)
 			if callErr != nil {
 				m.handleConnectionDead(mcpName, client, callErr)
@@ -748,11 +784,13 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 			return result, callErr
 		},
 		OnDone: func(exec *ToolExecution) {
-			failed := exec != nil && exec.Status != ToolExecutionStatusCompleted && exec.Status != ToolExecutionStatusCancelled
-			if mcpName != "" {
+			failed := exec != nil && executionStatusCountsAsFailed(exec.Status)
+			if mcpName != "" && !blockedByGuard && (exec == nil || exec.Status != ToolExecutionStatusBlocked) {
 				m.recordExternalMCPResult(mcpName, failed)
 			}
-			m.updateStats(toolName, failed)
+			if exec != nil {
+				m.updateStats(toolName, exec.Status)
+			}
 		},
 	})
 	if err != nil {
@@ -941,6 +979,9 @@ func (m *ExternalMCPManager) applyAbortUserNoteToCancelledToolResult(executionID
 	}
 	hasErr := err != nil && *err != nil
 	hasRes := result != nil && *result != nil
+	if hasRes && (*result).Blocked {
+		return false
+	}
 	if !hasErr && !hasRes {
 		return false
 	}
@@ -1098,15 +1139,15 @@ func (m *ExternalMCPManager) ActiveRunningExecutionIDs() map[string]struct{} {
 }
 
 // updateStats 更新统计信息
-func (m *ExternalMCPManager) updateStats(toolName string, failed bool) {
+func (m *ExternalMCPManager) updateStats(toolName string, status string) {
 	now := time.Now()
 	if m.storage != nil {
 		totalCalls := 1
 		successCalls := 0
 		failedCalls := 0
-		if failed {
+		if executionStatusCountsAsFailed(status) {
 			failedCalls = 1
-		} else {
+		} else if status == ToolExecutionStatusCompleted {
 			successCalls = 1
 		}
 		if err := m.storage.UpdateToolStats(toolName, totalCalls, successCalls, failedCalls, &now); err != nil {
@@ -1128,10 +1169,12 @@ func (m *ExternalMCPManager) updateStats(toolName string, failed bool) {
 	stats.TotalCalls++
 	stats.LastCallTime = &now
 
-	if failed {
+	if executionStatusCountsAsFailed(status) {
 		stats.FailedCalls++
-	} else {
+	} else if status == ToolExecutionStatusCompleted {
 		stats.SuccessCalls++
+	} else if status == ToolExecutionStatusBlocked {
+		stats.BlockedCalls++
 	}
 }
 
@@ -1612,4 +1655,11 @@ func (m *ExternalMCPManager) StopAll() {
 		close(m.stopRefresh)
 	}
 	m.refreshWg.Wait()
+}
+
+// ExternalCancellationConfirmer is an optional adapter contract for MCP
+// servers with server-side cancellation receipts or lease/task status APIs.
+// Ordinary notifications/cancelled must never be treated as confirmation.
+type ExternalCancellationConfirmer interface {
+	ConfirmToolCancellation(context.Context, string, map[string]interface{}) error
 }

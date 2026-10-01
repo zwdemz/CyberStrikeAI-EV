@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/security"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -19,6 +21,14 @@ import (
 func setupTestRouter() (*gin.Engine, *ExternalMCPHandler, string) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	// These CRUD tests exercise the privileged editor's round trip. Read-only
+	// projections are covered separately in tests/internal/handler.
+	router.Use(func(c *gin.Context) {
+		c.Set(security.ContextSessionKey, security.Session{
+			Scope: database.RBACScopeAll, Permissions: map[string]bool{"mcp:read": true, "mcp:write": true},
+		})
+		c.Next()
+	})
 
 	// 创建临时配置文件
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")

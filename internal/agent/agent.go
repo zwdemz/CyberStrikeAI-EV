@@ -512,6 +512,7 @@ type ToolExecutionResult struct {
 	Result      string
 	ExecutionID string
 	IsError     bool
+	Blocked     bool
 }
 
 func buildToolFailureMessage(toolName, detail string, err error) string {
@@ -638,6 +639,7 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 		Result:      resultStr,
 		ExecutionID: executionID,
 		IsError:     result != nil && result.IsError,
+		Blocked:     result != nil && result.Blocked,
 	}, nil
 }
 
@@ -841,9 +843,49 @@ func (a *Agent) UpdateMCPExecutionDisplayResult(executionID, resultText string) 
 	tr := &mcp.ToolResult{
 		Content: []mcp.Content{{Type: "text", Text: text}},
 	}
+	if exec := a.mcpExecution(executionID); exec != nil && exec.Result != nil {
+		tr.IsError = exec.Result.IsError
+		tr.Blocked = exec.Result.Blocked
+	}
 	if a.mcpServer != nil {
 		_ = a.mcpServer.UpdateToolExecutionResult(executionID, tr)
 	}
+}
+
+// MCPExecutionResultText returns the monitor-facing result text after storage
+// guards such as large-output spilling have been applied.
+func (a *Agent) MCPExecutionResultText(executionID string) string {
+	exec := a.mcpExecution(executionID)
+	if exec == nil || exec.Result == nil {
+		return ""
+	}
+	return mcp.ToolResultPlainText(exec.Result)
+}
+
+// MCPExecutionStatus returns the recorded outcome independently of model-facing
+// text reduction, which can remove the original refusal wording.
+func (a *Agent) MCPExecutionStatus(executionID string) string {
+	if exec := a.mcpExecution(executionID); exec != nil {
+		return exec.Status
+	}
+	return ""
+}
+
+func (a *Agent) mcpExecution(executionID string) *mcp.ToolExecution {
+	if a == nil || strings.TrimSpace(executionID) == "" {
+		return nil
+	}
+	if a.mcpServer != nil {
+		if exec, ok := a.mcpServer.GetExecution(executionID); ok && exec != nil {
+			return exec
+		}
+	}
+	if a.externalMCPMgr != nil {
+		if exec, ok := a.externalMCPMgr.GetExecution(executionID); ok {
+			return exec
+		}
+	}
+	return nil
 }
 
 // CancelMCPToolExecutionWithNote 取消一次进行中的 MCP 工具（先内部后外部），与监控页「终止工具」一致；note 非空时合并进返回给模型的文本。

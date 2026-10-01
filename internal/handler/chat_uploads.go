@@ -153,12 +153,31 @@ func (h *ChatUploadsHandler) conversationArtifactPathAllowed(c *gin.Context, con
 }
 
 func (h *ChatUploadsHandler) conversationArtifactVirtualPathAllowed(c *gin.Context, relativePath string) bool {
-	rel := strings.TrimPrefix(strings.TrimSpace(relativePath), artifactVirtualPrefix)
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if len(parts) < 1 {
+	rel, err := parseConversationArtifactPath(relativePath)
+	if err != nil {
 		return false
 	}
-	return h.conversationArtifactPathAllowed(c, parts[0])
+	conversationID, _, _ := strings.Cut(rel, "/")
+	return h.conversationArtifactPathAllowed(c, conversationID)
+}
+
+// parseConversationArtifactPath validates the same relative path for authorization
+// and resolution. It rejects ambiguous components before any normalization can
+// change the conversation ID, including Windows separators and drive/stream names.
+// The returned slash-separated path is relative to the artifact root; malformed
+// paths return an error and must never reach a filesystem operation.
+func parseConversationArtifactPath(virtualPath string) (string, error) {
+	if !strings.HasPrefix(virtualPath, artifactVirtualPrefix) {
+		return "", fmt.Errorf("invalid artifact prefix")
+	}
+	rel := strings.ReplaceAll(strings.TrimPrefix(virtualPath, artifactVirtualPrefix), "\\", "/")
+	for _, component := range strings.Split(rel, "/") {
+		if component == "" || component == "." || component == ".." ||
+			strings.ContainsAny(component, ":\x00") || strings.TrimRight(component, " .") != component {
+			return "", fmt.Errorf("invalid artifact path")
+		}
+	}
+	return rel, nil
 }
 
 func (h *ChatUploadsHandler) absRoot() (string, error) {
@@ -711,16 +730,15 @@ func (h *ChatUploadsHandler) resolveWorkspaceVirtualPath(relativePath string) (s
 }
 
 func (h *ChatUploadsHandler) resolveConversationArtifactVirtualPath(relativePath string) (string, error) {
-	rel := strings.TrimPrefix(strings.TrimSpace(relativePath), artifactVirtualPrefix)
-	rel = filepath.Clean(filepath.FromSlash(rel))
-	if rel == "." || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("invalid path")
+	rel, err := parseConversationArtifactPath(relativePath)
+	if err != nil {
+		return "", err
 	}
 	root, err := h.absConversationArtifactsRoot()
 	if err != nil {
 		return "", err
 	}
-	full, err := filepath.Abs(filepath.Join(root, rel))
+	full, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(rel)))
 	if err != nil {
 		return "", err
 	}

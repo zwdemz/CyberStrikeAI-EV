@@ -1,32 +1,44 @@
 # Runtime data
 data/
+chat_uploads/
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 
 # Local configuration and secrets
 config.yaml
 config.local.yaml
+config.yaml.backup
+*.backup
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.crt
+
+# Upgrade / settings backups
+.upgrade-backup/
+
+# Eino runtime task board (under skills_dir)
+skills/.eino/
 
 # Build outputs
 cyberstrike-ai
 cyberstrike-ai-ev
 cyberstrike-ai-rbac
 server.exe
+cyberstrike-ai.exe
+*.test
 bin/
 dist/
 build/
 
 # Local smoke-test configuration
 config.smoketest.yaml
-
 # Locally cloned security-tool repositories
 skills/
 tools/GraphQLmap/
@@ -39,11 +51,17 @@ tools/scripts/ParamSpider/
 tools/scripts/jwt_tool/
 tools/scripts/nikto/
 tools/scripts/xsser/
+.build/
+target/
+.gradle/
 coverage.out
 coverage.html
 
 # Logs and temporary files
+/log/
 *.log
+*.bak
+*~
 tmp/
 temp/
 
@@ -57,7 +75,12 @@ __pycache__/
 # Go
 /vendor/
 
-# macOS / editors
+# Node / browser extension
+node_modules/
+
+# macOS / Windows / editors
 .DS_Store
+Thumbs.db
+desktop.ini
 .idea/
 .vscode/

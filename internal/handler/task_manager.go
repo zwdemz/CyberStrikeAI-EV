@@ -2,12 +2,17 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"cyberstrike-ai/internal/multiagent"
+	"cyberstrike-ai/internal/runlease"
+	"cyberstrike-ai/internal/security"
 )
 
 // ErrTaskCancelled 用户取消任务的错误
@@ -25,12 +30,20 @@ func shouldPersistEinoAgentTraceAfterRunError(baseCtx context.Context) bool {
 
 // AgentTask 描述正在运行的Agent任务
 type AgentTask struct {
-	ConversationID string    `json:"conversationId"`
-	Title          string    `json:"title,omitempty"`
-	Message        string    `json:"message,omitempty"`
-	StartedAt      time.Time `json:"startedAt"`
-	Status         string    `json:"status"`
-	CancellingAt   time.Time `json:"-"` // 进入 cancelling 状态的时间，用于清理长时间卡住的任务
+	RunID            string `json:"runId"`
+	CleanupError     string `json:"cleanupError,omitempty"`
+	processes        *security.ProcessScope
+	workers          *runlease.Scope
+	IsolationBackend string `json:"isolationBackend,omitempty"`
+	finishing        chan struct{}
+	stopping         chan struct{}
+	finalStatus      string
+	ConversationID   string    `json:"conversationId"`
+	Title            string    `json:"title,omitempty"`
+	Message          string    `json:"message,omitempty"`
+	StartedAt        time.Time `json:"startedAt"`
+	Status           string    `json:"status"`
+	CancellingAt     time.Time `json:"-"` // 进入 cancelling 状态的时间，用于清理长时间卡住的任务
 
 	// ActiveMCPExecutionID 当前正在执行的 MCP 工具 executionId（仅内存，供「中断并继续」= 仅掐当前工具）
 	ActiveMCPExecutionID string `json:"-"`
@@ -45,6 +58,14 @@ type AgentTask struct {
 
 	// hitlCognition 本轮运行中供 HITL/审计 Agent 读取的上下文（用户原话 + 思考，不含会话历史）
 	hitlCognition *hitlCognitionState
+
+	// agentRuntimeCancel 当前 Eino ADK 原生 AgentCancelFunc 包装；取消任务时先触发它，再走 context 兜底。
+	agentRuntimeCancel        func(error) bool
+	agentRuntimeCancelVersion uint64
+
+	// agentTurnLoopInterrupt 当前 Eino TurnLoop 用户补充 push hook；中断并继续时优先将补充作为新 turn item 入队。
+	agentTurnLoopInterrupt        func(string) bool
+	agentTurnLoopInterruptVersion uint64
 
 	cancel func(error)
 }
@@ -220,6 +241,58 @@ func (m *AgentTaskManager) BindTaskCancel(conversationID string, cancel context.
 	}
 }
 
+// BindAgentRuntimeCancel 登记当前运行段的 Eino 原生 cancel hook。
+func (m *AgentTaskManager) BindAgentRuntimeCancel(conversationID string, cancel func(error) bool) func() {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" || cancel == nil {
+		return func() {}
+	}
+	m.mu.Lock()
+	t, ok := m.tasks[conversationID]
+	if !ok || t == nil {
+		m.mu.Unlock()
+		return func() {}
+	}
+	t.agentRuntimeCancelVersion++
+	version := t.agentRuntimeCancelVersion
+	t.agentRuntimeCancel = cancel
+	m.mu.Unlock()
+
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if cur, exists := m.tasks[conversationID]; exists && cur != nil && cur.agentRuntimeCancelVersion == version {
+			cur.agentRuntimeCancel = nil
+		}
+	}
+}
+
+// BindAgentTurnLoopInterrupt 登记当前运行任务的 Eino TurnLoop 用户补充入队 hook。
+func (m *AgentTaskManager) BindAgentTurnLoopInterrupt(conversationID string, push func(string) bool) func() {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" || push == nil {
+		return func() {}
+	}
+	m.mu.Lock()
+	t, ok := m.tasks[conversationID]
+	if !ok || t == nil {
+		m.mu.Unlock()
+		return func() {}
+	}
+	t.agentTurnLoopInterruptVersion++
+	version := t.agentTurnLoopInterruptVersion
+	t.agentTurnLoopInterrupt = push
+	m.mu.Unlock()
+
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if cur, exists := m.tasks[conversationID]; exists && cur != nil && cur.agentTurnLoopInterruptVersion == version {
+			cur.agentTurnLoopInterrupt = nil
+		}
+	}
+}
+
 // ActiveMCPExecutionID 返回当前会话进行中的工具 executionId，无则空串。
 func (m *AgentTaskManager) ActiveMCPExecutionID(conversationID string) string {
 	conversationID = strings.TrimSpace(conversationID)
@@ -236,12 +309,15 @@ func (m *AgentTaskManager) ActiveMCPExecutionID(conversationID string) string {
 
 // CompletedTask 已完成的任务（用于历史记录）
 type CompletedTask struct {
-	ConversationID string    `json:"conversationId"`
-	Title          string    `json:"title,omitempty"`
-	Message        string    `json:"message,omitempty"`
-	StartedAt      time.Time `json:"startedAt"`
-	CompletedAt    time.Time `json:"completedAt"`
-	Status         string    `json:"status"`
+	CleanupError     string    `json:"cleanupError,omitempty"`
+	IsolationBackend string    `json:"isolationBackend,omitempty"`
+	RunID            string    `json:"runId"`
+	ConversationID   string    `json:"conversationId"`
+	Title            string    `json:"title,omitempty"`
+	Message          string    `json:"message,omitempty"`
+	StartedAt        time.Time `json:"startedAt"`
+	CompletedAt      time.Time `json:"completedAt"`
+	Status           string    `json:"status"`
 }
 
 // AgentTaskManager 管理正在运行的Agent任务
@@ -254,6 +330,9 @@ type AgentTaskManager struct {
 	eventBus         *TaskEventBus    // 可选：任务结束时关闭镜像 SSE 订阅
 	// toolCanceler 在用户整轮停止任务或会话结束时终止该会话仍在运行的 MCP 工具（非「中断并继续」）。
 	toolCanceler func(conversationID string)
+	shuttingDown bool
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
 }
 
 const (
@@ -269,6 +348,7 @@ const (
 func NewAgentTaskManager() *AgentTaskManager {
 	m := &AgentTaskManager{
 		tasks:            make(map[string]*AgentTask),
+		shutdown:         make(chan struct{}),
 		completedTasks:   make([]*CompletedTask, 0),
 		maxHistorySize:   50,             // 最多保留50条历史记录
 		historyRetention: 24 * time.Hour, // 保留24小时
@@ -307,6 +387,7 @@ func (m *AgentTaskManager) GetTaskSnapshot(conversationID string) *AgentTask {
 		return nil
 	}
 	snapshot := *task
+	snapshot.IsolationBackend = task.processes.IsolationBackend()
 	return &snapshot
 }
 
@@ -314,16 +395,26 @@ func (m *AgentTaskManager) GetTaskSnapshot(conversationID string) *AgentTask {
 func (m *AgentTaskManager) runStuckCancellingCleanup() {
 	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		m.cleanupStuckCancelling()
+	for {
+		select {
+		case <-m.shutdown:
+			return
+		case <-ticker.C:
+			m.cleanupStuckCancelling()
+		}
 	}
 }
 
 func (m *AgentTaskManager) cleanupStuckCancelling() {
 	m.mu.Lock()
-	var toFinish []string
+	type pendingFinish struct{ id, runID, status string }
+	var toFinish []pendingFinish
 	now := time.Now()
 	for id, task := range m.tasks {
+		if task.Status == "cleanup_failed" {
+			toFinish = append(toFinish, pendingFinish{id, task.RunID, task.finalStatus})
+			continue
+		}
 		if task.Status != "cancelling" {
 			continue
 		}
@@ -339,11 +430,11 @@ func (m *AgentTaskManager) cleanupStuckCancelling() {
 				continue
 			}
 		}
-		toFinish = append(toFinish, id)
+		toFinish = append(toFinish, pendingFinish{id, task.RunID, "cancelled"})
 	}
 	m.mu.Unlock()
-	for _, id := range toFinish {
-		m.FinishTask(id, "cancelled")
+	for _, pending := range toFinish {
+		_ = m.FinishTaskRun(pending.id, pending.runID, pending.status)
 	}
 }
 
@@ -352,11 +443,16 @@ func (m *AgentTaskManager) StartTask(conversationID, message string, cancel cont
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.shuttingDown {
+		return nil, errors.New("task manager is shutting down")
+	}
 	if _, exists := m.tasks[conversationID]; exists {
 		return nil, ErrTaskAlreadyRunning
 	}
 
+	scope := security.NewProcessScope()
 	task := &AgentTask{
+		RunID: scope.ID, processes: scope, workers: runlease.New(),
 		ConversationID: conversationID,
 		Message:        message,
 		StartedAt:      time.Now(),
@@ -383,7 +479,7 @@ func (m *AgentTaskManager) CancelTask(conversationID string, cause error) (bool,
 	}
 
 	// 如果已经处于取消流程，视为成功（幂等），避免前端重复点击报「未找到任务」
-	if task.Status == "cancelling" {
+	if task.Status == "cancelling" || task.finishing != nil {
 		m.mu.Unlock()
 		return true, nil
 	}
@@ -402,17 +498,50 @@ func (m *AgentTaskManager) CancelTask(conversationID string, cause error) (bool,
 	if cause == nil {
 		cause = ErrTaskCancelled
 	}
+	interruptPush := task.agentTurnLoopInterrupt
+	interruptNote := task.InterruptContinueNote
+	runtimeCancel := task.agentRuntimeCancel
+	activeExecuteCancel := task.activeEinoExecuteCancel
+	if !errors.Is(cause, multiagent.ErrInterruptContinue) {
+		task.processes.Seal()
+		task.workers.Seal()
+		task.stopping = make(chan struct{})
+		defer close(task.stopping)
+	}
 	var toolCanceler func(string)
 	if errors.Is(cause, ErrTaskCancelled) {
 		toolCanceler = m.toolCanceler
 	}
 	m.mu.Unlock()
 
-	if cancel != nil {
+	if errors.Is(cause, multiagent.ErrInterruptContinue) && interruptPush != nil && interruptPush(interruptNote) {
+		m.mu.Lock()
+		if cur, exists := m.tasks[conversationID]; exists && cur != nil {
+			cur.InterruptContinueNote = ""
+		}
+		m.mu.Unlock()
+		return true, nil
+	}
+
+	runtimeHandled := false
+	if runtimeCancel != nil {
+		runtimeHandled = runtimeCancel(cause)
+	}
+	// 「彻底停止」必须同时取消宿主 context：原生 Agent Cancel 即使已受理，
+	// 也可能只在安全点返回或报告超时，不能据此让整条任务继续存活。
+	// 中断并继续仍保留原语义：原生取消已处理时由运行时负责恢复。
+	if cancel != nil && (!runtimeHandled || errors.Is(cause, ErrTaskCancelled)) {
 		cancel(cause)
 	}
 	if toolCanceler != nil {
 		toolCanceler(conversationID)
+	}
+	if !errors.Is(cause, multiagent.ErrInterruptContinue) {
+		task.workers.Cancel()
+		if activeExecuteCancel != nil {
+			activeExecuteCancel()
+		}
+		return true, task.processes.Close()
 	}
 	return true, nil
 }
@@ -427,54 +556,172 @@ func (m *AgentTaskManager) UpdateTaskStatus(conversationID string, status string
 		return
 	}
 
-	if status != "" {
-		task.Status = status
+	if task.finishing != nil || task.Status == "cleanup_failed" {
+		return
+	}
+	switch status {
+	case "completed", "cancelled", "failed", "timeout":
+		task.finalStatus = status
+		task.Status = "cleaning"
+		task.processes.Seal()
+		task.workers.Seal()
+	default:
+		if status != "" {
+			task.Status = status
+		}
 	}
 }
 
-// FinishTask 完成任务并从管理器中移除
+// BindProcessScope snapshots ownership once at task start. Continuations must
+// derive from this context, never resolve ownership again using conversation ID.
+func (m *AgentTaskManager) BindProcessScope(ctx context.Context, conversationID, runID string) context.Context {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if task := m.tasks[conversationID]; task != nil && task.RunID == runID {
+		return runlease.WithScope(security.WithProcessScope(ctx, task.processes), task.workers)
+	}
+	// Fail closed if a task disappeared before its execution context was bound.
+	scope := security.NewProcessScope()
+	scope.Seal()
+	workers := runlease.New()
+	workers.Seal()
+	return runlease.WithScope(security.WithProcessScope(ctx, scope), workers)
+}
+
+// FinishTask is retained for callers that operate on the current task. Owners
+// use FinishTaskRun, so a delayed defer cannot finish a newer conversation run.
 func (m *AgentTaskManager) FinishTask(conversationID string, finalStatus string) {
+	m.mu.RLock()
+	task := m.tasks[conversationID]
+	m.mu.RUnlock()
+	if task != nil {
+		_ = m.FinishTaskRun(conversationID, task.RunID, finalStatus)
+	}
+}
+
+func (m *AgentTaskManager) FinishTaskRun(conversationID, runID, finalStatus string) error {
 	m.mu.Lock()
-	task, exists := m.tasks[conversationID]
-	if !exists {
+	task := m.tasks[conversationID]
+	if task == nil || task.RunID != runID {
 		m.mu.Unlock()
-		return
+		return nil
 	}
-
-	if finalStatus != "" {
-		task.Status = finalStatus
+	if task.stopping != nil {
+		select {
+		case <-task.stopping:
+		default:
+			stopping := task.stopping
+			m.mu.Unlock()
+			<-stopping
+			return m.FinishTaskRun(conversationID, runID, finalStatus)
+		}
 	}
+	if task.finishing != nil {
+		done := task.finishing
+		m.mu.Unlock()
+		<-done
+		m.mu.RLock()
+		cleanupError := task.CleanupError
+		m.mu.RUnlock()
+		if cleanupError != "" {
+			return errors.New(cleanupError)
+		}
+		return nil
+	}
+	done := make(chan struct{})
+	task.finishing = done
+	task.finalStatus = finalStatus
+	task.Status = "cleaning"
+	task.processes.Seal()
+	task.workers.Seal()
 	toolCanceler := m.toolCanceler
-	activeEinoExecuteCancel := task.activeEinoExecuteCancel
-
-	// 保存到历史记录
-	completedTask := &CompletedTask{
-		ConversationID: task.ConversationID,
-		Message:        task.Message,
-		StartedAt:      task.StartedAt,
-		CompletedAt:    time.Now(),
-		Status:         finalStatus,
-	}
-
-	// 添加到历史记录
-	m.completedTasks = append(m.completedTasks, completedTask)
-
-	// 清理过期和过多的历史记录
-	m.cleanupHistory()
-
-	// 从运行任务中移除
-	delete(m.tasks, conversationID)
+	activeCancel := task.activeEinoExecuteCancel
+	cancel := task.cancel
 	bus := m.eventBus
 	m.mu.Unlock()
+
+	// Keep the conversation occupied throughout cleanup, including callbacks.
+	if cancel != nil {
+		cancel(nil)
+	}
 	if toolCanceler != nil {
 		toolCanceler(conversationID)
 	}
-	if activeEinoExecuteCancel != nil {
-		activeEinoExecuteCancel()
+	if activeCancel != nil {
+		activeCancel()
 	}
-	if bus != nil {
+	task.workers.Cancel()
+	processErr := task.processes.Close()
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	workerErr := task.workers.Wait(waitCtx)
+	waitCancel()
+	cleanupErr := errors.Join(processErr, workerErr)
+	if processErr != nil && errors.Is(workerErr, runlease.ErrUnconfirmed) {
+		// A simultaneous local failure must not be labelled as local completion.
+		cleanupErr = fmt.Errorf("local cleanup: %w; remote state: %v", processErr, workerErr)
+	}
+	// The local worker has returned, but remote notification cancellation is
+	// not an acknowledgement. Preserve an actionable history/tool status.
+	unconfirmed := processErr == nil && errors.Is(workerErr, runlease.ErrUnconfirmed)
+	if unconfirmed {
+		finalStatus = "cleanup_unconfirmed"
+	}
+	cleanupMessage := ""
+	if cleanupErr != nil {
+		cleanupMessage = cleanupErr.Error()
+	}
+	if (cleanupErr == nil || unconfirmed) && bus != nil {
+		// Subscribers must receive completion only after local processes are reaped.
+		payload, _ := json.Marshal(StreamEvent{Type: "done", Data: map[string]interface{}{"conversationId": conversationID, "runId": runID, "status": finalStatus, "cleanupError": cleanupMessage}})
+		bus.Publish(conversationID, append(append([]byte("data: "), payload...), '\n', '\n'))
 		bus.CloseConversation(conversationID)
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	defer close(done)
+	if cleanupErr != nil && !unconfirmed {
+		task.Status = "cleanup_failed"
+		task.CleanupError = cleanupErr.Error()
+		task.finishing = nil
+		return cleanupErr
+	}
+	task.CleanupError = ""
+	if unconfirmed {
+		task.CleanupError = cleanupErr.Error()
+	}
+	task.Status = finalStatus
+	m.completedTasks = append(m.completedTasks, &CompletedTask{
+		RunID: task.RunID, CleanupError: task.CleanupError, IsolationBackend: task.processes.IsolationBackend(), ConversationID: task.ConversationID, Message: task.Message,
+		StartedAt: task.StartedAt, CompletedAt: time.Now(), Status: finalStatus,
+	})
+	m.cleanupHistory()
+	delete(m.tasks, conversationID)
+	return cleanupErr
+}
+
+// Shutdown rejects new tasks before cancelling and reaping existing task jobs.
+func (m *AgentTaskManager) Shutdown() {
+	m.mu.Lock()
+	m.shuttingDown = true
+	m.shutdownOnce.Do(func() { close(m.shutdown) })
+	tasks := make([]*AgentTask, 0, len(m.tasks))
+	for _, task := range m.tasks {
+		tasks = append(tasks, task)
+		task.processes.Seal()
+		task.workers.Seal()
+	}
+	m.mu.Unlock()
+	var wg sync.WaitGroup
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(task *AgentTask) {
+			defer wg.Done()
+			_, _ = m.CancelTask(task.ConversationID, ErrTaskCancelled)
+			_ = m.FinishTaskRun(task.ConversationID, task.RunID, "cancelled")
+		}(task)
+	}
+	wg.Wait()
 }
 
 // cleanupHistory 清理过期的历史记录
@@ -509,12 +756,19 @@ func (m *AgentTaskManager) GetActiveTasks() []*AgentTask {
 	result := make([]*AgentTask, 0, len(m.tasks))
 	for _, task := range m.tasks {
 		result = append(result, &AgentTask{
+			RunID: task.RunID, CleanupError: task.CleanupError, IsolationBackend: task.processes.IsolationBackend(),
 			ConversationID: task.ConversationID,
 			Message:        task.Message,
 			StartedAt:      task.StartedAt,
 			Status:         task.Status,
 		})
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].StartedAt.Equal(result[j].StartedAt) {
+			return result[i].ConversationID < result[j].ConversationID
+		}
+		return result[i].StartedAt.Before(result[j].StartedAt)
+	})
 	return result
 }
 

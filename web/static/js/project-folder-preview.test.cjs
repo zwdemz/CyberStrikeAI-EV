@@ -18,6 +18,12 @@ function functionSource(source, name, nextName) {
     return source.slice(start, end);
 }
 
+function cssBlock(source, selector) {
+    const match = source.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`));
+    assert.ok(match, `${selector} style block should exist`);
+    return match[0];
+}
+
 test('无项目文件夹与普通项目共用悬浮和键盘聚焦预览', () => {
     const source = functionSource(projects, 'appendChatProjectFolderItem', 'appendChatProjectConversationItem');
 
@@ -121,4 +127,37 @@ test('对话悬浮预览显示本地年月日时分', () => {
     assert.doesNotMatch(age, /elapsedMs|conversationPreviewDays|conversationPreviewHours/);
     assert.match(zh, /"conversationPreviewDateTime": "\{\{year\}\}年\{\{month\}\}月\{\{day\}\}日 \{\{hour\}\}:\{\{minute\}\}"/);
     assert.match(en, /"conversationPreviewDateTime": "\{\{year\}\}-\{\{month\}\}-\{\{day\}\} \{\{hour\}\}:\{\{minute\}\}"/);
+});
+
+test('对话悬浮预览标题与时间分行显示并保留更多标题内容', () => {
+    const titleStyles = cssBlock(styles, '.project-conversation-preview-title');
+
+    assert.match(styles, /\.conversation-sidebar\s*\{[\s\S]*?width: 320px;/);
+    assert.match(styles, /\.project-conversation-preview\s*\{[\s\S]*?width: min\(340px, calc\(100vw - 32px\)\);/);
+    assert.match(styles, /\.project-conversation-preview-header\s*\{[\s\S]*?flex-direction: column;[\s\S]*?align-items: flex-start;/);
+    assert.match(titleStyles, /-webkit-line-clamp: 2;/);
+    assert.doesNotMatch(titleStyles, /white-space: nowrap;/);
+});
+
+test('项目预览任务统计使用闭合圆环，避免刷新箭头在小尺寸下变成毛刺', () => {
+    const source = functionSource(projects, 'ensureProjectFolderPreview', 'positionProjectFolderPreview');
+
+    assert.match(source, /class="project-folder-preview-stats"/);
+    assert.match(source, /<circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1\.5"\/>/);
+    assert.doesNotMatch(source, /H21v5l-2-2/);
+    assert.match(styles, /\.project-folder-preview-stats svg \{\s*width: 16px;\s*height: 16px;\s*overflow: visible;/);
+});
+
+test('对话悬浮预览使用美化后的代理模式徽标', () => {
+    const projects = fs.readFileSync('web/static/js/projects.js', 'utf8');
+
+    assert.match(projects, /function getProjectConversationModeIconClass\(conversation\)/);
+    assert.match(projects, /project-conversation-preview-mode-icon agent-mode-logo agent-mode-logo--default/);
+    assert.match(projects, /agent-mode-logo__svg/);
+    assert.match(projects, /<rect x="3" y="11" width="18" height="10" rx="2"/);
+    assert.match(projects, /agent-mode-logo--' \+ getProjectConversationModeIconClass\(conversation\)/);
+    assert.match(styles, /\.agent-mode-logo\s*\{[\s\S]*?background: transparent;/);
+    assert.match(styles, /\.agent-mode-logo__svg\s*\{[\s\S]*?stroke: currentColor;[\s\S]*?stroke-width: 1\.9;/);
+    assert.match(styles, /\.project-conversation-preview-mode-icon\.agent-mode-logo\s*\{[\s\S]*?width: 16px;/);
+    assert.doesNotMatch(cssBlock(styles, '.agent-mode-logo'), /linear-gradient|box-shadow: 0 5px/);
 });

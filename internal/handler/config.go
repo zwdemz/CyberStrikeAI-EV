@@ -18,12 +18,15 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/knowledge"
+	"cyberstrike-ai/internal/llm"
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
 	"cyberstrike-ai/internal/security"
 	"cyberstrike-ai/internal/toolguard"
+	"cyberstrike-ai/internal/typesafe"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -347,17 +350,21 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 		subAgentCount = len(agents.MergeYAMLAndMarkdown(h.config.MultiAgent.SubAgents, load.SubAgents))
 	}
 	multiPub := config.MultiAgentPublic{
-		Enabled:                                    h.config.MultiAgent.Enabled,
-		RobotDefaultAgentMode:                      config.NormalizeRobotAgentMode(h.config.MultiAgent),
-		BatchUseMultiAgent:                         h.config.MultiAgent.BatchUseMultiAgent,
-		SubAgentCount:                              subAgentCount,
-		Orchestration:                              config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration),
-		PlanExecuteLoopMaxIterations:               h.config.MultiAgent.PlanExecuteLoopMaxIterations,
-		SummarizationUserIntentLedgerMaxRunes:      h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerMaxRunesEffective(),
+		Enabled:                               h.config.MultiAgent.Enabled,
+		RobotDefaultAgentMode:                 config.NormalizeRobotAgentMode(h.config.MultiAgent),
+		BatchUseMultiAgent:                    h.config.MultiAgent.BatchUseMultiAgent,
+		SubAgentCount:                         subAgentCount,
+		Orchestration:                         config.NormalizeMultiAgentOrchestration(h.config.MultiAgent.Orchestration),
+		PlanExecuteLoopMaxIterations:          h.config.MultiAgent.PlanExecuteLoopMaxIterations,
+		SummarizationUserIntentLedgerMaxRunes: h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerMaxRunesEffective(),
 		SummarizationUserIntentLedgerEntryMaxRunes: h.config.MultiAgent.EinoMiddleware.SummarizationUserIntentLedgerEntryMaxRunesEffective(),
 		LatestUserMessageMaxRunes:                  h.config.MultiAgent.EinoMiddleware.LatestUserMessageMaxRunesEffective(),
 		LatestUserMessageHeadRunes:                 h.config.MultiAgent.EinoMiddleware.LatestUserMessageHeadRunesEffective(),
 		LatestUserMessageTailRunes:                 h.config.MultiAgent.EinoMiddleware.LatestUserMessageTailRunesEffective(),
+		ModelRetryMaxRetries:                       h.config.MultiAgent.EinoMiddleware.ModelRetryMaxRetries,
+		ModelRetryMaxBackoffSec:                    h.config.MultiAgent.EinoMiddleware.ModelRetryMaxBackoffSec,
+		ModelFailoverChannels:                      append([]string(nil), h.config.MultiAgent.EinoMiddleware.ModelFailoverChannels...),
+		ModelFailoverMaxRetries:                    h.config.MultiAgent.EinoMiddleware.ModelFailoverMaxRetries,
 		ToolSearchAlwaysVisibleTools:               append([]string(nil), h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools...),
 		ToolSearchAlwaysVisibleEffectiveTools: mergeToolNameLists(
 			h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools,
@@ -885,9 +892,17 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 	}
 
 	if req.Hitl != nil {
+		h.config.Hitl.AuditBackend = req.Hitl.EffectiveAuditBackend()
 		h.config.Hitl.AuditModel = req.Hitl.AuditModel
 		h.config.Hitl.ToolWhitelist = mergeHitlToolWhitelistSlice(nil, req.Hitl.ToolWhitelist)
+		if strings.TrimSpace(req.Hitl.DefaultMode) != "" {
+			h.config.Hitl.DefaultMode = req.Hitl.EffectiveDefaultMode()
+		}
 		h.config.Hitl.DefaultReviewer = req.Hitl.EffectiveDefaultReviewer()
+		if req.Hitl.DefaultTimeoutSeconds != nil {
+			v := req.Hitl.EffectiveDefaultTimeoutSeconds()
+			h.config.Hitl.DefaultTimeoutSeconds = &v
+		}
 		h.config.Hitl.AuditAgentPrompt = strings.TrimSpace(req.Hitl.AuditAgentPrompt)
 		h.config.Hitl.AuditAgentPromptReviewEdit = strings.TrimSpace(req.Hitl.AuditAgentPromptReviewEdit)
 		if req.Hitl.RetentionDays != nil {
@@ -898,6 +913,7 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 			h.config.Hitl.RetentionDays = &v
 		}
 		h.logger.Info("更新HITL配置",
+			zap.String("audit_backend", h.config.Hitl.AuditBackend),
 			zap.String("default_reviewer", h.config.Hitl.DefaultReviewer),
 			zap.Int("tool_whitelist", len(h.config.Hitl.ToolWhitelist)),
 		)
@@ -1004,6 +1020,30 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 			}
 			h.config.MultiAgent.EinoMiddleware.LatestUserMessageTailRunes = v
 		}
+		if req.MultiAgent.ModelRetryMaxRetries != nil {
+			v := *req.MultiAgent.ModelRetryMaxRetries
+			if v < 0 {
+				v = 0
+			}
+			h.config.MultiAgent.EinoMiddleware.ModelRetryMaxRetries = v
+		}
+		if req.MultiAgent.ModelRetryMaxBackoffSec != nil {
+			v := *req.MultiAgent.ModelRetryMaxBackoffSec
+			if v < 0 {
+				v = 0
+			}
+			h.config.MultiAgent.EinoMiddleware.ModelRetryMaxBackoffSec = v
+		}
+		if req.MultiAgent.ModelFailoverChannels != nil {
+			h.config.MultiAgent.EinoMiddleware.ModelFailoverChannels = dedupeTrimmedStringList(*req.MultiAgent.ModelFailoverChannels)
+		}
+		if req.MultiAgent.ModelFailoverMaxRetries != nil {
+			v := *req.MultiAgent.ModelFailoverMaxRetries
+			if v < 0 {
+				v = 0
+			}
+			h.config.MultiAgent.EinoMiddleware.ModelFailoverMaxRetries = v
+		}
 		if req.MultiAgent.ToolSearchAlwaysVisibleTools != nil {
 			h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools = dedupeToolNameList(*req.MultiAgent.ToolSearchAlwaysVisibleTools)
 		}
@@ -1017,6 +1057,10 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 			zap.Int("latest_user_message_max_runes", h.config.MultiAgent.EinoMiddleware.LatestUserMessageMaxRunesEffective()),
 			zap.Int("latest_user_message_head_runes", h.config.MultiAgent.EinoMiddleware.LatestUserMessageHeadRunesEffective()),
 			zap.Int("latest_user_message_tail_runes", h.config.MultiAgent.EinoMiddleware.LatestUserMessageTailRunesEffective()),
+			zap.Int("model_retry_max_retries", h.config.MultiAgent.EinoMiddleware.ModelRetryMaxRetries),
+			zap.Int("model_retry_max_backoff_sec", h.config.MultiAgent.EinoMiddleware.ModelRetryMaxBackoffSec),
+			zap.Int("model_failover_channels", len(h.config.MultiAgent.EinoMiddleware.ModelFailoverChannels)),
+			zap.Int("model_failover_max_retries", h.config.MultiAgent.EinoMiddleware.ModelFailoverMaxRetries),
 			zap.Int("tool_search_always_visible_tools", len(h.config.MultiAgent.EinoMiddleware.ToolSearchAlwaysVisibleTools)),
 		)
 	}
@@ -1130,6 +1174,8 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		}
 	}
 
+	h.config.NormalizeAIProviderProfiles()
+
 	// 保存配置到文件
 	if err := h.saveConfig(); err != nil {
 		h.logger.Error("保存配置失败", zap.Error(err))
@@ -1186,7 +1232,7 @@ func (h *ConfigHandler) TestOpenAI(c *gin.Context) {
 		"max_completion_tokens": 5,
 	}
 
-	// 使用内部 openai Client 进行测试，若 provider 为 claude 会自动走桥接层
+	// OpenAI-compatible 通道使用内部客户端；Claude 通道在下方直接使用 Eino agenticclaude。
 	tmpCfg := &config.OpenAIConfig{
 		Provider: req.Provider,
 		BaseURL:  baseURL,
@@ -1199,6 +1245,28 @@ func (h *ConfigHandler) TestOpenAI(c *gin.Context) {
 	defer cancel()
 
 	start := time.Now()
+	if llm.IsClaudeProvider(req.Provider) {
+		nativeModel, err := llm.NewClaudeAgenticModel(ctx, *tmpCfg, nil, 5, nil)
+		if err == nil {
+			_, err = nativeModel.Generate(ctx, []*schema.AgenticMessage{
+				schema.UserAgenticMessage("Hi"),
+			})
+		}
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"error":   "连接失败: " + err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success":    true,
+			"model":      tmpCfg.Model,
+			"latency_ms": time.Since(start).Milliseconds(),
+		})
+		return
+	}
+
 	var chatResp struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
@@ -1249,6 +1317,66 @@ func (h *ConfigHandler) TestOpenAI(c *gin.Context) {
 		"success":    true,
 		"model":      chatResp.Model,
 		"latency_ms": latency.Milliseconds(),
+	})
+}
+
+// TestTypeSafeRequest 测试 TypeSafe / Jev 连接。
+type TestTypeSafeRequest struct {
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+	Model   string `json:"model"`
+}
+
+// TestTypeSafe 接收 Base URL、API Key 和模型，以最小 Noul 验证连接并返回模型和延迟。
+// 参数无效或地址未获服务器授权时返回 400，连接失败时返回 success=false。
+func (h *ConfigHandler) TestTypeSafe(c *gin.Context) {
+	var req TestTypeSafeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数: " + err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.APIKey) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "TypeSafe API Key 不能为空"})
+		return
+	}
+
+	client, err := typesafe.NewClient(req.BaseURL, req.APIKey, req.Model, nil)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	result, err := client.SystemOne(ctx, "connectivity ping", map[string]typesafe.Question{
+		"ok": typesafe.Noul("Is this a connectivity test ping?", "Yes, this is only a ping.", "No."),
+	})
+	if err != nil {
+		if apiErr, ok := err.(*typesafe.APIError); ok {
+			c.JSON(http.StatusOK, gin.H{
+				"success":     false,
+				"error":       fmt.Sprintf("API 返回错误 (HTTP %d): %s", apiErr.StatusCode, apiErr.Body),
+				"status_code": apiErr.StatusCode,
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"error":   "连接失败: " + err.Error(),
+		})
+		return
+	}
+	model := strings.TrimSpace(req.Model)
+	if result != nil && strings.TrimSpace(result.Model) != "" {
+		model = result.Model
+	}
+	if model == "" {
+		model = config.TypeSafeDefaultModel
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"model":      model,
+		"latency_ms": time.Since(start).Milliseconds(),
 	})
 }
 
@@ -1683,6 +1811,10 @@ func (h *ConfigHandler) ApplyConfig(c *gin.Context) {
 
 // saveConfig 保存配置到文件
 func (h *ConfigHandler) saveConfig() error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
+	h.config.NormalizeAIProviderProfiles()
+
 	// 读取现有配置文件并创建备份
 	data, err := os.ReadFile(h.configPath)
 	if err != nil {
@@ -2093,6 +2225,7 @@ func (h *ConfigHandler) MergeHitlToolWhitelistIntoConfig(add []string) error {
 func updateHitlConfig(doc *yaml.Node, cfg config.HitlConfig) {
 	root := doc.Content[0]
 	hitlNode := ensureMap(root, "hitl")
+	setStringInMap(hitlNode, "audit_backend", cfg.EffectiveAuditBackend())
 	auditModelNode := ensureMap(hitlNode, "audit_model")
 	setStringInMap(auditModelNode, "provider", cfg.AuditModel.Provider)
 	setStringInMap(auditModelNode, "base_url", cfg.AuditModel.BaseURL)
@@ -2229,10 +2362,18 @@ func updateMultiAgentConfig(doc *yaml.Node, cfg config.MultiAgentConfig) {
 	setIntInMap(mwNode, "latest_user_message_max_runes", cfg.EinoMiddleware.LatestUserMessageMaxRunesEffective())
 	setIntInMap(mwNode, "latest_user_message_head_runes", cfg.EinoMiddleware.LatestUserMessageHeadRunesEffective())
 	setIntInMap(mwNode, "latest_user_message_tail_runes", cfg.EinoMiddleware.LatestUserMessageTailRunesEffective())
+	setIntInMap(mwNode, "model_retry_max_retries", cfg.EinoMiddleware.ModelRetryMaxRetries)
+	setIntInMap(mwNode, "model_retry_max_backoff_sec", cfg.EinoMiddleware.ModelRetryMaxBackoffSec)
+	setFlowStringSliceInMap(mwNode, "model_failover_channels", dedupeTrimmedStringList(cfg.EinoMiddleware.ModelFailoverChannels))
+	setIntInMap(mwNode, "model_failover_max_retries", cfg.EinoMiddleware.ModelFailoverMaxRetries)
 	setFlowStringSliceInMap(mwNode, "tool_search_always_visible_tools", dedupeToolNameList(cfg.EinoMiddleware.ToolSearchAlwaysVisibleTools))
 }
 
 func dedupeToolNameList(in []string) []string {
+	return dedupeTrimmedStringList(in)
+}
+
+func dedupeTrimmedStringList(in []string) []string {
 	if len(in) == 0 {
 		return []string{}
 	}

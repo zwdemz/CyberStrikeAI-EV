@@ -34,9 +34,16 @@ func isEinoTransientRunError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	if errors.Is(err, adk.ErrExceedMaxRetries) {
+		return false
+	}
+	if _, ok := isEinoNativeWillRetry(err); ok {
+		return false
+	}
 	if isEinoIterationLimitError(err) {
 		return false
 	}
+	err = unwrapEinoRetryExhausted(err)
 	var apiErr *einoopenai.APIError
 	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode > 0 {
 		return isRetryableHTTPStatus(apiErr.HTTPStatusCode)
@@ -44,6 +51,9 @@ func isEinoTransientRunError(err error) bool {
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	if msg == "" {
 		return false
+	}
+	if isEinoEmptySummaryContentErrorText(msg) {
+		return true
 	}
 	if status := httpStatusFromErrorText(msg); status > 0 {
 		return isRetryableHTTPStatus(status)
@@ -85,6 +95,11 @@ func isEinoTransientRunError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isEinoEmptySummaryContentErrorText(msg string) bool {
+	return strings.Contains(msg, "summary content is empty") ||
+		strings.Contains(msg, "agentic summarization returned empty summary")
 }
 
 func isRetryableHTTPStatus(status int) bool {
@@ -198,13 +213,9 @@ func einoTransientRunRetryPolicyFromArgs(args *einoADKRunLoopArgs) einoTransient
 }
 
 func einoTransientRunRetryPolicyFromMW(mw *config.MultiAgentEinoMiddlewareConfig) einoTransientRunRetryPolicy {
-	maxBackoff := defaultEinoRunRetryMaxBackoff
-	if mw != nil && mw.RunRetryMaxBackoffSec > 0 {
-		maxBackoff = time.Duration(mw.RunRetryMaxBackoffSec) * time.Second
-	}
 	return einoTransientRunRetryPolicy{
 		maxAttempts: RunRetryMaxAttemptsFromConfig(mw),
-		maxBackoff:  maxBackoff,
+		maxBackoff:  einoRunRetryMaxBackoffFromConfig(mw),
 	}
 }
 
@@ -257,10 +268,15 @@ func einoRunRetryMaxAttempts(args *einoADKRunLoopArgs) int {
 	return defaultEinoRunRetryMaxAttempts
 }
 
-// RunRetryMaxAttemptsFromConfig 与 eino_middleware.run_retry_max_attempts 一致。
+// RunRetryMaxAttemptsFromConfig returns the native model retry count, with legacy run_retry_max_attempts as a fallback.
 func RunRetryMaxAttemptsFromConfig(mw *config.MultiAgentEinoMiddlewareConfig) int {
-	if mw != nil && mw.RunRetryMaxAttempts > 0 {
-		return mw.RunRetryMaxAttempts
+	if mw != nil {
+		if mw.ModelRetryMaxRetries > 0 {
+			return mw.ModelRetryMaxRetries
+		}
+		if mw.RunRetryMaxAttempts > 0 {
+			return mw.RunRetryMaxAttempts
+		}
 	}
 	return defaultEinoRunRetryMaxAttempts
 }
@@ -268,6 +284,18 @@ func RunRetryMaxAttemptsFromConfig(mw *config.MultiAgentEinoMiddlewareConfig) in
 func einoRunRetryMaxBackoff(args *einoADKRunLoopArgs) time.Duration {
 	if args != nil && args.RunRetryMaxBackoffSec > 0 {
 		return time.Duration(args.RunRetryMaxBackoffSec) * time.Second
+	}
+	return defaultEinoRunRetryMaxBackoff
+}
+
+func einoRunRetryMaxBackoffFromConfig(mw *config.MultiAgentEinoMiddlewareConfig) time.Duration {
+	if mw != nil {
+		if mw.ModelRetryMaxBackoffSec > 0 {
+			return time.Duration(mw.ModelRetryMaxBackoffSec) * time.Second
+		}
+		if mw.RunRetryMaxBackoffSec > 0 {
+			return time.Duration(mw.RunRetryMaxBackoffSec) * time.Second
+		}
 	}
 	return defaultEinoRunRetryMaxBackoff
 }

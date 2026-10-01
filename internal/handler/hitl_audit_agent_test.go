@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"cyberstrike-ai/internal/config"
 )
 
 func TestParseAuditAgentLLMContentApprove(t *testing.T) {
@@ -62,6 +65,29 @@ func TestParseAuditAgentLLMContentWithEditedArguments(t *testing.T) {
 	}
 	if d.EditedArguments == nil || d.EditedArguments["path"] != "/safe" {
 		t.Fatalf("unexpected edited args: %+v", d.EditedArguments)
+	}
+}
+
+func TestAuditAgentReviewTypeSafeMissingAPIKey(t *testing.T) {
+	h := &AgentHandler{config: &config.Config{Hitl: config.HitlConfig{AuditBackend: "typesafe"}}}
+	d := h.auditAgentReview(context.Background(), "approval", "exec", nil)
+	if d.Decision != "reject" {
+		t.Fatalf("decision=%s", d.Decision)
+	}
+	if !strings.Contains(d.Comment, "TypeSafe API Key") {
+		t.Fatalf("comment=%s", d.Comment)
+	}
+}
+
+func TestAuditAgentReviewTypeSafeUnapprovedEndpoint(t *testing.T) {
+	t.Setenv("CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS", "")
+	h := &AgentHandler{config: &config.Config{Hitl: config.HitlConfig{
+		AuditBackend: "typesafe",
+		AuditModel:   config.OpenAIConfig{BaseURL: "http://127.0.0.1:1", APIKey: "test-key"},
+	}}}
+	decision := h.auditAgentReview(context.Background(), "approval", "exec", nil)
+	if decision.Decision != "reject" || !strings.Contains(decision.Comment, "地址未获服务器授权") {
+		t.Fatalf("unapproved endpoint did not fail closed: %+v", decision)
 	}
 }
 
