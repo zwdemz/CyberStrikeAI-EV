@@ -174,7 +174,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 			zap.String("tool", missing.Name),
 			zap.String("command", missing.Command),
 			zap.String("reason", missing.Reason),
-			zap.String("fallback", "execute-python-script"),
+			zap.String("action", "install dependency under tools/runtime and reload"),
 		)
 	}
 

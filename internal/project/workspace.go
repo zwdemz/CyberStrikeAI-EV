@@ -39,6 +39,20 @@ func WorkspaceRootDir(configuredBase, projectID, conversationID string) string {
 	return filepath.Join(base, "conversations", sanitizeWorkspacePathSegment(conv))
 }
 
+// AnalysisDocumentRoots returns server-selected document roots for a session.
+// Empty session identifiers return no roots; model-provided paths cannot change
+// the project workspace or conversation upload namespace selected here.
+func AnalysisDocumentRoots(configuredBase, projectID, conversationID string) []string {
+	if strings.TrimSpace(projectID) == "" && strings.TrimSpace(conversationID) == "" {
+		return nil
+	}
+	roots := []string{WorkspaceRootDir(configuredBase, projectID, conversationID)}
+	if strings.TrimSpace(conversationID) != "" {
+		roots = append(roots, filepath.Join("chat_uploads", "conversations", sanitizeWorkspacePathSegment(conversationID)))
+	}
+	return roots
+}
+
 // EnsureWorkspace creates the workspace directory and returns its absolute path.
 func EnsureWorkspace(root string) (string, error) {
 	abs, err := filepath.Abs(strings.TrimSpace(root))

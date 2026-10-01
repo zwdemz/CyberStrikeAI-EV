@@ -11,6 +11,7 @@ import (
 	"cyberstrike-ai/internal/einomcp"
 	"cyberstrike-ai/internal/project"
 	"cyberstrike-ai/internal/reasoning"
+	"cyberstrike-ai/internal/rolepolicy"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/compose"
@@ -45,6 +46,12 @@ func RunEinoSingleChatModelAgent(
 	if ma == nil {
 		return nil, fmt.Errorf("eino single: multi_agent 配置为空")
 	}
+	var policyErr error
+	ctx, policyErr = bindConversationRolePolicy(ctx, appCfg, db, conversationID)
+	if policyErr != nil {
+		return nil, policyErr
+	}
+	roleTools = rolepolicy.Filter(ctx, roleTools)
 	runtimeUserMessage := prepareLatestUserMessageForModel(userMessage, appCfg, &ma.EinoMiddleware, conversationID, logger)
 
 	einoLoc, einoSkillMW, einoFSTools, skillsRoot, einoErr := prepareEinoAgenticSkills(ctx, appCfg.SkillsDir, ma, logger)

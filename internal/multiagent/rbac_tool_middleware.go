@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"cyberstrike-ai/internal/authctx"
+	"cyberstrike-ai/internal/rolepolicy"
 
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -32,6 +33,11 @@ func localToolRBACMiddleware() compose.ToolMiddleware {
 	return compose.ToolMiddleware{
 		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
+				if input != nil {
+					if err := rolepolicy.CheckTool(ctx, input.Name); err != nil {
+						return &compose.ToolOutput{Result: err.Error()}, nil
+					}
+				}
 				if input != nil && localToolPermissionDenied(ctx, input.Name) {
 					return &compose.ToolOutput{Result: denied}, nil
 				}
@@ -40,6 +46,11 @@ func localToolRBACMiddleware() compose.ToolMiddleware {
 		},
 		Streamable: func(next compose.StreamableToolEndpoint) compose.StreamableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.StreamToolOutput, error) {
+				if input != nil {
+					if err := rolepolicy.CheckTool(ctx, input.Name); err != nil {
+						return &compose.StreamToolOutput{Result: schema.StreamReaderFromArray([]string{err.Error()})}, nil
+					}
+				}
 				if input != nil && localToolPermissionDenied(ctx, input.Name) {
 					return &compose.StreamToolOutput{Result: schema.StreamReaderFromArray([]string{denied})}, nil
 				}

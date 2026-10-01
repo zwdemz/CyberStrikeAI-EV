@@ -184,7 +184,11 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	}
 
 	// 执行命令
-	cmd := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+	command, commandErr := config.ResolveToolCommand(*toolConfig)
+	if commandErr != nil {
+		return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "工具依赖未安装或不可执行：请维护人员安装到项目 tools/runtime 并重新加载工具配置。"}}, IsError: true}, nil
+	}
+	cmd := exec.CommandContext(ctx, command, cmdArgs...)
 	applyDefaultTerminalEnv(cmd)
 	attachNonInteractiveStdin(cmd)
 	_ = prepareShellCmdSession(cmd)
@@ -205,7 +209,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
 			)
-			cmd2 := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+			cmd2 := exec.CommandContext(ctx, command, cmdArgs...)
 			applyDefaultTerminalEnv(cmd2)
 			_ = prepareShellCmdSession(cmd2)
 			output, err = runCommandWithPTY(ctx, cmd2, cb, e.toolOutputMaxBytes, spill)
@@ -217,7 +221,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
 			)
-			cmd2 := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+			cmd2 := exec.CommandContext(ctx, command, cmdArgs...)
 			applyDefaultTerminalEnv(cmd2)
 			_ = prepareShellCmdSession(cmd2)
 			output, err = runCommandWithPTY(ctx, cmd2, nil, e.toolOutputMaxBytes, spill)
@@ -333,12 +337,12 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 			InputSchema:      e.buildInputSchema(&toolConfigCopy),
 		}
 		if missing, ok := missingTools[toolName]; ok {
-			hint := fmt.Sprintf("当前不可用：依赖命令 %q %s。请勿重复调用；可尝试使用 execute-python-script 实现等价操作。", missing.Command, missing.Reason)
+			hint := fmt.Sprintf("当前不可用：依赖命令 %q %s。请勿重复调用；先由维护流程将依赖安装到项目 tools/runtime 并重新加载。仅在角色允许且替代工具可用时考虑 Python 等价处理。", missing.Command, missing.Reason)
 			tool.Description = hint + "\n\n" + tool.Description
 			if tool.ShortDescription == "" {
 				tool.ShortDescription = hint
 			} else {
-				tool.ShortDescription = "[不可用] " + tool.ShortDescription
+				tool.ShortDescription = hint + " " + tool.ShortDescription
 			}
 		}
 

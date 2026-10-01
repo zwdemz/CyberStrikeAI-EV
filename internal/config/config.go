@@ -1476,6 +1476,7 @@ func (c ExternalMCPServerConfig) GetTransportType() string {
 }
 
 type ToolConfig struct {
+	RuntimeToolsDir  string            `yaml:"-" json:"-"` // 工具定义所在目录，仅用于本地依赖解析，不写回配置
 	Name             string            `yaml:"name"`
 	Command          string            `yaml:"command"`
 	Args             []string          `yaml:"args,omitempty"`              // 固定参数（可选）
@@ -1802,6 +1803,7 @@ func MergeToolsFromDir(toolsDir string, inlineTools []ToolConfig) ([]ToolConfig,
 	merged := append([]ToolConfig(nil), dirTools...)
 	for _, tool := range inlineTools {
 		if !existing[tool.Name] {
+			tool.RuntimeToolsDir = toolsDir
 			merged = append(merged, tool)
 		}
 	}
@@ -1896,6 +1898,7 @@ func LoadToolFromFile(path string) (*ToolConfig, error) {
 	if err := yaml.Unmarshal(data, &tool); err != nil {
 		return nil, fmt.Errorf("解析工具配置失败: %w", err)
 	}
+	tool.RuntimeToolsDir, _ = filepath.Abs(filepath.Dir(path))
 
 	// 验证必需字段
 	if tool.Name == "" {
@@ -2254,14 +2257,15 @@ type RolesConfig struct {
 
 // RoleConfig 单个角色配置
 type RoleConfig struct {
-	Name            string   `yaml:"name" json:"name"`                                             // 角色名称
-	Description     string   `yaml:"description" json:"description"`                               // 角色描述
-	UserPrompt      string   `yaml:"user_prompt" json:"user_prompt"`                               // 用户提示词(追加到用户消息前)
-	Icon            string   `yaml:"icon,omitempty" json:"icon,omitempty"`                         // 角色图标（可选）
-	Tools           []string `yaml:"tools,omitempty" json:"tools,omitempty"`                       // 关联的工具列表（toolKey格式，如 "toolName" 或 "mcpName::toolName"）
-	MCPs            []string `yaml:"mcps,omitempty" json:"mcps,omitempty"`                         // 向后兼容：关联的MCP服务器列表（已废弃，使用tools替代）
-	WorkflowID      string   `yaml:"workflow_id,omitempty" json:"workflow_id,omitempty"`           // 可选：绑定工作流 ID
-	WorkflowVersion string   `yaml:"workflow_version,omitempty" json:"workflow_version,omitempty"` // latest 或具体版本号；空等同 latest
-	WorkflowPolicy  string   `yaml:"workflow_policy,omitempty" json:"workflow_policy,omitempty"`   // auto | off；空且 workflow_id 非空时按 auto
-	Enabled         bool     `yaml:"enabled" json:"enabled"`                                       // 是否启用
+	ToolPolicy      RoleToolPolicy `yaml:"tool_policy,omitempty" json:"tool_policy,omitempty"`           // 角色工具执行边界；空 profile 保留现有行为
+	Name            string         `yaml:"name" json:"name"`                                             // 角色名称
+	Description     string         `yaml:"description" json:"description"`                               // 角色描述
+	UserPrompt      string         `yaml:"user_prompt" json:"user_prompt"`                               // 用户提示词(追加到用户消息前)
+	Icon            string         `yaml:"icon,omitempty" json:"icon,omitempty"`                         // 角色图标（可选）
+	Tools           []string       `yaml:"tools,omitempty" json:"tools,omitempty"`                       // 关联的工具列表（toolKey格式，如 "toolName" 或 "mcpName::toolName"）
+	MCPs            []string       `yaml:"mcps,omitempty" json:"mcps,omitempty"`                         // 向后兼容：关联的MCP服务器列表（已废弃，使用tools替代）
+	WorkflowID      string         `yaml:"workflow_id,omitempty" json:"workflow_id,omitempty"`           // 可选：绑定工作流 ID
+	WorkflowVersion string         `yaml:"workflow_version,omitempty" json:"workflow_version,omitempty"` // latest 或具体版本号；空等同 latest
+	WorkflowPolicy  string         `yaml:"workflow_policy,omitempty" json:"workflow_policy,omitempty"`   // auto | off；空且 workflow_id 非空时按 auto
+	Enabled         bool           `yaml:"enabled" json:"enabled"`                                       // 是否启用
 }

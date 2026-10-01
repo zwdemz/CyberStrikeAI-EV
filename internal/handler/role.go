@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/rolepolicy"
 
 	"gopkg.in/yaml.v3"
 
@@ -106,6 +108,14 @@ func (h *RoleHandler) UpdateRole(c *gin.Context) {
 	if req.Name == "" {
 		req.Name = roleName
 	}
+	// Older clients omit tool_policy; preserve the server-side policy on edits.
+	if old, exists := h.config.Roles[roleName]; exists && req.ToolPolicy.Profile == "" {
+		req.ToolPolicy = old.ToolPolicy
+	}
+	if _, err := rolepolicy.With(context.Background(), req.ToolPolicy, req.Tools); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// 初始化Roles map
 	if h.config.Roles == nil {
@@ -200,6 +210,10 @@ func (h *RoleHandler) CreateRole(c *gin.Context) {
 
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "角色名称不能为空"})
+		return
+	}
+	if _, err := rolepolicy.With(context.Background(), req.ToolPolicy, req.Tools); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
