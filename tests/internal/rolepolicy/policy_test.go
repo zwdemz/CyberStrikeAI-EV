@@ -24,7 +24,7 @@ func restricted(t *testing.T, limit int, documentRoots ...string) context.Contex
 
 func TestPolicyRejectsExecutableAndBatchAlternatives(t *testing.T) {
 	ctx := restricted(t, 1)
-	for _, name := range []string{"exec", "execute", "execute-python-script", "install-python-package", "batch_task_create", "batch_task_start", "sqlmap", "nuclei", "write_file", "external::scan"} {
+	for _, name := range []string{"exec", "execute", "execute-python-script", "install-python-package", "batch_task_create", "batch_task_start", "sqlmap", "nuclei", "write_file", "external::scan", "dnslog", "dig-pm-dnslog"} {
 		if rolepolicy.CheckTool(ctx, name) == nil {
 			t.Errorf("permitted %s", name)
 		}

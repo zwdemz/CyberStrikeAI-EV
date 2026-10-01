@@ -2,7 +2,7 @@ module cyberstrike-ai
 
 // 若 go mod download 超时，可执行: go env -w GOPROXY=https://goproxy.cn,direct
 
-go 1.25.0
+go 1.26.8
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
