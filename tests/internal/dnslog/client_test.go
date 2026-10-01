@@ -43,7 +43,7 @@ func newFixture() *fixture {
 
 func (f *fixture) client(t *testing.T, options dnslog.Options) *dnslog.Client {
 	t.Helper()
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.calls.Add(1)
 		if f.status != 0 {
 			w.WriteHeader(f.status)
@@ -69,7 +69,8 @@ func (f *fixture) client(t *testing.T, options dnslog.Options) *dnslog.Client {
 			_ = json.NewEncoder(w).Encode(f.allocation)
 		case "/ws":
 			f.wsCalls.Add(1)
-			if r.URL.Query().Get("token") != fixtureToken || r.URL.Query().Get("subDomain") != "short" || r.URL.Query().Get("mainDomain") != "ddns.example.test." {
+			allocated := f.allocation.(map[string]string)
+			if r.URL.Query().Get("token") != fixtureToken || r.URL.Query().Get("subDomain") != allocated["subDomain"] || r.URL.Query().Get("mainDomain") != allocated["mainDomain"] {
 				t.Error("invalid WebSocket session fields")
 			}
 			if f.wsStatus != 0 {
@@ -83,6 +84,9 @@ func (f *fixture) client(t *testing.T, options dnslog.Options) *dnslog.Client {
 				return
 			}
 			defer connection.Close()
+			if connection.WriteJSON(message("connection", map[string]string{"status": "connected"})) != nil {
+				return
+			}
 			for _, message := range f.messages {
 				var body []byte
 				if raw, ok := message.(string); ok {
@@ -107,9 +111,12 @@ func (f *fixture) client(t *testing.T, options dnslog.Options) *dnslog.Client {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
 	t.Cleanup(server.Close)
 	options.BaseURL = server.URL
 	options.Transport = server.Client().Transport.(*http.Transport)
+	options.Transport.ForceAttemptHTTP2 = true
 	client, err := dnslog.New(options)
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +203,20 @@ func TestEmptyWindowAndScope(t *testing.T) {
 	result := value.(*dnslog.RecordsResult)
 	if result.Status != "no_records" || result.RecordCount != 0 || result.Records == nil {
 		t.Fatalf("empty result: %+v", result)
+	}
+}
+
+func TestProviderAuthenticationFieldsArePreserved(t *testing.T) {
+	f := newFixture()
+	allocated := f.allocation.(map[string]string)
+	allocated["mainDomain"] = "ddns.example.test"
+	allocated["subDomain"] = "SHORT"
+	allocated["fullDomain"] = "SHORT.ddns.example.test."
+	f.messages = []interface{}{message("history", []interface{}{})}
+	client := f.client(t, dnslog.Options{})
+	id := allocate(t, client, "owner")
+	if _, err := client.Execute(context.Background(), "owner", map[string]interface{}{"operation": "get_records", "session_id": id, "wait_time": 1}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -297,6 +318,7 @@ func TestStreamFailuresNeverBecomeEmptySuccess(t *testing.T) {
 		{"binary", func(f *fixture) { f.binary = true; f.messages = []interface{}{"data"} }},
 		{"malformed", func(f *fixture) { f.messages = []interface{}{"not json"} }},
 		{"unknown-message", func(f *fixture) { f.messages = []interface{}{message("error", fixtureToken)} }},
+		{"invalid-ack", func(f *fixture) { f.messages = []interface{}{message("connection", nil)} }},
 		{"null-history", func(f *fixture) { f.messages = []interface{}{message("history", nil)} }},
 		{"null-record", func(f *fixture) { f.messages = []interface{}{message("new_record", nil)} }},
 		{"object-history", func(f *fixture) { f.messages = []interface{}{message("history", record(1))} }},

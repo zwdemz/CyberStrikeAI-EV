@@ -125,8 +125,8 @@ func truncated(result *RecordsResult) *RecordsResult {
 	return result
 }
 
-// decodeRecords accepts the three documented envelope types; malformed data,
-// null payloads and excessive batches return a generic protocol error.
+// decodeRecords accepts record envelopes and the provider's connection
+// acknowledgement. Malformed data, null payloads and excessive batches fail.
 func decodeRecords(body []byte) ([]Record, error) {
 	var message struct {
 		Type string          `json:"type"`
@@ -138,6 +138,11 @@ func decodeRecords(body []byte) ([]Record, error) {
 	}
 	var records []Record
 	switch message.Type {
+	case "connection":
+		var acknowledgement map[string]json.RawMessage
+		if json.Unmarshal(message.Data, &acknowledgement) != nil || acknowledgement == nil {
+			return nil, invalid
+		}
 	case "history", "new_records":
 		if string(message.Data) == "null" || decodeRecordData(message.Data, &records) != nil || len(records) > 10000 {
 			return nil, invalid

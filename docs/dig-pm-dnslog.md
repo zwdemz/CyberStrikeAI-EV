@@ -42,7 +42,7 @@
 
 观察窗口完整结束且没有匹配记录时为 `no_records`。参数错误、会话过期、跨用户/对话访问、TLS/网络失败、连接提前关闭和无效消息均返回 MCP `isError=true`、`status=error`，不伪装为无记录。错误文本不带提供方响应正文或鉴权 URL。连接异常后可显式重试当前会话；不自动重连或降级执行 Python。
 
-支持 `history`、`new_record`、`new_records`。按 UUID、ID、域名/来源/时间顺序去重，仅保留当前会话域及子域记录。每次最多 100 条或 256 个消息；提前达到限制时 `status=partial`、`truncated=true`，不宣称观察完整。总读取内容最多 4 MiB，单次 JSON/WS 消息最多 1 MiB，字段最多 1024 字节。取消工具调用会关闭 WSS 连接。各次调用均可返回历史，跨调用汇总时也应去重。
+支持 `connection` 连接确认及 `history`、`new_record`、`new_records` 记录消息。按 UUID、ID、域名/来源/时间顺序去重，仅保留当前会话域及子域记录。每次最多 100 条或 256 个消息；提前达到限制时 `status=partial`、`truncated=true`，不宣称观察完整。总读取内容最多 4 MiB，单次 JSON/WS 消息最多 1 MiB，字段最多 1024 字节。取消工具调用会关闭 WSS 连接。各次调用均可返回历史，跨调用汇总时也应去重。
 
 ## 使用边界
 

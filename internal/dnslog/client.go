@@ -3,6 +3,7 @@ package dnslog
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -77,12 +78,19 @@ func New(options Options) (*Client, error) {
 	if transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify {
 		return nil, errors.New("dig.pm requires TLS certificate verification")
 	}
+	// net/http can add HTTP/2 ALPN to its TLS config during the first request.
+	// WebSocket Upgrade uses HTTP/1.1, so it needs an independent TLS config.
+	websocketTLS := &tls.Config{MinVersion: tls.VersionTLS12}
+	if transport.TLSClientConfig != nil {
+		websocketTLS = transport.TLSClientConfig.Clone()
+	}
+	websocketTLS.NextProtos = []string{"http/1.1"}
 	return &Client{
 		base: strings.TrimSuffix(endpoint.String(), "/"), ttl: options.SessionTTL,
 		capacity: options.MaxSessions, sessions: make(map[string]session),
 		http: &http.Client{Transport: transport, Timeout: 10 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		dialer: websocket.Dialer{Proxy: transport.Proxy, TLSClientConfig: transport.TLSClientConfig, HandshakeTimeout: 10 * time.Second},
+		dialer: websocket.Dialer{Proxy: transport.Proxy, TLSClientConfig: websocketTLS, HandshakeTimeout: 10 * time.Second},
 	}, nil
 }
 
@@ -214,7 +222,9 @@ func (c *Client) allocate(ctx context.Context, owner, requested string) (interfa
 	if mainErr != nil || fullErr != nil || subErr != nil || strings.Contains(subDomain, ".") || mainDomain != selected || fullDomain != subDomain+"."+mainDomain || len(entry.Token) < 1 || len(entry.Token) > 512 || strings.ContainsAny(entry.Token, "\r\n\x00") {
 		return nil, errors.New("dig.pm returned inconsistent session fields")
 	}
-	entry.MainDomain, entry.FullDomain, entry.SubDomain = mainDomain+".", fullDomain+".", subDomain
+	// Preserve the provider's exact authentication fields: a root dot or case
+	// change can invalidate a WebSocket session even when DNS names are equal.
+	entry.FullDomain = fullDomain + "."
 	entry.owner, entry.expires = owner, time.Now().Add(c.ttl)
 	id := uuid.NewString()
 	c.mu.Lock()
