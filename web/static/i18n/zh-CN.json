@@ -1793,7 +1793,7 @@
       "auditModelName": "审批模型",
       "auditModelNamePlaceholder": "留空则复用主模型；建议填写小模型",
       "auditModelHint": "仅审计 Agent 审批时使用；人工审批不消耗模型。",
-      "auditModelTypeSafeHint": "Jev 走 TypeSafe System One，不是 OpenAI 协议。API Key 必填，不复用主模型密钥；模型留空使用 jev-latest。审查编辑模式下 Jev 只做放通/拦截，不会改参。",
+      "auditModelTypeSafeHint": "Jev 走 TypeSafe System One，不是 OpenAI 协议。API Key 必填，不复用主模型密钥；模型留空使用 jev-latest。自定义地址须由服务器管理员加入白名单。审查编辑模式下 Jev 只做放通/拦截，不会改参。",
       "auditModelTypeSafeBaseUrlPlaceholder": "留空使用 https://api.typesafe.ai",
       "auditModelTypeSafeApiKeyPlaceholder": "TypeSafe API Key（必填，不复用主模型）",
       "auditModelTypeSafeNamePlaceholder": "留空使用 jev-latest",

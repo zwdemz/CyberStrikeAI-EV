@@ -79,6 +79,18 @@ func TestAuditAgentReviewTypeSafeMissingAPIKey(t *testing.T) {
 	}
 }
 
+func TestAuditAgentReviewTypeSafeUnapprovedEndpoint(t *testing.T) {
+	t.Setenv("CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS", "")
+	h := &AgentHandler{config: &config.Config{Hitl: config.HitlConfig{
+		AuditBackend: "typesafe",
+		AuditModel:   config.OpenAIConfig{BaseURL: "http://127.0.0.1:1", APIKey: "test-key"},
+	}}}
+	decision := h.auditAgentReview(context.Background(), "approval", "exec", nil)
+	if decision.Decision != "reject" || !strings.Contains(decision.Comment, "地址未获服务器授权") {
+		t.Fatalf("unapproved endpoint did not fail closed: %+v", decision)
+	}
+}
+
 func TestBuildAuditAgentReviewInputIncludesMode(t *testing.T) {
 	s := buildAuditAgentReviewInput("review_edit", "execute", map[string]interface{}{
 		"arguments": `{"command":"pwd"}`,

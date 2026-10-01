@@ -1805,7 +1805,7 @@
       "auditModelName": "Approval model",
       "auditModelNamePlaceholder": "Leave blank to reuse the main model; a small model is recommended",
       "auditModelHint": "Used only for Audit Agent approvals; manual approval does not call a model.",
-      "auditModelTypeSafeHint": "Jev uses TypeSafe System One, not the OpenAI protocol. The API key is required and is not reused from the main model. Leave the model blank to use jev-latest. In review-edit mode Jev only allows or blocks; it will not rewrite arguments.",
+      "auditModelTypeSafeHint": "Jev uses TypeSafe System One, not the OpenAI protocol. The API key is required and is not reused from the main model. Leave the model blank to use jev-latest. Custom endpoints require approval in the server administrator's allowlist. In review-edit mode Jev only allows or blocks; it will not rewrite arguments.",
       "auditModelTypeSafeBaseUrlPlaceholder": "Leave blank to use https://api.typesafe.ai",
       "auditModelTypeSafeApiKeyPlaceholder": "TypeSafe API key (required; not reused from the main model)",
       "auditModelTypeSafeNamePlaceholder": "Leave blank to use jev-latest",

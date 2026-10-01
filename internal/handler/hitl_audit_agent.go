@@ -128,7 +128,10 @@ func (h *AgentHandler) auditAgentReviewTypeSafe(ctx context.Context, hitlMode, t
 	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	client := typesafe.NewClient(baseURL, apiKey, model, nil)
+	client, err := typesafe.NewClient(baseURL, apiKey, model, nil)
+	if err != nil {
+		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 地址未获服务器授权或配置无效，保守拒绝"}
+	}
 	policy := h.config.Hitl.JevOperatorPolicy(hitlMode)
 	result, err := client.SystemOne(callCtx, hitl.BuildJevState(hitlMode, toolName, payload, policy), hitl.JevAuditQuestions(policy))
 	if err != nil {

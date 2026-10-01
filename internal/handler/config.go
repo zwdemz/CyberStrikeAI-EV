@@ -1327,7 +1327,8 @@ type TestTypeSafeRequest struct {
 	Model   string `json:"model"`
 }
 
-// TestTypeSafe 用一条最小 Noul 验证 TypeSafe System One 是否可用。
+// TestTypeSafe 接收 Base URL、API Key 和模型，以最小 Noul 验证连接并返回模型和延迟。
+// 参数无效或地址未获服务器授权时返回 400，连接失败时返回 success=false。
 func (h *ConfigHandler) TestTypeSafe(c *gin.Context) {
 	var req TestTypeSafeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1339,7 +1340,11 @@ func (h *ConfigHandler) TestTypeSafe(c *gin.Context) {
 		return
 	}
 
-	client := typesafe.NewClient(req.BaseURL, req.APIKey, req.Model, nil)
+	client, err := typesafe.NewClient(req.BaseURL, req.APIKey, req.Model, nil)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 	start := time.Now()

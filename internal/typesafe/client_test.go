@@ -37,7 +37,11 @@ func TestSystemOneParsesNoulAndChoice(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, "ts-key", "", srv.Client())
+	t.Setenv(AllowedBaseURLsEnv, srv.URL)
+	client, err := NewClient(srv.URL, "ts-key", "", srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, err := client.SystemOne(context.Background(), "ping", map[string]Question{
 		"ok": Noul("Is this a ping?", "yes", "no"),
 	})
@@ -54,7 +58,11 @@ func TestSystemOneParsesNoulAndChoice(t *testing.T) {
 }
 
 func TestSystemOneEmptyAPIKey(t *testing.T) {
-	client := NewClient("", "", "", nil)
+	t.Setenv(AllowedBaseURLsEnv, "")
+	client, err := NewClient("", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.SystemOne(context.Background(), "ping", map[string]Question{"q": Noul("x", "", "")}); err == nil {
 		t.Fatal("expected error")
 	}

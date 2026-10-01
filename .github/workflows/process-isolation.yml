@@ -1,9 +1,9 @@
 name: Process isolation
 on:
   push:
-    paths: ['internal/processguard/**', 'internal/runlease/**', 'internal/security/**', 'internal/handler/task*', 'internal/mcp/**', 'go.mod', 'go.sum', '.github/workflows/process-isolation.yml']
+    paths: ['internal/processguard/**', 'internal/runlease/**', 'internal/security/**', 'internal/handler/task*', 'internal/handler/config.go', 'internal/handler/hitl_audit_agent*', 'internal/mcp/**', 'internal/typesafe/**', 'tests/internal/typesafe/**', 'tests/internal/handler/**', 'go.mod', 'go.sum', '.github/workflows/process-isolation.yml']
   pull_request:
-    paths: ['internal/processguard/**', 'internal/runlease/**', 'internal/security/**', 'internal/handler/task*', 'internal/mcp/**', 'go.mod', 'go.sum', '.github/workflows/process-isolation.yml']
+    paths: ['internal/processguard/**', 'internal/runlease/**', 'internal/security/**', 'internal/handler/task*', 'internal/handler/config.go', 'internal/handler/hitl_audit_agent*', 'internal/mcp/**', 'internal/typesafe/**', 'tests/internal/typesafe/**', 'tests/internal/handler/**', 'go.mod', 'go.sum', '.github/workflows/process-isolation.yml']
 permissions:
   contents: read
 jobs:
@@ -46,4 +46,4 @@ jobs:
           exec /fixture -test.v -test.timeout=60s
           '
       - if: runner.os == 'Linux'
-        run: go test ./internal/security ./internal/handler ./internal/mcp
+        run: go test ./internal/security ./internal/handler ./internal/mcp ./internal/typesafe ./tests/internal/typesafe ./tests/internal/handler

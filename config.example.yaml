@@ -168,6 +168,7 @@ hitl:
   # 审计 Agent 专用模型。openai 后端字段留空则复用主模型；typesafe 后端 api_key 必填且不继承主模型密钥。
   audit_model:
     provider: "" # openai / claude；仅 openai 后端生效，留空跟随 openai.provider
+    # TypeSafe 自定义地址须先加入服务器环境变量 CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS（逗号分隔）。
     base_url: "" # openai 后端留空跟随主模型；typesafe 后端留空使用 https://api.typesafe.ai
     api_key: "" # openai 后端留空跟随主模型；typesafe 后端填写 TypeSafe API Key
     model: "" # openai 后端建议填小模型；typesafe 后端留空使用 jev-latest

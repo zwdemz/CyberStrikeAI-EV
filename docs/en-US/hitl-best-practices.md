@@ -34,6 +34,10 @@ hitl:
 
 `audit_model` supports partial configuration on the OpenAI backend. Empty fields inherit from the resolved default AI channel. On the TypeSafe backend, `api_key` is required and is **not** inherited from the main model; blank `base_url` uses `https://api.typesafe.ai`, and blank `model` uses `jev-latest`.
 
+TypeSafe permits only `https://api.typesafe.ai` by default. Before starting the server, operators can authorize custom gateways through `CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS`, a comma-separated list of full base URLs such as `https://jev.example.com,https://gateway.example.com/jev`. Use `$env:CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS='https://jev.example.com'` in Windows PowerShell, `export CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS='https://jev.example.com'` on Linux/macOS, or a container environment variable, then restart the service. The UI/configuration value must exactly match an entry after trimming surrounding whitespace and trailing `/`; scheme, port and path are significant. Wildcards, embedded credentials, query strings and fragments are not accepted.
+
+Only server operators can authorize internal or HTTP gateways. Authorization permits sending the API key and audit context to that service, so entries must identify controlled endpoints. Connection tests and audit requests share this restriction and never follow HTTP redirects. An unapproved endpoint returns 400 from connection tests and causes automatic audit to reject the action. To revoke a custom gateway, remove its environment entry and restart the service, then restore the default or another approved model address.
+
 ## Recommended Approval Strategy
 
 ### 1. Start With Humans, Then Delegate Gradually

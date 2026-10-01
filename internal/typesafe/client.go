@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -14,6 +17,8 @@ import (
 const (
 	DefaultBaseURL = "https://api.typesafe.ai"
 	DefaultModel   = "jev-latest"
+	// AllowedBaseURLsEnv lists comma-separated gateway base URLs trusted by the server operator.
+	AllowedBaseURLsEnv = "CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS"
 )
 
 // Client calls TypeSafe System One (Jev).
@@ -34,25 +39,79 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("typesafe api error: status=%d body=%s", e.StatusCode, e.Body)
 }
 
-// NewClient builds a System One client. Empty baseURL/model use TypeSafe defaults.
-func NewClient(baseURL, apiKey, model string, httpClient *http.Client) *Client {
+// NewClient builds a System One client using the supplied key, model and HTTP transport.
+// Empty baseURL/model use TypeSafe defaults. Invalid or unapproved endpoints return
+// an error before any network request; custom gateways require AllowedBaseURLsEnv.
+func NewClient(baseURL, apiKey, model string, httpClient *http.Client) (*Client, error) {
+	approvedURL, err := approvedBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 90 * time.Second}
 	}
-	baseURL = strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
+	// Redirects can escape the approved endpoint and forward credentials or state.
+	// Copy the caller's client so enforcing this policy does not change its other users.
+	clientCopy := *httpClient
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = DefaultModel
 	}
 	return &Client{
-		httpClient: httpClient,
-		baseURL:    baseURL,
+		httpClient: &clientCopy,
+		baseURL:    approvedURL,
 		apiKey:     strings.TrimSpace(apiKey),
 		model:      model,
+	}, nil
+}
+
+// approvedBaseURL resolves a requested URL to a server-owned allowlist entry.
+// Only the matched trusted entry reaches the transport; HTTP input cannot grant
+// permission to a new host, port or path. Invalid operator configuration fails closed.
+func approvedBaseURL(requested string) (string, error) {
+	if strings.TrimSpace(requested) == "" {
+		requested = DefaultBaseURL
 	}
+	normalized, err := normalizeBaseURL(requested)
+	if err != nil {
+		return "", err
+	}
+	allowed := []string{DefaultBaseURL}
+	for _, entry := range strings.Split(os.Getenv(AllowedBaseURLsEnv), ",") {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		trusted, err := normalizeBaseURL(entry)
+		if err != nil {
+			return "", fmt.Errorf("invalid server TypeSafe endpoint allowlist")
+		}
+		allowed = append(allowed, trusted)
+	}
+	for _, trusted := range allowed {
+		if normalized == trusted {
+			return trusted, nil
+		}
+	}
+	return "", fmt.Errorf("TypeSafe endpoint is not approved; ask the server administrator to configure %s", AllowedBaseURLsEnv)
+}
+
+// normalizeBaseURL validates an absolute HTTP(S) base URL without credentials,
+// query or fragment and removes trailing slashes. Errors never contain input URLs.
+func normalizeBaseURL(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || (parsed.Scheme != "https" && parsed.Scheme != "http") ||
+		parsed.Hostname() == "" || parsed.User != nil || parsed.Opaque != "" ||
+		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.RawFragment != "" {
+		return "", fmt.Errorf("invalid TypeSafe base URL")
+	}
+	if port := parsed.Port(); port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 {
+			return "", fmt.Errorf("invalid TypeSafe base URL port")
+		}
+	}
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 // Question is a typed System One question (noul / choice / score).

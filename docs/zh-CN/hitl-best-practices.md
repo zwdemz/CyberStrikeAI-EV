@@ -34,6 +34,10 @@ hitl:
 
 `audit_model` 在 openai 后端可以只填一部分，空字段继承默认 AI 通道。typesafe 后端的 `api_key` 必填且**不会**复用主模型密钥；`base_url` 留空为 `https://api.typesafe.ai`，`model` 留空为 `jev-latest`。
 
+TypeSafe 默认只允许访问 `https://api.typesafe.ai`。使用自定义网关时，服务器管理员须在启动进程前设置环境变量 `CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS`，值为逗号分隔的完整 Base URL，例如 `https://jev.example.com,https://gateway.example.com/jev`。Windows PowerShell 可使用 `$env:CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS='https://jev.example.com'`；Linux/macOS 使用 `export CYBERSTRIKE_TYPESAFE_ALLOWED_BASE_URLS='https://jev.example.com'`；容器通过环境变量传入，并重启服务。界面或配置文件中的地址必须与其中一项完全匹配（忽略首尾空白和末尾 `/`），协议、端口和路径均参与匹配，不支持通配符；禁止 URL 内嵌凭据、查询参数和片段。
+
+只有服务器管理员可以授权内网或 HTTP 网关；该授权允许向对应服务发送 API Key 和审计内容，应仅配置受控端点。连接测试和实际审计请求共用此限制，且均禁止自动跟随 HTTP 重定向。地址不获授权时连接测试返回 400，自动审计保守拒绝。撤销自定义网关授权时移除对应环境变量条目并重启服务，之后将模型地址恢复为默认或其他获准地址。
+
 ## 推荐审批策略
 
 ### 1. 默认人工，逐步放权
