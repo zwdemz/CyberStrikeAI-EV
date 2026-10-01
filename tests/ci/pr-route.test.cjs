@@ -17,7 +17,7 @@ function fixture(pulls) {
   const checks = [];
   return {checks, dependencies: {
     github: {paginate: async () => pulls, rest: {
-      pulls: {list: () => {}}, checks: {create: async check => checks.push(check)},
+      pulls: {list: () => {}}, repos: {createCommitStatus: async check => checks.push(check)},
     }},
     context: {eventName: 'workflow_run', repo: {owner: 'fixture', repo: 'project'},
       payload: {repository: {id: REPOSITORY_ID},
@@ -60,31 +60,31 @@ test('unknown targets and incomplete or spoofed metadata fail closed', () => {
 test('publisher posts target-specific checks on the PR SHA', async () => {
   const {checks, dependencies} = fixture([pull('dev', 'codex/task')]);
   assert.equal(await publishRoutes(dependencies), 1);
-  assert.equal(checks[0].name, 'pr-route/dev');
-  assert.equal(checks[0].head_sha, HEAD_SHA);
-  assert.equal(checks[0].conclusion, 'success');
+  assert.equal(checks[0].context, 'pr-route/dev');
+  assert.equal(checks[0].sha, HEAD_SHA);
+  assert.equal(checks[0].state, 'success');
 });
 
 test('same-SHA valid release cannot mask an invalid main PR', async () => {
   const {checks, dependencies} = fixture([pull('main', 'dev'), pull('main', 'codex/task')]);
   await publishRoutes(dependencies);
   assert.equal(checks.length, 1);
-  assert.equal(checks[0].name, 'pr-route/main');
-  assert.equal(checks[0].conclusion, 'failure');
+  assert.equal(checks[0].context, 'pr-route/main');
+  assert.equal(checks[0].state, 'failure');
 });
 
 test('retargeting is evaluated with live metadata and independent target contexts', async () => {
   const {checks, dependencies} = fixture([pull('main', 'codex/task'), pull('dev', 'codex/task')]);
   await publishRoutes(dependencies);
-  assert.deepEqual(checks.map(check => [check.name, check.conclusion]),
+  assert.deepEqual(checks.map(check => [check.context, check.state]),
     [['pr-route/main', 'failure'], ['pr-route/dev', 'success']]);
 });
 
 test('invalid destination is reported without echoing user-supplied text', async () => {
   const {checks, dependencies} = fixture([pull('untrusted-text', 'codex/task')]);
   await publishRoutes(dependencies);
-  assert.equal(checks[0].name, 'pr-route/invalid');
-  assert.equal(checks[0].conclusion, 'failure');
+  assert.equal(checks[0].context, 'pr-route/invalid');
+  assert.equal(checks[0].state, 'failure');
   assert.equal(JSON.stringify(checks).includes('untrusted-text'), false);
 });
 

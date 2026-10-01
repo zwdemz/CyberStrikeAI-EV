@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
-  checks: write
+  statuses: write
 
 concurrency:
   group: pr-route-${{ github.event.workflow_run.head_sha }}

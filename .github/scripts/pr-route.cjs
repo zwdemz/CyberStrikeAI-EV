@@ -29,11 +29,11 @@ function evaluateRoute(pullRequest, repositoryId) {
 }
 
 /**
- * Publish required route checks on the PR head SHA from a trusted workflow_run job.
+ * Publish required commit statuses on the PR head SHA from a trusted workflow_run job.
  * Aggregate open PRs sharing that SHA and target so another PR cannot supply a
  * passing result for an invalid route. API failures propagate and do not pass a gate.
  * @param {object} dependencies GitHub API client, workflow context and logging core.
- * @returns {Promise<number>} Number of route checks published (zero for stale/closed PRs).
+ * @returns {Promise<number>} Number of statuses published (zero for stale/closed PRs).
  */
 async function publishRoutes({github, context, core}) {
   const run = context.payload.workflow_run;
@@ -62,10 +62,11 @@ async function publishRoutes({github, context, core}) {
   for (const [target, decisions] of groups) {
     const blocked = decisions.find(decision => !decision.allowed);
     const summary = blocked?.reason || decisions[0].reason;
-    await github.rest.checks.create({
-      ...repository, name: `pr-route/${target}`, head_sha: run.head_sha,
-      status: 'completed', conclusion: blocked ? 'failure' : 'success',
-      output: {title: blocked ? 'Pull request route rejected' : 'Pull request route accepted', summary},
+    // A workflow_run CheckRun isn't an eligible required workflow job. Commit
+    // statuses are independent of that event and remain bound to this exact SHA.
+    await github.rest.repos.createCommitStatus({
+      ...repository, context: `pr-route/${target}`, sha: run.head_sha,
+      state: blocked ? 'failure' : 'success', description: summary,
     });
   }
   return groups.size;
