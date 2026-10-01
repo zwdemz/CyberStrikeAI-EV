@@ -4,7 +4,16 @@
 
 This guide defines baseline expectations when adding features, APIs, tools, frontend pages, or docs.
 
-## Principles
+## Branch and Pull Request Workflow
+
+- Use `dev` as the ongoing integration branch. Start each change from the latest `origin/dev` on a separate `codex/<description>` branch.
+- Submit features, fixes, and documentation changes through a PR targeting `dev`. Do not push changes directly to `dev` or `main`.
+- Promote releases from `dev` to `main` through a separate PR.
+- Use Conventional Commits, sign with the configured GPG key, and verify signatures before pushing.
+- Keep credentials, tokens, private environment details, and other sensitive information out of commit messages and PR titles, descriptions, and comments.
+- Complete checks appropriate to the change before merging. Preserve unrelated local changes; do not rewrite published history or delete branches without explicit authorization.
+
+## Change Requirements
 
 - New features need documentation.
 - New APIs need OpenAPI updates.
