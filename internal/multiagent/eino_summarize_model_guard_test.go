@@ -13,9 +13,12 @@ import (
 
 	"cyberstrike-ai/internal/config"
 
+	"github.com/cloudwego/eino-ext/components/model/agenticopenai"
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/cloudwego/eino/schema/claude"
+	"github.com/cloudwego/eino/schema/gemini"
 	schemaopenai "github.com/cloudwego/eino/schema/openai"
 )
 
@@ -393,5 +396,169 @@ func TestOpenAIChatSummaryStreamCompletion(t *testing.T) {
 				t.Fatalf("accepted incomplete summary: out=%+v err=%v", out, err)
 			}
 		})
+	}
+}
+
+// Test the actual OpenAI-compatible HTTP payload, including a reasoning-only
+// length failure, to catch differences between classic and agentic adapters.
+func TestSummaryLengthRecoveryHTTP(t *testing.T) {
+	for _, classic := range []bool{true, false} {
+		for _, scenario := range []string{"recover", "reasoning-only", "exhausted", "filtered", "disconnect"} {
+			t.Run(fmt.Sprintf("classic=%t/%s", classic, scenario), func(t *testing.T) {
+				var bodies []map[string]interface{}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+						w.WriteHeader(400)
+						return
+					}
+					bodies = append(bodies, body)
+					w.Header().Set("Content-Type", "text/event-stream")
+					reason, content := "length", "INCOMPLETE_SENTINEL"
+					if len(bodies) > 1 && scenario != "exhausted" {
+						reason, content = "stop", "<summary>complete</summary>"
+					}
+					if scenario == "filtered" {
+						reason = "content_filter"
+					}
+					if scenario == "reasoning-only" && len(bodies) == 1 {
+						content = ""
+					}
+					fmt.Fprintf(w, "data: {\"id\":\"test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":%q},\"finish_reason\":null}]}\n\n", content)
+					if scenario == "disconnect" {
+						return
+					}
+					fmt.Fprintf(w, "data: {\"id\":\"test\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":%q}]}\n\ndata: [DONE]\n\n", reason)
+				}))
+				defer server.Close()
+				cfg := config.OpenAIConfig{Provider: "openai", APIKey: "test-key", BaseURL: server.URL, Model: "gpt-4o"}
+				opts := newEinoSummarizationModelOptions(4096, cfg.Model, "", &cfg, nil)
+				var text string
+				var err error
+				if classic {
+					native, createErr := einoopenai.NewChatModel(context.Background(), &einoopenai.ChatModelConfig{APIKey: "test-key", BaseURL: server.URL, Model: cfg.Model, HTTPClient: server.Client()})
+					if createErr != nil {
+						t.Fatal(createErr)
+					}
+					out, generateErr := newNonEmptySummaryChatModel(native).Generate(context.Background(), []*schema.Message{schema.UserMessage("history")}, opts...)
+					err = generateErr
+					text = classicAssistantTextContent(out)
+				} else {
+					native, createErr := newEinoAgenticChatModelFactory(server.Client(), nil, nil)(context.Background(), cfg, einoModelModeNormal)
+					if createErr != nil {
+						t.Fatal(createErr)
+					}
+					out, generateErr := newNonEmptyAgenticSummaryModel(native).Generate(context.Background(), []*schema.AgenticMessage{schema.UserAgenticMessage("history")}, opts...)
+					err = generateErr
+					text = agenticAssistantTextContent(out)
+				}
+				recoverable := scenario == "recover" || scenario == "reasoning-only"
+				if recoverable && (err != nil || text != "<summary>complete</summary>") {
+					t.Fatalf("text=%q err=%v", text, err)
+				}
+				if !recoverable && (err == nil || text != "") {
+					t.Fatalf("accepted incomplete response: text=%q err=%v", text, err)
+				}
+				wantCalls := 2
+				if scenario == "filtered" || scenario == "disconnect" {
+					wantCalls = 1
+				}
+				if len(bodies) != wantCalls {
+					t.Fatalf("calls=%d want=%d", len(bodies), wantCalls)
+				}
+				for _, body := range bodies {
+					limit, ok := body["max_completion_tokens"]
+					if !ok {
+						limit = body["max_tokens"]
+					}
+					if limit != float64(4096) {
+						t.Fatalf("output limit=%v", limit)
+					}
+					if body["stream"] != true {
+						t.Fatal("summary must stream")
+					}
+				}
+				if len(bodies) == 2 {
+					messages := bodies[1]["messages"].([]interface{})
+					if len(messages) != 2 {
+						t.Fatalf("retry input count=%d", len(messages))
+					}
+					encoded, _ := json.Marshal(messages)
+					if strings.Contains(string(encoded), "INCOMPLETE_SENTINEL") || !strings.Contains(string(encoded), "1024 tokens") || !strings.Contains(string(encoded), "history") {
+						t.Fatalf("bad retry input: %s", encoded)
+					}
+				}
+				if scenario == "exhausted" && (!isSummaryLengthError(err) || isEinoTransientRunError(err) || !strings.Contains(err.Error(), "精简重试后仍未完成")) {
+					t.Fatalf("bad exhaustion error: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSummaryLengthClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		meta   *schema.AgenticResponseMeta
+		length bool
+	}{
+		{"chat", &schema.AgenticResponseMeta{Extension: &agenticopenai.ChatResponseMetaExtension{FinishReason: "length"}}, true},
+		{"claude", &schema.AgenticResponseMeta{ClaudeExtension: &claude.ResponseMetaExtension{StopReason: "max_tokens"}}, true},
+		{"gemini", &schema.AgenticResponseMeta{GeminiExtension: &gemini.ResponseMetaExtension{FinishReason: "MAX_TOKENS"}}, true},
+		{"responses", &schema.AgenticResponseMeta{OpenAIExtension: &schemaopenai.ResponseMetaExtension{Status: "incomplete", IncompleteDetails: &schemaopenai.IncompleteDetails{Reason: "max_output_tokens"}}}, true},
+		{"filter", &schema.AgenticResponseMeta{OpenAIExtension: &schemaopenai.ResponseMetaExtension{Status: "incomplete", IncompleteDetails: &schemaopenai.IncompleteDetails{Reason: "content_filter"}}}, false},
+		{"missing", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAgenticSummaryCompletion(&schema.AgenticMessage{ResponseMeta: tc.meta})
+			if isSummaryLengthError(err) != tc.length {
+				t.Fatalf("length=%t err=%v", tc.length, err)
+			}
+		})
+	}
+}
+
+func TestSummaryLengthRecoveryCancellationAndInputOwnership(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sentinel := schema.UserMessage("unused slice capacity")
+	backing := []*schema.Message{schema.UserMessage("original"), sentinel}
+	input := backing[:1]
+	calls := 0
+	generate := func(ctx context.Context, got []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+		calls++
+		if calls == 1 {
+			return nil, &summaryLengthError{cause: errors.New("length")}
+		}
+		if got[0] != input[0] || len(got) != 2 {
+			t.Fatal("lost original input")
+		}
+		if backing[1] != sentinel {
+			t.Fatal("caller backing array mutated")
+		}
+		cancel()
+		return nil, newEinoSummarizationModelError(ctx.Err())
+	}
+	out, err := generateSummaryWithLengthRecovery(ctx, input, nil, generate, schema.UserMessage)
+	if out != nil || !errors.Is(err, context.Canceled) || calls != 2 {
+		t.Fatalf("out=%v err=%v calls=%d", out, err, calls)
+	}
+	calls = 0
+	_, err = generateSummaryWithLengthRecovery(ctx, input, nil, generate, schema.UserMessage)
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("retry after cancel: %v calls=%d", err, calls)
+	}
+}
+
+func TestSummaryTextBudget(t *testing.T) {
+	for _, reserve := range []int{1, 128, 1024, 8192, 64000} {
+		normal, compact := summaryTextTarget(reserve, false), summaryTextTarget(reserve, true)
+		if compact < 1 || normal > reserve || compact > normal || normal > 2048 || compact > 1024 {
+			t.Fatalf("reserve=%d normal=%d compact=%d", reserve, normal, compact)
+		}
+		if !strings.Contains(budgetedSummaryInstruction(reserve), fmt.Sprintf("%d tokens", normal)) {
+			t.Fatal("missing output budget")
+		}
 	}
 }

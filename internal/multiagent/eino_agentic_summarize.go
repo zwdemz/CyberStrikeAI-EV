@@ -163,7 +163,7 @@ func newEinoAgenticSummarizationMiddleware(
 			ContextTokens: trigger,
 		},
 		TokenCounter:       agenticTokenCounter,
-		UserInstruction:    einoSummarizeUserInstruction,
+		UserInstruction:    budgetedSummaryInstruction(outputReserve),
 		EmitInternalEvents: emitInternalEvents,
 		TranscriptFilePath: transcriptPath,
 		Retry: &summarization.TypedRetryConfig[*schema.AgenticMessage]{

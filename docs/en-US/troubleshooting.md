@@ -117,3 +117,13 @@ Server logs:
 Browser console:
 API response:
 ```
+
+## Summary failure: `finish_reason="length"`
+
+The model reached an output limit before completing its summary. Partial text must not replace conversation history.
+
+`multi_agent.eino_middleware.summarization_output_reserve_tokens` sets the summary output limit (default: 8192). The prompt targets half that budget, capped at 2048 tokens. A provider-confirmed output-limit response triggers one compact retry with the original input, targeting a quarter of the budget, capped at 1024 tokens. The output limit stays unchanged. Only nonempty, explicitly completed summaries enter subsequent context; another truncation returns an error and leaves the original history intact.
+
+Check the failing conversation's actual model/channel, which may differ from the current default. The channel's `max_total_tokens` is a context budget, not the summary output limit. Before raising the summary reserve, verify provider output limits and available context headroom; hidden reasoning may also consume completion tokens. Restart after changing configuration, then continue the conversation.
+
+Authentication failures, content filters, missing completion metadata and broken streams are not treated as output-limit recovery. Existing transient network retries still apply. The compact retry adds at most one request per summary generation attempt, with corresponding latency and cost. It does not call tools, continue partial text, or guarantee success with an insufficient output budget.
