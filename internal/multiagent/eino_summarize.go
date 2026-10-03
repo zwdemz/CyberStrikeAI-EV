@@ -75,7 +75,7 @@ const einoSummarizeUserInstruction = `关键：仅以纯文本响应。禁止调
 - 策略决策与下一步具体操作（须与最近用户请求及未完成任务一致）
 </summary>
 
-提醒：不要调用任何工具；必须基于上文已有对话直接输出 <analysis> 与 <summary>，勿输出 analysis 以外的正文。`
+提醒：不要调用任何工具；必须基于上文已有对话直接输出 <analysis> 与 <summary>，勿输出这两个块以外的正文。`
 
 // newEinoSummarizationMiddleware 使用 Eino ADK Summarization 中间件（见 https://www.cloudwego.io/zh/docs/eino/core_modules/eino_adk/eino_adk_chatmodelagentmiddleware/middleware_summarization/）。
 // 触发阈值：估算 token 超过 openai.max_total_tokens * summarization_trigger_ratio（默认 0.8）时摘要。
@@ -213,7 +213,7 @@ func newEinoSummarizationMiddleware(
 			ContextTokens: trigger,
 		},
 		TokenCounter:       tokenCounter,
-		UserInstruction:    einoSummarizeUserInstruction,
+		UserInstruction:    budgetedSummaryInstruction(outputReserve),
 		EmitInternalEvents: emitInternalEvents,
 		TranscriptFilePath: transcriptPath,
 		Retry: &summarization.RetryConfig{
