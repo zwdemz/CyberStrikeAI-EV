@@ -58,7 +58,13 @@ func newNonEmptySummaryChatModel(base model.BaseChatModel) model.BaseChatModel {
 	return &nonEmptySummaryChatModel{base: base}
 }
 
+// Generate streams a complete summary for input/options, with one compact
+// retry on output truncation; cancellation and incomplete output return errors.
 func (m *nonEmptySummaryChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	return generateSummaryWithLengthRecovery(ctx, input, opts, m.generateOnce, schema.UserMessage)
+}
+
+func (m *nonEmptySummaryChatModel) generateOnce(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, newEinoSummarizationModelError(err)
 	}
@@ -68,6 +74,10 @@ func (m *nonEmptySummaryChatModel) Generate(ctx context.Context, input []*schema
 	}
 	out, err := collectSummaryStream(ctx, stream, schema.ConcatMessages)
 	if err != nil {
+		return nil, newEinoSummarizationModelError(err)
+	}
+	// A reasoning-only truncated reply is still an output-limit failure.
+	if err := validateClassicSummaryCompletion(out); isSummaryLengthError(err) {
 		return nil, newEinoSummarizationModelError(err)
 	}
 	if strings.TrimSpace(classicAssistantTextContent(out)) == "" {
@@ -91,7 +101,13 @@ func newNonEmptyAgenticSummaryModel(base model.BaseModel[*schema.AgenticMessage]
 	return &nonEmptyAgenticSummaryModel{base: base}
 }
 
+// Generate applies the same completion and recovery contract to agentic input.
+// It returns no summary on cancellation, provider failure or incomplete output.
 func (m *nonEmptyAgenticSummaryModel) Generate(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
+	return generateSummaryWithLengthRecovery(ctx, input, opts, m.generateOnce, schema.UserAgenticMessage)
+}
+
+func (m *nonEmptyAgenticSummaryModel) generateOnce(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, newEinoSummarizationModelError(err)
 	}
@@ -101,6 +117,10 @@ func (m *nonEmptyAgenticSummaryModel) Generate(ctx context.Context, input []*sch
 	}
 	out, err := collectSummaryStream(ctx, stream, schema.ConcatAgenticMessages)
 	if err != nil {
+		return nil, newEinoSummarizationModelError(err)
+	}
+	// A reasoning-only truncated reply is still an output-limit failure.
+	if err := validateAgenticSummaryCompletion(out); isSummaryLengthError(err) {
 		return nil, newEinoSummarizationModelError(err)
 	}
 	if strings.TrimSpace(agenticAssistantTextContent(out)) == "" {
@@ -278,6 +298,9 @@ func validateClassicSummaryCompletion(msg *schema.Message) error {
 	if msg.ResponseMeta != nil {
 		reason = msg.ResponseMeta.FinishReason
 	}
+	if reason == "length" && len(msg.ToolCalls) == 0 {
+		return &summaryLengthError{cause: fmt.Errorf("summary did not complete: finish_reason=%q", reason)}
+	}
 	if reason != "stop" || len(msg.ToolCalls) != 0 {
 		return fmt.Errorf("summary did not complete: finish_reason=%q tool_calls=%d", reason, len(msg.ToolCalls))
 	}
@@ -287,24 +310,36 @@ func validateClassicSummaryCompletion(msg *schema.Message) error {
 func validateAgenticSummaryCompletion(msg *schema.AgenticMessage) error {
 	if meta := msg.ResponseMeta; meta != nil {
 		if ext, ok := meta.Extension.(*agenticopenai.ChatResponseMetaExtension); ok && ext != nil {
+			if ext.FinishReason == "length" {
+				return &summaryLengthError{cause: fmt.Errorf("summary did not complete: openai chat finish_reason=%q", ext.FinishReason)}
+			}
 			if ext.FinishReason == "stop" {
 				return nil
 			}
 			return fmt.Errorf("summary did not complete: openai chat finish_reason=%q", ext.FinishReason)
 		}
 		if ext := meta.ClaudeExtension; ext != nil {
+			if ext.StopReason == "max_tokens" {
+				return &summaryLengthError{cause: fmt.Errorf("summary did not complete: claude stop_reason=%q", ext.StopReason)}
+			}
 			if ext.StopReason == "end_turn" {
 				return nil
 			}
 			return fmt.Errorf("summary did not complete: claude stop_reason=%q", ext.StopReason)
 		}
 		if ext := meta.OpenAIExtension; ext != nil {
+			if ext.Status == "incomplete" && ext.Error == nil && ext.IncompleteDetails != nil && ext.IncompleteDetails.Reason == "max_output_tokens" {
+				return &summaryLengthError{cause: fmt.Errorf("summary did not complete: openai status=%q reason=%q", ext.Status, ext.IncompleteDetails.Reason)}
+			}
 			if ext.Status == schemaopenai.ResponseStatusCompleted && ext.Error == nil && ext.IncompleteDetails == nil {
 				return nil
 			}
 			return fmt.Errorf("summary did not complete: openai status=%q", ext.Status)
 		}
 		if ext := meta.GeminiExtension; ext != nil {
+			if ext.FinishReason == "MAX_TOKENS" {
+				return &summaryLengthError{cause: fmt.Errorf("summary did not complete: gemini finish_reason=%q", ext.FinishReason)}
+			}
 			if ext.FinishReason == "STOP" {
 				return nil
 			}

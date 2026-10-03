@@ -2,6 +2,7 @@ package multiagent
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -263,4 +264,51 @@ func joinClassicMessageContent(msgs []*schema.Message) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+func TestAgenticSummaryLengthRecoveryPreservesHistory(t *testing.T) {
+	for _, recoverable := range []bool{true, false} {
+		t.Run(fmt.Sprintf("recover=%t", recoverable), func(t *testing.T) {
+			truncated := agenticAssistantTextMessage("INCOMPLETE_SENTINEL")
+			truncated.ResponseMeta = &schema.AgenticResponseMeta{OpenAIExtension: &schemaopenai.ResponseMetaExtension{Status: "incomplete", IncompleteDetails: &schemaopenai.IncompleteDetails{Reason: "max_output_tokens"}}}
+			final := truncated
+			if recoverable {
+				final = agenticAssistantTextMessage("<summary>Complete findings; continue the requested task.</summary>")
+			}
+			base := &capturingAgenticChatModel{outputs: []*schema.AgenticMessage{truncated, final}}
+			emit := false
+			appCfg := &config.Config{}
+			appCfg.OpenAI.Model = "gpt-4o"
+			appCfg.OpenAI.MaxTotalTokens = 5000
+			appCfg.Database.Path = filepath.Join(t.TempDir(), "test.db")
+			mw, err := newEinoAgenticSummarizationMiddleware(context.Background(), base, appCfg, &config.MultiAgentEinoMiddlewareConfig{SummarizationEmitInternalEvents: &emit, SummarizationOutputReserveTokens: 1024}, "length-test", nil, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := &adk.TypedChatModelAgentState[*schema.AgenticMessage]{Messages: []*schema.AgenticMessage{
+				schema.SystemAgenticMessage("system"), schema.UserAgenticMessage(strings.Repeat("history ", 20000)), schema.UserAgenticMessage("Preserve this constraint and continue the task."),
+			}}
+			before := joinClassicMessageContent(AgenticMessagesToEino(state.Messages))
+			_, after, err := mw.BeforeModelRewriteState(context.Background(), state, nil)
+			if len(base.snapshotInputs()) != 2 {
+				t.Fatalf("calls=%d, want 2", len(base.snapshotInputs()))
+			}
+			if recoverable {
+				if err != nil || after == nil {
+					t.Fatalf("after=%v err=%v", after, err)
+				}
+				text := joinClassicMessageContent(AgenticMessagesToEino(after.Messages))
+				if !strings.Contains(text, "Complete findings") || !strings.Contains(text, "Preserve this constraint") || strings.Contains(text, "INCOMPLETE_SENTINEL") {
+					t.Fatal("lost summary/constraint or accepted partial output")
+				}
+			} else {
+				if !isSummaryLengthError(err) {
+					t.Fatalf("expected terminal length error: %v", err)
+				}
+				if got := joinClassicMessageContent(AgenticMessagesToEino(state.Messages)); got != before {
+					t.Fatal("original history changed on failed compaction")
+				}
+			}
+		})
+	}
 }
