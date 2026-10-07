@@ -27,6 +27,9 @@ func appendEinoAgenticChatModelTailMiddlewares(
 	if !cfg.skipOrphanPruner {
 		handlers = append(handlers, newAgenticOrphanToolPrunerMiddleware(cfg.logger, cfg.phase))
 	}
+	if recovery := newAgenticConversationProgressRecoveryMiddleware(cfg.db, cfg.conversationID, cfg.logger); recovery != nil {
+		handlers = append(handlers, recovery)
+	}
 	if !cfg.skipTrace && cfg.trace != nil {
 		if capMw := newAgenticModelFacingTraceMiddleware(cfg.trace); capMw != nil {
 			handlers = append(handlers, capMw)

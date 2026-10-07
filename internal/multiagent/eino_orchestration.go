@@ -130,6 +130,7 @@ func buildPlanExecuteAgenticExecutorHandlers(ctx context.Context, a *PlanExecute
 			maxTotalTokens:       a.AppCfg.OpenAI.MaxTotalTokens,
 			toolMaxBytes:         toolMaxBytesFromMW(a.MwCfg),
 			conversationID:       a.ConversationID,
+			db:                   a.DB,
 			trace:                a.ModelFacingTrace,
 			middlewareConfig:     a.MwCfg,
 		})

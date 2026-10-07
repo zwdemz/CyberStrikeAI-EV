@@ -2,6 +2,7 @@ package multiagent
 
 import (
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
@@ -22,8 +23,9 @@ import (
 //  8. final tool-call/result reconciliation
 //  9. orphan tool prune (defense in depth)
 //  10. malformed tool_search history repair
-//  11. telemetry
-//  12. model-facing trace snapshot
+//  11. durable conversation progress recovery
+//  12. telemetry
+//  13. model-facing trace snapshot
 type einoChatModelTailConfig struct {
 	logger               *zap.Logger
 	phase                string
@@ -33,6 +35,7 @@ type einoChatModelTailConfig struct {
 	maxTotalTokens       int
 	toolMaxBytes         int
 	conversationID       string
+	db                   *database.DB
 	trace                *modelFacingTraceHolder
 	middlewareConfig     *config.MultiAgentEinoMiddlewareConfig
 	skipOrphanPruner     bool
@@ -57,6 +60,9 @@ func appendEinoChatModelTailMiddlewares(handlers []adk.ChatModelAgentMiddleware,
 		handlers = append(handlers, newOrphanToolPrunerMiddleware(cfg.logger, cfg.phase))
 	}
 	handlers = append(handlers, newToolSearchResultSanitizerMiddleware(cfg.logger, cfg.phase))
+	if recovery := newConversationProgressRecoveryMiddleware(cfg.db, cfg.conversationID, cfg.logger); recovery != nil {
+		handlers = append(handlers, recovery)
+	}
 	if !cfg.skipTelemetry {
 		if teleMw := newEinoModelInputTelemetryMiddleware(cfg.logger, cfg.modelName, cfg.conversationID, cfg.phase); teleMw != nil {
 			handlers = append(handlers, teleMw)

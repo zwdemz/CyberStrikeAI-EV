@@ -1581,6 +1581,19 @@ func (h *AgentHandler) createProgressCallback(runCtx context.Context, cancelRun 
 			processDetailID, err := h.db.AddProcessDetailWithID(assistantMessageID, conversationID, eventType, message, data)
 			if err != nil {
 				h.logger.Warn("保存过程详情失败", zap.Error(err), zap.String("eventType", eventType))
+				if eventType == "tool_result" {
+					// The next model step must not proceed after a completed tool
+					// result is lost from the durable conversation timeline.
+					if cancelRun != nil {
+						cancelRun(fmt.Errorf("tool result persistence failed: %w", err))
+					}
+					failure := "工具结果未能保存，已停止本轮执行；请先核对实际状态再继续。"
+					if sendEventFunc != nil {
+						sendEventFunc("error", failure, nil)
+					}
+					h.publishProgressToTaskEventBus(conversationID, "error", failure, nil)
+					return
+				}
 			}
 			if deferToolProgressSend {
 				clientData := enrichProgressEventData(summarizeProcessDetailData(eventType, data), conversationID, assistantMessageID)
