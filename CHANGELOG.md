@@ -23,6 +23,7 @@ The current baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.co
 
 ### Bug Fixes
 
+- Pin the optional Burp extension Gradle build to a JDK 11-compatible wrapper so CodeQL can resolve Java dependencies instead of inferring them after an incompatible Gradle download.
 - Cancel stale conversation requests and bound history fetch/JSON time to 15 seconds; expose retry controls and keep failed rendering from leaving loading permanently active.
 - Render messages independently of approval metadata while preserving approval readiness checks before sending.
 - Keep cursor boundaries stable when messages share timestamps or new replies arrive; mark short-lived, memory-bounded network fallback snapshots visibly.
