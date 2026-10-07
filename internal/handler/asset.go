@@ -117,8 +117,12 @@ func (h *AssetHandler) Import(c *gin.Context) {
 			asset.SourceQuery = strings.TrimSpace(req.SourceQuery)
 		}
 	}
-	result, err := h.db.UpsertAssets(req.Assets, owner, allowGlobal)
+	result, err := h.db.UpsertAssetsContext(c.Request.Context(), req.Assets, owner, allowGlobal)
 	if err != nil {
+		if database.IsSQLiteBusy(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "资产库繁忙，请稍后重试"})
+			return
+		}
 		var validationErr *database.AssetValidationError
 		if errors.As(err, &validationErr) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -328,7 +332,11 @@ func (h *AssetHandler) Update(c *gin.Context) {
 			return
 		}
 	}
-	if err := h.db.UpdateAsset(c.Param("id"), &asset, assetAccess(c)); err != nil {
+	if err := h.db.UpdateAssetContext(c.Request.Context(), c.Param("id"), &asset, assetAccess(c)); err != nil {
+		if database.IsSQLiteBusy(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "资产库繁忙，请稍后重试"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

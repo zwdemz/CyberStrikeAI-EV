@@ -15,8 +15,10 @@ import (
 
 const (
 	// SQLite 在 WAL 模式下建议使用较保守的连接数，降低长读快照导致 checkpoint 饥饿的概率。
-	sqliteMaxOpenConns = 25
-	sqliteMaxIdleConns = 5
+	sqliteMaxOpenConns = 8
+	sqliteMaxIdleConns = 4
+	// A waiting writer can use this entire interval before the bounded asset retry.
+	sqliteBusyTimeoutMS = 10000
 	// 以页为单位的自动 checkpoint 触发阈值（默认 1000 页，约 4MB @ 4KB/page）。
 	sqliteWALAutoCheckpointPages = 1000
 	// 控制 WAL 目标上限，避免异常场景持续膨胀（256MB）。
@@ -123,7 +125,7 @@ func (db *DB) runPassiveCheckpoint(trigger string) {
 
 // NewDB 创建数据库连接
 func NewDB(dbPath string, logger *zap.Logger) (*DB, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=5000&_synchronous=NORMAL")
+	db, err := sql.Open("sqlite3", dbPath+fmt.Sprintf("?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=%d&_txlock=immediate&_synchronous=NORMAL", sqliteBusyTimeoutMS))
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
@@ -1646,7 +1648,7 @@ func (db *DB) migrateC2ListenersTable() error {
 
 // NewKnowledgeDB 创建知识库数据库连接（只包含知识库相关的表）
 func NewKnowledgeDB(dbPath string, logger *zap.Logger) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=5000&_synchronous=NORMAL")
+	sqlDB, err := sql.Open("sqlite3", dbPath+fmt.Sprintf("?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=%d&_synchronous=NORMAL", sqliteBusyTimeoutMS))
 	if err != nil {
 		return nil, fmt.Errorf("打开知识库数据库失败: %w", err)
 	}
