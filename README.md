@@ -2,19 +2,46 @@
   <img src="images/logo.png" alt="CyberStrikeAI Logo" width="200" >
 </div>
 
-# CyberStrikeAI
+# CyberStrikeAI-EV
 
 
 [中文](README_CN.md) | [English](README.md)
 
-**The system of action for AI-native cybersecurity—where intent becomes governed execution, evidence becomes operational memory, and every operation improves the next.**
+**A customized CyberStrikeAI distribution for authorized, focused security validation, SRC workflows, and evidence-based remediation verification.**
 
-CyberStrikeAI connects planning, execution, human oversight, evidence, and replay in one auditable workspace. Built in Go, it combines Eino-powered agents, MCP-native tools, RAG knowledge, visual workflows, and attack-chain modeling and analysis for authorized security operations.
+CyberStrikeAI-EV is maintained in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV), based on [AIPentest/CyberStrikeAI v1.7.21](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.21), upstream commit `82b0af10f8519bf4baaa08958a8dbe38299a7685`. It retains the Go/Eino agent platform, MCP integration, knowledge retrieval, workflows, and audit trail, with EV-specific role restrictions, tool readiness handling, DNSLog integration, reliability improvements, and security fixes. This is an independently maintained fork; upstream and EV tags with the same version number do not identify identical source trees.
 
 **Start here:** [Quick start](#quick-start-one-command-deployment) · [Documentation](docs/en-US/README.md) · [Security hardening](docs/en-US/security-hardening.md)
 
 > [!IMPORTANT]
 > Use CyberStrikeAI only on systems you own or are explicitly authorized to test. For shared or production environments, review the [security model](docs/en-US/security-model.md) and [hardening guide](docs/en-US/security-hardening.md) before enabling high-risk tools, WebShell, or C2 capabilities.
+
+## Focused Use Cases
+
+| Use case | Intended work | Boundaries |
+| --- | --- | --- |
+| Education SRC | Validate an approved endpoint on one host using test accounts and synthetic student/teacher records; record minimal evidence. | The `EDUSRC渗透测试` role prohibits high-risk exploitation, large-scale scanning, and access to real personal records. |
+| Enterprise SRC | Reproduce a scoped issue and document request differences, prerequisites, and remediation evidence under the program's rules. | The `企业SRC渗透测试` role prohibits bulk target expansion, credential attacks, destructive actions, and business-state changes. |
+| API, JWT, and schema checks | Inspect a test JWT offline, validate a local OpenAPI document, or compare approved GET/HEAD/OPTIONS responses. | Use the role's tool allowlist; do not turn offline analysis into online exploitation or modify business data. |
+| Remediation verification | Repeat a small, approved check against a fixed endpoint and compare evidence before and after a fix. | Report confirmed, suspected, unverified, and environment-limited findings separately; redact credentials and personal data. |
+
+The two SRC roles use the server-enforced `src-low-impact` policy: one host selected by the first network call, up to 50 network tool calls per run, at least one second between calls, serialized execution, and at most 10 explicit Nmap ports. Child agents share the same limits. HTTP methods are restricted to GET/HEAD/OPTIONS; shell execution, arbitrary Python, package installation, and batch tasks are unavailable to these roles. These are tool-call limits, not packet quotas or proof of authorization; a GET endpoint can still change state. Operators must define scope and safe test data before execution. See [SRC tool policy and installation](docs/src-tool-policy.md) (Chinese).
+
+## EV Customizations
+
+- **Role and execution controls:** education/enterprise SRC prompts work with runtime tool and parameter restrictions, platform RBAC, audit logging, and configurable tool-call guards. Prompts alone are not a security boundary.
+- **Tool readiness:** missing commands are reported for operator installation and reload. Restricted SRC roles cannot use Python or child agents to bypass unavailable or forbidden tools. The Ubuntu installer keeps its tools and dependencies under `tools/runtime/`.
+- **Additional DNSLog provider:** [`dig-pm-dnslog`](docs/dig-pm-dnslog.md) is a native MCP tool backed by HTTPS/WSS, with user/conversation-bound sessions and no Python dependency. It is not automatically added to the two restricted SRC roles.
+- **Summary recovery:** explicit output truncation permits one shorter retry with the original input and output budget; an incomplete summary never replaces conversation history. See [troubleshooting](docs/en-US/troubleshooting.md).
+- **Dependency fixes and storage controls:** patched dependencies, storage previews and confirmed deletion, and automatic storage cleanup disabled by default. Upstream localization and storage changes remain part of the v1.7.21 baseline. See the [sync record](docs/zh-CN/upstream-v1.7.21-sync.md) (Chinese).
+
+The inherited WebShell, C2, broad reconnaissance, and batch capabilities listed below are outside the two SRC roles. Availability elsewhere depends on role permissions, configuration, and explicit authorization for that environment.
+
+## Releases and Change History
+
+Use this fork's [Releases](https://github.com/zwdemz/CyberStrikeAI-EV/releases) and [English changelog](CHANGELOG.md). Future tag names use SemVer (`vMAJOR.MINOR.PATCH`); annotated tag messages, Release titles, and Release notes are written in English. Notes record updates, optimizations, bug fixes, security fixes, hardening, validation, and upgrade/rollback considerations, with the upstream baseline identified separately.
+
+Development takes place on `dev`; signed changes reach `main` through a `dev → main` PR. Release tags point to the verified release commit on `main`. See the [release process](docs/en-US/release-process.md).
 
 ## Interface & Integration Preview
 
@@ -192,13 +219,13 @@ See [tools/README_EN.md](tools/README_EN.md) for tool definitions, customization
 ### Quick Start (One-Command Deployment)
 
 **Prerequisites:**
-- Go 1.25+ ([Install](https://go.dev/dl/); required by `go.mod`)
+- Go 1.26.8+ ([Install](https://go.dev/dl/); required by `go.mod`)
 - Python 3.10+ ([Install](https://www.python.org/downloads/))
 
 **One-Command Deployment:**
 ```bash
-git clone https://github.com/Ed1s0nZ/CyberStrikeAI.git
-cd CyberStrikeAI
+git clone --branch main https://github.com/zwdemz/CyberStrikeAI-EV.git
+cd CyberStrikeAI-EV
 chmod +x run.sh && ./run.sh
 ```
 
@@ -237,21 +264,13 @@ The `run.sh` script will automatically:
      ```
    - Or edit `config.yaml` directly before launching. `ai.default_channel` is used for new conversations and tasks that do not explicitly select a channel; the chat page can also select any saved channel per session.
 2. **Login** - On first startup the console prints an auto-generated initial `admin` password; create accounts from **Platform permissions → User management**
-3. **Install security tools (optional)** - Install tools from `tools/` as needed; missing tools are skipped or substituted at runtime. Common examples:
+3. **Install only the tools required by the selected role.** For the education/enterprise SRC roles on Ubuntu:
 
-   **macOS (Homebrew):**
    ```bash
-   brew install nmap masscan sqlmap nikto gobuster ffuf hydra hashcat nuclei subfinder
+   bash tools/install-src-tools.sh
    ```
 
-   **Linux (Kali / Debian / Ubuntu):**
-   ```bash
-   sudo apt update
-   sudo apt install -y nmap masscan sqlmap nikto gobuster hydra hashcat john binwalk
-   # On some distros, install ffuf/nuclei/subfinder via go install or upstream docs
-   ```
-
-   See the `tools/` directory for the full list; refer to each tool's official docs for install details.
+   Programs and dependencies are installed under `tools/runtime/` without sudo. Reload tool configuration or restart after installation. Missing tools must be repaired by an operator; the restricted roles cannot substitute arbitrary Python or shell execution. Other roles may use equivalent alternatives only within their own permissions and installed dependencies. See [SRC tool policy](docs/src-tool-policy.md) (Chinese) and [tool definitions](tools/README_EN.md). The installer is Ubuntu-specific; Windows/macOS need compatible local tools.
 
 **Alternative Launch Methods:**
 ```bash
@@ -269,22 +288,15 @@ If server logs show `client sent an HTTP request to an HTTPS server`, a client i
 
 ### Upgrade and Compatibility
 
-**CyberStrikeAI one-click upgrade:**
-1. (First time) enable the script: `chmod +x upgrade.sh`
-2. Upgrade with: `./upgrade.sh` (optional flags: `--tag vX.Y.Z`, `--no-venv`, `--yes`). Local `tools/`, `roles/`, and `skills/` are always preserved.
-3. The script will back up your `config.yaml` and `data/`, upgrade the code from GitHub Release, update `config.yaml`'s `version`, then restart the server.
+EV releases are published in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV/releases). The inherited `upgrade.sh` currently hardcodes `Ed1s0nZ/CyberStrikeAI`; running it unmodified downloads upstream code and can overwrite EV customizations. Use the controlled procedure below for this fork.
 
-Recommended one-liner:
-`chmod +x upgrade.sh && ./upgrade.sh --yes`
+1. Read the target EV Release notes and [changelog](CHANGELOG.md), including the upstream baseline, security fixes, and configuration or database changes.
+2. Obtain the release source in a separate directory, verify the signed tag against a trusted maintainer key, and build with the Go version required by `go.mod`.
+3. Back up the current executable, source, configuration, a consistent database snapshot, and custom tools/roles/skills/agents. Record the launch command and environment privately.
+4. After active tasks finish, stop the service gracefully. Install the matching executable and source/static files, merge configuration changes, and review changes to role/tool policies while preserving local credentials and runtime data.
+5. Restart using the recorded launch configuration and verify login, role restrictions, tool readiness, and the relevant feature. Follow the [release process](docs/en-US/release-process.md) for rollback; do not overwrite newer runtime data without assessing the impact.
 
-If something goes wrong, you can restore from `.upgrade-backup/` (or manually copy `/data` and `config.yaml` back) and run `./run.sh` again.
-
-Requirements / tips:
-* You need `curl` or `wget` for downloading Release packages.
-* `rsync` is recommended/required for the safe code sync.
-* If GitHub API rate-limits you, set `export GITHUB_TOKEN="..."` before running `./upgrade.sh`.
-
-⚠️ **Before upgrading:** review the target release notes for configuration, database, and API changes. Backups are required even for patch upgrades; a version number alone is not a compatibility guarantee.
+For the v1.7.21 baseline, the default summary reserve increased to 40960. Explicitly set `multi_agent.eino_middleware.summarization_output_reserve_tokens: 8192` to retain the previous default when appropriate for your provider. Automatic storage cleanup remains disabled by default. Patch version numbers alone do not guarantee compatibility.
 
 
 ## Configuration
@@ -318,7 +330,7 @@ ai:
 ## Project Layout
 
 ```
-CyberStrikeAI/
+CyberStrikeAI-EV/
 ├── cmd/                 # Server, MCP stdio entrypoints, tooling
 ├── internal/            # Agent, MCP core, handlers, C2 (`internal/c2`), security executor
 ├── web/                 # Static SPA + templates
@@ -335,22 +347,23 @@ CyberStrikeAI/
 
 ## Basic Usage Examples
 
-```
-Scan open ports on 192.168.1.1
-Perform a comprehensive port scan on 192.168.1.1 focusing on 80,443,22
-Check if https://example.com/page?id=1 is vulnerable to SQL injection
-Scan https://example.com for hidden directories and outdated software
-Enumerate subdomains for example.com, then run nuclei against the results
+Use an approved test host and an SRC role. Replace the illustrative hostname below with the explicitly authorized target before execution.
+
+```text
+Use the education SRC role to compare GET responses from the approved /profile endpoint on training.example.test using two test accounts. Do not read real student records.
+Inspect my test JWT offline and explain its claims without contacting an online target or attempting signature cracking.
+Validate the uploaded OpenAPI document with the built-in schema rules and report evidence separately from unverified risks.
 ```
 
 ## Advanced Playbooks
 
+```text
+Use the enterprise SRC role to recheck one previously reported endpoint after its fix, keeping the same authorized host and test records.
+Summarize already collected, redacted evidence and label each finding as confirmed, suspected, unverified, or environment-limited.
+Review the configured role's permitted tools and missing dependencies before a task; ask the operator to repair missing tools instead of bypassing its policy.
 ```
-Load the recon-engagement template, run amass/subfinder, then brute-force dirs on every live host.
-Use external Burp-based MCP server for authenticated traffic replay, then pass findings back for graphing.
-Compress the 5 MB nuclei report, summarize critical CVEs, and attach the artifact to the conversation.
-Build an attack chain for the latest engagement and export the node list with severity >= high.
-```
+
+The following community recognition and support channels belong to the upstream CyberStrikeAI project.
 
 ## 404Starlink 
 
@@ -369,7 +382,7 @@ CyberStrikeAI has joined [404Starlink](https://github.com/knownsec/404StarLink)
 
 ---
 
-## Community and Support
+## Upstream Community and Support
 
 - Join the community on [Discord](https://discord.gg/8PjVCMu8Zw).
 
