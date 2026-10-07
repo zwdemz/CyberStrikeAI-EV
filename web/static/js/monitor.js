@@ -4631,6 +4631,8 @@ function buildInlineHitlApprovalHtml(data, opts) {
         let statusText;
         if (timedOut) {
             statusText = tr('hitl.expiredRejected', '审批超时，已自动拒绝');
+        } else if (audit && String(data.comment || '').startsWith('[audit_error]')) {
+            statusText = tr('hitl.auditError', '审查服务异常，工具未执行');
         } else if (audit) {
             statusText = ok
                 ? (hasEditedArgs ? tr('hitl.auditEditedApproved', '审计 Agent 已修改参数并批准') : tr('hitl.auditApproved', '审计 Agent 已批准'))

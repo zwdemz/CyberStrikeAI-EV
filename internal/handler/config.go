@@ -794,6 +794,12 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 
+	if req.Hitl != nil {
+		if err := req.Hitl.ValidateAuditTemperature(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -2293,6 +2299,12 @@ func updateHitlConfig(doc *yaml.Node, cfg config.HitlConfig) {
 	setStringInMap(auditModelNode, "base_url", cfg.AuditModel.BaseURL)
 	setStringInMap(auditModelNode, "api_key", cfg.AuditModel.APIKey)
 	setStringInMap(auditModelNode, "model", cfg.AuditModel.Model)
+	if cfg.AuditModel.Temperature == nil {
+		removeKeyFromMap(auditModelNode, "temperature")
+	} else {
+		_, temperatureNode := ensureKeyValue(auditModelNode, "temperature")
+		_ = temperatureNode.Encode(*cfg.AuditModel.Temperature)
+	}
 	// flow 样式 [a, b, c] 单行展示，工具多时比块序列省行数
 	setFlowStringSliceInMap(hitlNode, "tool_whitelist", cfg.ToolWhitelist)
 	setStringInMap(hitlNode, "default_mode", cfg.EffectiveDefaultMode())

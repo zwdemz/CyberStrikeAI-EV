@@ -21,12 +21,15 @@ type modelOutputRecoveryMarker struct {
 }
 
 // modelOutputExecutionGuardMiddleware is a compatibility shim for old persisted
-// recovery-marker tool calls. New runs should let the tool layer return normal
-// soft errors to the model instead of pre-rewriting model output.
+// recovery-marker tool calls. It also unwraps exact JSON fences before review;
+// all other malformed inputs retain the tool layer soft-error recovery path.
 func modelOutputExecutionGuardMiddleware() compose.ToolMiddleware {
 	messageFor := func(input *compose.ToolInput) (string, bool) {
 		if input == nil {
 			return "", false
+		}
+		if fixed := fixToolCallArguments(input.Arguments); fixed != "" {
+			input.Arguments = fixed
 		}
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal([]byte(input.Arguments), &envelope) != nil {

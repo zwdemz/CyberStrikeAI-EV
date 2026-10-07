@@ -834,12 +834,14 @@ type MCPConfig struct {
 }
 
 type OpenAIConfig struct {
-	Provider            string `yaml:"provider,omitempty" json:"provider,omitempty"` // API 提供商: "openai"(默认) 或 "claude"，claude 使用 Eino 原生 Anthropic Messages API
-	APIKey              string `yaml:"api_key" json:"api_key"`
-	BaseURL             string `yaml:"base_url" json:"base_url"`
-	Model               string `yaml:"model" json:"model"`
-	MaxTotalTokens      int    `yaml:"max_total_tokens,omitempty" json:"max_total_tokens,omitempty"`
-	MaxCompletionTokens int    `yaml:"max_completion_tokens,omitempty" json:"max_completion_tokens,omitempty"`
+	// Temperature optionally overrides the audit model sampling temperature; nil keeps the audit default.
+	Temperature         *float64 `yaml:"temperature,omitempty" json:"temperature,omitempty"`
+	Provider            string   `yaml:"provider,omitempty" json:"provider,omitempty"` // API 提供商: "openai"(默认) 或 "claude"，claude 使用 Eino 原生 Anthropic Messages API
+	APIKey              string   `yaml:"api_key" json:"api_key"`
+	BaseURL             string   `yaml:"base_url" json:"base_url"`
+	Model               string   `yaml:"model" json:"model"`
+	MaxTotalTokens      int      `yaml:"max_total_tokens,omitempty" json:"max_total_tokens,omitempty"`
+	MaxCompletionTokens int      `yaml:"max_completion_tokens,omitempty" json:"max_completion_tokens,omitempty"`
 	// Reasoning 控制 Eino ChatModel 的 thinking / reasoning_effort / output_config 等（Eino 单/多代理路径生效）。
 	Reasoning OpenAIReasoningConfig `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
 }
@@ -1223,6 +1225,8 @@ func (h HitlConfig) TypeSafeConfigEffective() (baseURL, apiKey, model string) {
 func (h HitlConfig) AuditModelEffective(main OpenAIConfig) OpenAIConfig {
 	out := main
 	am := h.AuditModel
+	// Sampling settings are audit-specific and must not inherit main-model defaults.
+	out.Temperature = am.Temperature
 	if strings.TrimSpace(am.Provider) != "" {
 		out.Provider = strings.TrimSpace(am.Provider)
 	}
@@ -1639,6 +1643,9 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	if err := cfg.Hitl.ValidateAuditTemperature(); err != nil {
+		return nil, err
 	}
 	if err := cfg.Server.ValidateHTTPSecurity(); err != nil {
 		return nil, fmt.Errorf("校验 server 配置失败: %w", err)

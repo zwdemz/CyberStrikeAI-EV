@@ -103,7 +103,7 @@ func hitlInvokableToolCallMiddleware() compose.InvokableToolMiddleware {
 			if input != nil {
 				if fn, ok := ctx.Value(hitlInterceptorKey{}).(HITLToolInterceptor); ok && fn != nil {
 					originalArgs = input.Arguments
-					edited, err := fn(ctx, input.Name, input.Arguments)
+					edited, err := fn(ctx, originalToolName(ctx, input.Name), input.Arguments)
 					if err != nil {
 						if IsHumanRejectError(err) {
 							// Human rejection should be a soft tool result so the model can continue iterating.
@@ -141,7 +141,7 @@ func hitlStreamableToolCallMiddleware() compose.StreamableToolMiddleware {
 			if input != nil {
 				if fn, ok := ctx.Value(hitlInterceptorKey{}).(HITLToolInterceptor); ok && fn != nil {
 					originalArgs = input.Arguments
-					edited, err := fn(ctx, input.Name, input.Arguments)
+					edited, err := fn(ctx, originalToolName(ctx, input.Name), input.Arguments)
 					if err != nil {
 						if IsHumanRejectError(err) {
 							msg := HitlRejectToolResult(input.Name, err.Error())

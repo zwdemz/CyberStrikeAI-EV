@@ -4018,6 +4018,8 @@
                                             <input type="password" id="hitl-audit-model-api-key" data-i18n="settings.hitl.auditModelApiKeyPlaceholder" data-i18n-attr="placeholder" placeholder="留空则复用主模型 API Key" autocomplete="off" />
                                         </div>
                                         <div class="form-group">
+                                            <label for="hitl-audit-model-temperature" data-i18n="settings.hitl.auditTemperature">Temperature (0–2; default 0.1)</label>
+                                            <input type="number" id="hitl-audit-model-temperature" min="0" max="2" step="0.01" placeholder="0.1" />
                                             <label for="hitl-audit-model-name" data-i18n="settings.hitl.auditModelName">审批模型</label>
                                             <div class="model-pick-row">
                                                 <input type="text" id="hitl-audit-model-name" class="model-pick-input" data-i18n="settings.hitl.auditModelNamePlaceholder" data-i18n-attr="placeholder" placeholder="留空则复用主模型；建议填写小模型" />

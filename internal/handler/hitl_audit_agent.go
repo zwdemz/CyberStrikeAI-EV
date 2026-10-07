@@ -34,7 +34,7 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 	}
 	llmCfg := h.auditLLMConfig()
 	if strings.TrimSpace(llmCfg.APIKey) == "" || strings.TrimSpace(llmCfg.Model) == "" {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: LLM 未配置"}
+		return auditFailure("configuration_error", 0)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -42,6 +42,13 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
+	if err := (config.HitlConfig{AuditModel: llmCfg}).ValidateAuditTemperature(); err != nil {
+		return auditFailure("configuration_error", 0)
+	}
+	temperature := 0.1
+	if llmCfg.Temperature != nil {
+		temperature = *llmCfg.Temperature
+	}
 	userContent := buildAuditAgentReviewInput(mode, toolName, payload)
 	requestBody := map[string]interface{}{
 		"model": strings.TrimSpace(llmCfg.Model),
@@ -49,7 +56,7 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 			{"role": "system", "content": prompt},
 			{"role": "user", "content": userContent},
 		},
-		"temperature":           0.1,
+		"temperature":           temperature,
 		"max_completion_tokens": 1024,
 		// 审计裁决需要结构化 JSON；关闭 thinking 避免 Qwen 等把正文放进 reasoning_content 导致解析失败。
 		"thinking": map[string]interface{}{"type": "disabled"},
@@ -63,16 +70,17 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	client := openai.NewClient(&llmCfg, nil, h.logger)
+	// The upstream may echo credentials or tool inputs in its error body.
+	client := openai.NewClient(&llmCfg, nil, zap.NewNop())
 	if err := client.ChatCompletion(callCtx, requestBody, &apiResponse); err != nil {
-		h.logger.Warn("审计 Agent LLM 调用失败", zap.Error(err), zap.String("tool", toolName))
-		return hitlDecision{
-			Decision: "reject",
-			Comment:  "audit agent: LLM 调用失败，保守拒绝",
+		failure := auditCallFailure(err)
+		if h.logger != nil {
+			h.logger.Warn("审计 Agent 调用失败，工具未执行", zap.String("detail", failure.Comment))
 		}
+		return failure
 	}
 	if len(apiResponse.Choices) == 0 {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: LLM 无有效响应，保守拒绝"}
+		return auditFailure("empty_response", 0)
 	}
 	msg := apiResponse.Choices[0].Message
 	raw := strings.TrimSpace(msg.Content)
@@ -81,17 +89,7 @@ func (h *AgentHandler) auditAgentReview(ctx context.Context, hitlMode, toolName 
 	}
 	dec, err := parseAuditAgentLLMContent(raw)
 	if err != nil {
-		snippet := raw
-		if len(snippet) > 240 {
-			snippet = snippet[:240] + "..."
-		}
-		h.logger.Warn("审计 Agent 响应解析失败",
-			zap.Error(err),
-			zap.String("tool", toolName),
-			zap.String("mode", mode),
-			zap.String("snippet", snippet),
-		)
-		return hitlDecision{Decision: "reject", Comment: "audit agent: 响应无法解析，保守拒绝"}
+		return auditFailure("invalid_response", 0)
 	}
 	if mode != "review_edit" && len(dec.EditedArguments) > 0 {
 		h.logger.Warn("审计 Agent 在审批模式下返回 editedArguments，已忽略",
