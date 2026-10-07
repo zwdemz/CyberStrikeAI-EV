@@ -10,6 +10,10 @@ import (
 	"github.com/cloudwego/eino/components/model"
 )
 
+// summaryRecoveryOptions carries the output budget locally without adding legacy
+// max_tokens to OpenAI-compatible payloads. Providers ignore this option type.
+type summaryRecoveryOptions struct{ outputReserve int }
+
 // summaryLengthError distinguishes a provider-confirmed output limit from other
 // incomplete responses. Only this condition permits a compact summary retry.
 type summaryLengthError struct{ cause error }
@@ -55,7 +59,7 @@ func generateSummaryWithLengthRecovery[T any](
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, newEinoSummarizationModelError(ctxErr)
 	}
-	reserve := 0
+	reserve := model.GetImplSpecificOptions(&summaryRecoveryOptions{}, opts...).outputReserve
 	if tokens := model.GetCommonOptions(nil, opts...).MaxTokens; tokens != nil {
 		reserve = *tokens
 	}

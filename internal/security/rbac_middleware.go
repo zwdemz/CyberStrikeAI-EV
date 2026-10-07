@@ -139,6 +139,8 @@ func permissionForRequest(method, fullPath string) string {
 		return crudPermission(method, "config")
 	case strings.HasPrefix(path, "/usage/tokens"):
 		return "dashboard:read"
+	case strings.HasPrefix(path, "/storage"):
+		return crudPermission(method, "storage")
 	case strings.HasPrefix(path, "/terminal"):
 		return "terminal:execute"
 	case strings.HasPrefix(path, "/audit"):

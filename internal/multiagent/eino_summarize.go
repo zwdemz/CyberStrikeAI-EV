@@ -301,9 +301,15 @@ func newEinoSummarizationModelOptions(outputReserve int, modelName, kind string,
 	if strings.TrimSpace(kind) != "" && kind != "classic" {
 		label = "eino " + kind + " summarization generate request"
 	}
-	return []model.Option{
-		model.WithMaxTokens(outputReserve),
-		einoopenai.WithMaxCompletionTokens(outputReserve),
+	opts := []model.Option{model.WrapImplSpecificOptFn(func(o *summaryRecoveryOptions) {
+		o.outputReserve = outputReserve
+	})}
+	if oa != nil && isEinoAgenticClaudeProvider(oa.Provider) {
+		opts = append(opts, model.WithMaxTokens(outputReserve))
+	} else {
+		opts = append(opts, einoopenai.WithMaxCompletionTokens(outputReserve))
+	}
+	opts = append(opts,
 		einoopenai.WithExtraHeader(map[string]string{
 			copenai.SummarizationRequestHeader: "1",
 		}),
@@ -317,7 +323,8 @@ func newEinoSummarizationModelOptions(outputReserve int, modelName, kind string,
 			}
 			return stripReasoningFromSummarizationPayload(rawBody, oa)
 		}),
-	}
+	)
+	return opts
 }
 
 // summarizationInputBudgetOpts controls spill/truncation behavior when a round alone exceeds budget.

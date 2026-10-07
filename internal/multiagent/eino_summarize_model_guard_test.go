@@ -263,12 +263,13 @@ func TestClaudeSummaryLargeBudgetStreamsThroughNativeSDK(t *testing.T) {
 			}))
 			defer server.Close()
 			factory := newEinoAgenticChatModelFactory(server.Client(), nil, nil)
-			native, err := factory(ctx, config.OpenAIConfig{Provider: "claude", APIKey: "test-key", BaseURL: server.URL, Model: "claude-sonnet-4-20250514"}, einoModelModeNormal)
+			oa := config.OpenAIConfig{Provider: "claude", APIKey: "test-key", BaseURL: server.URL, Model: "claude-sonnet-4-20250514"}
+			native, err := factory(ctx, oa, einoModelModeNormal)
 			if err != nil {
 				t.Fatal(err)
 			}
 			input := EinoMessagesToAgentic([]*schema.Message{schema.UserMessage("summarize history")})
-			opts := newEinoSummarizationModelOptions(64000, "claude-sonnet-4-20250514", "agentic", nil, nil)
+			opts := newEinoSummarizationModelOptions(64000, "claude-sonnet-4-20250514", "agentic", &oa, nil)
 			if _, err = native.Generate(ctx, input, opts...); err == nil || !strings.Contains(err.Error(), "streaming is required") {
 				t.Fatalf("expected original SDK rejection, got %v", err)
 			}
@@ -433,7 +434,7 @@ func TestSummaryLengthRecoveryHTTP(t *testing.T) {
 				}))
 				defer server.Close()
 				cfg := config.OpenAIConfig{Provider: "openai", APIKey: "test-key", BaseURL: server.URL, Model: "gpt-4o"}
-				opts := newEinoSummarizationModelOptions(4096, cfg.Model, "", &cfg, nil)
+				opts := newEinoSummarizationModelOptions(1024, cfg.Model, "", &cfg, nil)
 				var text string
 				var err error
 				if classic {
@@ -472,7 +473,7 @@ func TestSummaryLengthRecoveryHTTP(t *testing.T) {
 					if !ok {
 						limit = body["max_tokens"]
 					}
-					if limit != float64(4096) {
+					if limit != float64(1024) {
 						t.Fatalf("output limit=%v", limit)
 					}
 					if body["stream"] != true {
@@ -485,7 +486,7 @@ func TestSummaryLengthRecoveryHTTP(t *testing.T) {
 						t.Fatalf("retry input count=%d", len(messages))
 					}
 					encoded, _ := json.Marshal(messages)
-					if strings.Contains(string(encoded), "INCOMPLETE_SENTINEL") || !strings.Contains(string(encoded), "1024 tokens") || !strings.Contains(string(encoded), "history") {
+					if strings.Contains(string(encoded), "INCOMPLETE_SENTINEL") || !strings.Contains(string(encoded), "256 tokens") || !strings.Contains(string(encoded), "history") {
 						t.Fatalf("bad retry input: %s", encoded)
 					}
 				}
