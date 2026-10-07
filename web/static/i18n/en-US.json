@@ -547,6 +547,11 @@
     "generatedFromFact": "Generated from project fact {{factKey}}"
   },
   "chat": {
+    "historyLoading": "Loading recent messages…",
+    "historyFailed": "Conversation could not load or timed out. Please retry.",
+    "historyRetry": "Retry loading",
+    "historyOlder": "Load earlier messages",
+    "historyCached": "Showing a cached copy that may be outdated. Click to reload.",
     "toolExecBlocked": "Tool {{name}} blocked",
     "newChat": "New chat",
     "newTask": "New task",

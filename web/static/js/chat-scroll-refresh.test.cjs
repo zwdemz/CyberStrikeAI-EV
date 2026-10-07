@@ -158,7 +158,7 @@ test('登录成功后重新加载曾因未授权失败的项目侧栏', () => {
     assert.notEqual(conversationsIndex, -1);
     assert.ok(projectRetryIndex > conversationsIndex);
     assert.match(refreshSource, /typeof window\.refreshChatProjectSelector === 'function'/);
-    assert.match(html, /\/static\/js\/auth\.js\?v=20260907-blocked-1/);
+    assert.match(html, /\/static\/js\/auth\.js\?v=20261007-history-1/);
 });
 
 test('用户真正滑到底部后恢复自动跟随且不会提前强制跳底', () => {
@@ -340,7 +340,7 @@ test('消息气泡内部流式增高时仅在跟随模式继续粘底', () => {
 });
 
 test('页面在任务补流脚本之前加载智能滚动控制器', () => {
-    const scrollIndex = html.indexOf('/static/js/chat-scroll.js?v=20260815-1');
+    const scrollIndex = html.indexOf('/static/js/chat-scroll.js?v=20261007-history-1');
     const monitorIndex = html.indexOf('/static/js/monitor.js?v=20260907-blocked-1');
 
     assert.notEqual(scrollIndex, -1);
@@ -447,7 +447,7 @@ test('新对话初始化期间切换会话后旧流事件不能把页面拉回',
     assert.match(chat, /let loadConversationPendingId = ''/);
     assert.match(chat, /window\.isChatConversationLoadPending = isChatConversationLoadPending/);
     const immediateSelectionIndex = loadSource.indexOf('currentConversationId = conversationId;');
-    const conversationFetchIndex = loadSource.indexOf('await apiFetch(`/api/conversations/${conversationId}?include_process_details=0`');
+    const conversationFetchIndex = loadSource.indexOf('await window.ChatHistory.requestPage(apiFetch, conversationId');
     assert.notEqual(immediateSelectionIndex, -1);
     assert.notEqual(conversationFetchIndex, -1);
     assert.ok(immediateSelectionIndex < conversationFetchIndex);
@@ -469,7 +469,7 @@ test('刷新指定对话时立即恢复且加载完成前不闪出无项目状�
     assert.match(css, /\.chat-container\.is-conversation-restoring #chat-messages/);
     assert.match(css, /\.chat-container\.is-conversation-restoring #chat-input-container/);
     assert.match(html, /router\.js\?v=20260907-1/);
-    assert.match(html, /chat\.js\?v=20260907-blocked-1/);
+    assert.match(html, /chat\.js\?v=20261007-history-1/);
 });
 
 test('刷新运行中回复会复用已持久化 planning 并继续追加未来增量', () => {
@@ -506,7 +506,7 @@ test('刷新恢复运行中助手消息时隐藏处理中占位且终态正文�
     const loadSource = functionSource(chat, 'loadConversation', 'attachDeleteTurnButton');
     const updateSource = functionSource(monitor, 'updateAssistantBubbleContent', 'isConversationTaskRunning');
 
-    assert.match(loadSource, /hideAssistantPlaceholder: isAssistantPlaceholder/);
+    assert.match(functionSource(chat, 'renderConversationHistoryMessage', 'loadConversation'), /hideAssistantPlaceholder: isAssistantPlaceholder/);
     assert.match(chat, /bubble\.hidden = true/);
     assert.match(updateSource, /assistant-placeholder-content/);
     assert.match(updateSource, /bubble\.hidden = false/);

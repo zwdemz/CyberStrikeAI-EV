@@ -250,7 +250,7 @@
         }
 
         const signature = turns.map(function (turn, index) {
-            return (turn.user.id || ('turn-' + index)) + ':' + messagePreviewText(turn.user);
+            return turn.user.id || ('turn-' + index);
         }).join('|');
         if (!force && signature === turnRailSignature) {
             updateTurnRailActive();
@@ -786,8 +786,12 @@
         }
 
         if (typeof MutationObserver === 'function') {
-            turnRailObserver = new MutationObserver(function () {
-                scheduleTurnRailRefresh();
+            turnRailObserver = new MutationObserver(function (records) {
+                // Only message insertions/removals change the turn markers. Streamed
+                // text and progress updates must not rescan the entire history.
+                if (records.some(function (record) { return record.target === el && record.type === 'childList'; })) {
+                    scheduleTurnRailRefresh();
+                }
                 // 最终回复会替换消息气泡内部 HTML，任务详情也会在子树内持续增高。
                 // 只在仍处于 following 时按帧合并粘底；用户上滑后的 detached 状态不受影响。
                 if (scrollMode === 'following' && Date.now() >= detachLockUntil) {
