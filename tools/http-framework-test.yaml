@@ -5,6 +5,7 @@ args:
   - |
     import argparse
     import json
+    import math
     import os
     import re
     import shlex
@@ -366,38 +367,62 @@ args:
         )
 
 
-    def explain_request_error(exc: BaseException, url: str = "", proxy: str = "") -> str:
-        text = str(exc)
-        lowered = text.lower()
-        if any(
-            marker in lowered
-            for marker in (
-                "temporary failure in name resolution",
-                "name or service not known",
-                "nodename nor servname provided",
-                "getaddrinfo failed",
-            )
-        ):
-            target_host = urllib.parse.urlsplit(url).hostname or "目标主机"
-            if proxy:
-                proxy_host = urllib.parse.urlsplit(proxy).hostname or "代理服务器"
-                return (
-                    text
-                    + f"\nHint: DNS 解析失败。当前请求经环境/显式代理 {proxy_host} 转发；"
-                    "请确认代理进程可达，并检查代理地址本身能否解析。"
-                )
-            return (
-                text
-                + f"\nHint: DNS 暂时无法解析 {target_host}。请检查域名、容器/主机 DNS 与网络；"
-                "若运行环境要求代理，请设置 HTTPS_PROXY/HTTP_PROXY，或通过 proxy 参数显式传入。"
-            )
-        if "unexpected_eof" in lowered or "eof occurred in violation of protocol" in lowered:
-            return (
-                text
-                + "\nHint: 服务器在 TLS 层直接断开（常见于 WAF/反代拒绝异常路径、URI 过长或敏感路径探测）。"
-                "可尝试：缩短 ../ 层数、改用 %2e%2e 编码、加 --allow-insecure、或经代理观察原始响应。"
-            )
-        return text
+    def classify_request_error(exc: httpx.HTTPError, response_started: bool = False) -> dict:
+        """Return credential-free failure metadata; response_started refers to the final response.
+
+        Exception messages are inspected for DNS/TLS signals but never returned: they may
+        contain URLs, credentials or proxy configuration. Unknown HTTP errors stay failures.
+        """
+        phase = "response_body" if response_started else "request_or_redirect"
+        code = "HTTP_REQUEST_FAILED"
+        hint = "检查网络与服务日志；本次请求未完整完成，不应据此判断漏洞或服务状态。"
+        if isinstance(exc, httpx.ConnectTimeout):
+            code, phase = "HTTP_CONNECT_TIMEOUT", "connect_or_tls"
+            hint = "连接或 TLS 握手超时；检查路由、防火墙和代理可达性。"
+        elif isinstance(exc, httpx.ReadTimeout):
+            code = "HTTP_READ_TIMEOUT"
+            if not response_started:
+                phase = "response_headers_or_redirect"
+            hint = "等待响应数据超时；检查服务负载、反向代理超时和响应大小。"
+        elif isinstance(exc, httpx.WriteTimeout):
+            code, phase = "HTTP_WRITE_TIMEOUT", "request_write"
+            hint = "发送请求数据超时；检查网络和请求体大小，请求可能已被部分处理。"
+        elif isinstance(exc, httpx.PoolTimeout):
+            code, phase = "HTTP_POOL_TIMEOUT", "connection_pool"
+            hint = "等待连接池空闲连接超时；检查连接是否释放以及并发限制。"
+        elif isinstance(exc, httpx.ProxyError):
+            code, phase = "HTTP_PROXY_ERROR", "proxy"
+            hint = "代理连接失败；检查代理服务、认证和环境变量配置。"
+        elif isinstance(exc, httpx.TooManyRedirects):
+            code, phase = "HTTP_REDIRECT_LIMIT", "redirect"
+            hint = "重定向超过限制；检查跳转循环与授权范围，不自动增加重定向次数。"
+        else:
+            lowered = str(exc).lower()
+            if any(marker in lowered for marker in (
+                "temporary failure in name resolution", "name or service not known",
+                "nodename nor servname provided", "getaddrinfo failed",
+            )):
+                code, phase = "HTTP_DNS_ERROR", "dns"
+                hint = "域名解析失败；检查目标及代理域名、主机或容器的 DNS 配置。"
+            elif any(marker in lowered for marker in (
+                "certificate_verify_failed", "certificate verify failed",
+                "unexpected_eof", "eof occurred in violation of protocol",
+            )):
+                code, phase = "HTTP_TLS_ERROR", "tls"
+                hint = "TLS 证书验证失败或连接被关闭；检查证书链、主机名、系统时间和代理 TLS 配置。"
+        return {"error_code": code, "exception_type": type(exc).__name__,
+                "phase": phase, "hint": hint, "automatic_retry": False}
+
+
+    def parse_timeout(value: str) -> float:
+        """Return a positive finite per-phase timeout in seconds, or raise ValueError."""
+        try:
+            seconds = float(value) if value else 60.0
+        except (TypeError, ValueError):
+            raise ValueError("timeout must be a positive finite number of seconds") from None
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("timeout must be a positive finite number of seconds")
+        return seconds
 
 
     def quote_form_component_preserving_pct(value: str) -> str:
@@ -1083,13 +1108,11 @@ args:
         if args.http2:
             additional_options["http2"] = "true"
 
-        timeout_value = None
-        if args.timeout:
-            try:
-                timeout_value = float(args.timeout)
-            except ValueError:
-                timeout_value = None
-        timeout = httpx.Timeout(timeout_value or 60.0)
+        try:
+            timeout_value = parse_timeout(args.timeout)
+        except ValueError as exc:
+            parser.error(str(exc))
+        timeout = httpx.Timeout(timeout_value)
 
         max_redirects = 20
         if "max_redirects" in additional_options:
@@ -1164,7 +1187,7 @@ args:
 
         exit_code = 0
         verify_tls = verify_option if isinstance(verify_option, bool) else True
-        skip_probe = bool(forward_proxy)
+        skip_probe = bool(forward_proxy) or not args.verbose_output
 
         client = httpx.Client(**client_kwargs)
         try:
@@ -1172,12 +1195,15 @@ args:
                 if run_index > 0 and delay_between > 0:
                     time.sleep(delay_between)
 
+                operation_start = time.perf_counter()
                 metrics = {key: None for key in METRIC_KEYS}
-                probe_metrics = probe_connection(encoded_url, timeout_value or 60.0, verify_tls, skip_probe)
+                # Diagnostic probes are explicit opt-in; normal requests make no extra connection.
+                probe_metrics = probe_connection(encoded_url, min(timeout_value, 5.0), verify_tls, skip_probe)
                 metrics.update(probe_metrics)
 
                 start = time.perf_counter()
                 first_byte_time = None
+                response_started = False
                 body_buffer = bytearray()
                 wire_target = initial_wire_target
 
@@ -1193,6 +1219,7 @@ args:
                         forward_proxy=forward_proxy,
                     )
                     try:
+                        response_started = True
                         status_code = response.status_code
                         metrics["http_code"] = status_code
                         metrics["redirects"] = len(redirect_history)
@@ -1307,11 +1334,20 @@ args:
                 except httpx.HTTPError as exc:
                     exit_code = 1
                     elapsed = time.perf_counter() - start
+                    failure = classify_request_error(exc, response_started)
+                    failure.update({
+                        "request_elapsed_seconds": round(elapsed, 6),
+                        "operation_elapsed_seconds": round(time.perf_counter() - operation_start, 6),
+                        "timeout_seconds": timeout_value,
+                        "response_status": metrics["http_code"],
+                        "received_body_bytes": len(body_buffer),
+                        "response_complete": False,
+                    })
                     print(f"\n===== Response #{run_index + 1} =====")
-                    print(
-                        f"Request failed after {elapsed:.6f}s: "
-                        f"{explain_request_error(exc, encoded_url, forward_proxy)}"
-                    )
+                    print(f"Request failed after {elapsed:.6f}s: {failure['error_code']} ({failure['exception_type']})")
+                    print("Failure: " + json.dumps(failure, ensure_ascii=False))
+                    print(f"Hint: {failure['hint']}")
+                    print("No automatic retry. 如需重试，先确认请求幂等性、授权范围与角色调用预算；不要自动切换工具或关闭 TLS 验证。")
                     continue
 
             if aggregate and repeat > 1:
@@ -1346,7 +1382,7 @@ args:
 enabled: true
 short_description: "纯Python HTTP测试框架（httpx，会话复用+编码守护）"
 description: |
-  纯 Python 构建的 HTTP 测试框架：基于 httpx 会话，结合 socket 探针补齐 DNS/TCP/TLS 观测，
+  纯 Python 构建的 HTTP 测试框架：基于 httpx 会话，仅在 verbose_output 开启时使用额外 socket 探针观测 DNS/TCP/TLS，
   提供全流程的请求体编码守护、重复播放与可观测能力，适配盲注延时、复杂 payload 调优等场景。
 
   **亮点：**
@@ -1403,7 +1439,7 @@ parameters:
     flag: "--proxy"
   - name: "timeout"
     type: "string"
-    description: "最大超时时间（秒，支持小数）"
+    description: "每阶段网络等待超时（秒，正有限数，默认 60；不是整次调用总时限；SRC 角色固定 10）"
     required: false
     flag: "--timeout"
   - name: "repeat"
@@ -1444,7 +1480,7 @@ parameters:
     flag: "--allow-insecure"
   - name: "verbose_output"
     type: "bool"
-    description: "输出额外调试信息（请求体字节数、探针延时、历史长度等）"
+    description: "输出调试信息并额外探测 DNS/TCP/TLS（代理模式跳过；探针 socket 超时最多 5 秒，DNS 使用系统解析器）"
     required: false
     default: false
     flag: "--verbose-output"
@@ -1456,7 +1492,7 @@ parameters:
     flag: "--show-command"
   - name: "show_summary"
     type: "bool"
-    description: "打印指标摘要（默认开启，含DNS/TCP/TLS/TTFB/Total）"
+    description: "打印指标摘要（默认开启；DNS/TCP/TLS 仅 verbose_output 探针启用时可用）"
     required: false
     default: true
     flag: "--show-summary"

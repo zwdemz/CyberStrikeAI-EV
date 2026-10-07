@@ -532,6 +532,12 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 			}
 		}
 
+		// 在位置参数之前追加扫描选项，保持每个选项及其值相邻。
+		// 不从已拼接的参数中猜测 target：additional_args 的末项可能是超时或文件名。
+		if hasScanType {
+			cmdArgs = append(cmdArgs, e.parseAdditionalArgs(scanTypeValue)...)
+		}
+
 		// 然后处理位置参数（位置参数通常在标志参数之后）
 		// 对位置参数按位置排序
 		// 首先找到最大的位置值，确定需要处理多少个位置
@@ -591,30 +597,6 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 			// 按空格分割，但保留引号内的内容
 			additionalArgsList := e.parseAdditionalArgs(additionalArgs)
 			cmdArgs = append(cmdArgs, additionalArgsList...)
-		}
-
-		// 特殊处理：scan_type 参数（需要按空格分割并插入到合适位置）
-		if hasScanType {
-			scanTypeArgs := e.parseAdditionalArgs(scanTypeValue)
-			if len(scanTypeArgs) > 0 {
-				// 对于 nmap，scan_type 应该替换默认的扫描类型参数
-				// 由于我们已经跳过了默认的 args，现在需要将 scan_type 插入到合适位置
-				// 找到 target 参数的位置（通常是最后一个位置参数）
-				insertPos := len(cmdArgs)
-				for i := len(cmdArgs) - 1; i >= 0; i-- {
-					// target 通常是最后一个非标志参数
-					if !strings.HasPrefix(cmdArgs[i], "-") {
-						insertPos = i
-						break
-					}
-				}
-				// 在 target 之前插入 scan_type 参数
-				newArgs := make([]string, 0, len(cmdArgs)+len(scanTypeArgs))
-				newArgs = append(newArgs, cmdArgs[:insertPos]...)
-				newArgs = append(newArgs, scanTypeArgs...)
-				newArgs = append(newArgs, cmdArgs[insertPos:]...)
-				cmdArgs = newArgs
-			}
 		}
 
 		return cmdArgs

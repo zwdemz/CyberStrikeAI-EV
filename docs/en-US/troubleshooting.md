@@ -127,3 +127,26 @@ The model reached an output limit before completing its summary. Partial text mu
 Check the failing conversation's actual model/channel, which may differ from the current default. The channel's `max_total_tokens` is a context budget, not the summary output limit. Before raising the summary reserve, verify provider output limits and available context headroom; hidden reasoning may also consume completion tokens. Restart after changing configuration, then continue the conversation.
 
 Authentication failures, content filters, missing completion metadata and broken streams are not treated as output-limit recovery. Existing transient network retries still apply. The compact retry adds at most one request per summary generation attempt, with corresponding latency and cost. It does not call tools, continue partial text, or guarantee success with an insufficient output budget.
+
+## HTTP tool timeouts and incomplete responses
+
+`http-framework-test` exits with status 1 for network failures and emits a `Failure:` JSON object. `error_code` distinguishes connect/TLS, read, write and connection-pool timeouts, DNS, proxy and TLS errors. `phase` identifies the observed stage; `response_headers_or_redirect` includes redirect processing, while `response_body` means the final response headers arrived. `response_status` and `received_body_bytes` describe partial progress, never a complete or successful response. Raw exception messages are omitted to avoid disclosing credentials or proxy URLs.
+
+The `timeout` parameter is a positive finite number of seconds, defaulting to 60. It limits each network wait phase, not the total duration; the executor's process deadline still applies. Invalid values fail before opening a connection. Normal calls make no separate DNS/TCP/TLS probe. `verbose_output=true` explicitly enables an extra diagnostic connection unless a proxy is used; each probe socket operation is capped at five seconds, but DNS still uses the system resolver. Failure output separates request time from operation time, including the optional probe.
+
+For a timeout, check routing/proxy reachability for connection failures, service load and response size for reads, and request size for writes. Check DNS configuration or certificate chain/hostname/time for the corresponding errors. Only consider a bounded retry after confirming idempotency, authorization and the remaining call budget. A timed-out write may already have taken effect. There is no automatic retry, tool switch or TLS-verification downgrade. Education and enterprise SRC still enforce one request, a 10-second per-phase timeout, and their existing run limits.
+
+## Nmap rejects `--host-timeout`
+
+A value such as `720s` is valid. Earlier EV argument construction could insert `scan_type` between an option in `additional_args` and its value, producing `--host-timeout -sT -sV 720s`. The executor now places scan options before positional operands and appends additional arguments intact, including quoted values. No timeout-unit conversion is necessary. Rebuild and restart the server as well as updating the HTTP tool YAML for this fix.
+
+This does not expand SRC permissions: restricted Nmap calls still accept one host and at most ten explicit ports, disallow port ranges, and use the enforced low-impact options. Argument construction tests never scan a remote host.
+
+Regression checks (Python requires `httpx` and `PyYAML`):
+
+```sh
+go test ./internal/security ./tests/internal/rolepolicy ./tests/internal/config
+python -m unittest discover -s tests/tools -v
+```
+
+Before deployment, back up the running binary and tool YAML, preserve local tool customizations, deploy the rebuilt binary and updated YAML together, and restart when no task is active. Roll back both files together if needed; no database migration or configuration reset is required.
