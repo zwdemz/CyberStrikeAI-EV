@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -223,6 +225,32 @@ func (h *ConversationHandler) GetConversation(c *gin.Context) {
 	// include_process_details=1/true 时返回全量 processDetails（兼容旧行为）
 	includeStr := c.DefaultQuery("include_process_details", "0")
 	include := includeStr == "1" || includeStr == "true" || includeStr == "yes"
+
+	// Paging is opt-in so exports and existing API clients retain full history.
+	if _, paged := c.Request.URL.Query()["message_limit"]; paged {
+		limit, parseErr := strconv.Atoi(c.Query("message_limit"))
+		beforeID := strings.TrimSpace(c.Query("before_message_id"))
+		if parseErr != nil || limit < 1 || limit > database.MaxConversationMessagePage || len(beforeID) > 128 || include {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid message pagination parameters"})
+			return
+		}
+		conv, err := h.db.GetConversationPage(c.Request.Context(), id, limit, beforeID)
+		if errors.Is(err, database.ErrMessagePageCursor) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "History cursor expired; reload the conversation"})
+			return
+		}
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Conversation unavailable"})
+			} else {
+				h.logger.Error("Paged conversation unavailable", zap.Error(err))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to load conversation"})
+			}
+			return
+		}
+		c.JSON(http.StatusOK, conv)
+		return
+	}
 
 	var (
 		conv *database.Conversation

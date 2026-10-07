@@ -150,3 +150,15 @@ python -m unittest discover -s tests/tools -v
 ```
 
 Before deployment, back up the running binary and tool YAML, preserve local tool customizations, deploy the rebuilt binary and updated YAML together, and restart when no task is active. Roll back both files together if needed; no database migration or configuration reset is required.
+
+## Slow chat startup or history switching
+
+Chat now requests `GET /api/conversations/:id?message_limit=40&include_process_details=0`. The optional `message_limit` accepts 1–100; `before_message_id` loads older messages using a cursor scoped to the same conversation. Responses keep the existing conversation fields and add `messagePage: {hasMore, beforeMessageId}`. Each page is chronological. Missing/deleted/foreign cursors return 400 and the UI offers a reload; a missing conversation returns 404. Paging cannot be combined with full process details. Authentication and resource access rules are unchanged. Omitting pagination retains the original full history, including for export and model context.
+
+The browser renders the latest page in small batches. Use **Load earlier messages** for older history; prepending preserves reading position. Navigation cancels the previous request. A 15-second deadline covers fetch and JSON parsing and a visible retry replaces an indefinite blank/loading state. Approval metadata no longer blocks message display; sending still waits for approval configuration. Malformed Markdown falls back to escaped plain text.
+
+Network/timeout fallback uses at most 12 recent page snapshots, no older than 60 seconds, with at most one million content characters per snapshot and four million total. Cached responses are visibly labelled. Access-denied/deleted/server-error responses never fall back to a cached conversation. No messages are removed from storage.
+
+The optional graph layout engine is loaded only on opening a graph; a five-second loading failure falls back to the existing basic layout. Chat startup does not wait for it or for translation downloads. Offscreen content rendering and turn-marker updates reduce work as history grows. Search/export still use stored history; the visible turn navigator covers only loaded messages.
+
+Deploy the binary, frontend assets and template together; asset version keys refresh browser caches. Startup creates the message ordering index without changing message data. Back up the binary, changed files and database before deployment; restore the binary and frontend together for rollback (the additional index can remain). Validate on Linux. Controlled browser fixtures with 2,000 messages confirm bounded rendering, paging, rapid switching and retry recovery; real latency still depends on message size, browser, network and auxiliary services.

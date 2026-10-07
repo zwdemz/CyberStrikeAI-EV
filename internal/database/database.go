@@ -735,6 +735,7 @@ func (db *DB) initTables() error {
 	// 创建索引
 	createIndexes := `
 	CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+	CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_process_details_message_id ON process_details(message_id);
 	CREATE INDEX IF NOT EXISTS idx_process_details_conversation_id ON process_details(conversation_id);

@@ -1,5 +1,8 @@
 # Repository workflow
 
+- Linux is the runtime and deployment target. Do not add Windows compatibility work or Windows-specific validation for new changes.
+- Publish changes only to this EV repository; do not open pull requests or push branches to the upstream repository.
+
 - Develop features, fixes, and documentation directly on `dev`. Fast-forward from the latest `origin/dev` before starting; do not create `codex/*` or other work branches for this repository.
 - Sign and verify commits locally, run appropriate checks, and push them directly to `dev`. The `dev` ruleset requires verified signatures and prohibits force pushes and deletion; it does not require an inbound PR or PR-only status checks.
 - Promote changes from `dev` to `main` through a pull request. Never push changes directly to `main`.

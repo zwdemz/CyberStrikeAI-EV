@@ -19,15 +19,16 @@ const ProjectFilterUnbound = "__none__"
 
 // Conversation 对话
 type Conversation struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	ProjectID string    `json:"projectId,omitempty"`
-	RoleName  string    `json:"roleName,omitempty"`
-	AgentMode string    `json:"agentMode,omitempty"`
-	Pinned    bool      `json:"pinned"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	Messages  []Message `json:"messages,omitempty"`
+	ID          string                   `json:"id"`
+	Title       string                   `json:"title"`
+	ProjectID   string                   `json:"projectId,omitempty"`
+	RoleName    string                   `json:"roleName,omitempty"`
+	AgentMode   string                   `json:"agentMode,omitempty"`
+	Pinned      bool                     `json:"pinned"`
+	CreatedAt   time.Time                `json:"createdAt"`
+	UpdatedAt   time.Time                `json:"updatedAt"`
+	Messages    []Message                `json:"messages,omitempty"`
+	MessagePage *ConversationMessagePage `json:"messagePage,omitempty"`
 }
 
 // Message 消息
@@ -331,6 +332,19 @@ func (db *DB) GetConversation(id string) (*Conversation, error) {
 // GetConversationLite 获取对话（轻量版）：包含 messages，但不加载 process_details。
 // 用于历史会话快速切换，避免一次性把大体量过程详情灌到前端导致卡顿。
 func (db *DB) GetConversationLite(id string) (*Conversation, error) {
+	conv, err := db.getConversationMetadata(id)
+	if err != nil {
+		return nil, err
+	}
+	conv.Messages, err = db.GetMessagesLite(id)
+	if err != nil {
+		return nil, fmt.Errorf("加载消息失败: %w", err)
+	}
+	return conv, nil
+}
+
+// getConversationMetadata reads only the conversation header, without its history.
+func (db *DB) getConversationMetadata(id string) (*Conversation, error) {
 	var conv Conversation
 	var createdAt, updatedAt string
 	var pinned int
@@ -344,7 +358,7 @@ func (db *DB) GetConversationLite(id string) (*Conversation, error) {
 	).Scan(&conv.ID, &conv.Title, &pinned, &createdAt, &updatedAt, &projectID, &roleName, &agentMode)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("对话不存在")
+			return nil, fmt.Errorf("对话不存在: %w", sql.ErrNoRows)
 		}
 		return nil, fmt.Errorf("查询对话失败: %w", err)
 	}
@@ -378,12 +392,6 @@ func (db *DB) GetConversationLite(id string) (*Conversation, error) {
 
 	conv.Pinned = pinned != 0
 
-	// 加载消息（不加载 process_details / reasoning_content，减少历史会话切换 payload）
-	messages, err := db.GetMessagesLite(id)
-	if err != nil {
-		return nil, fmt.Errorf("加载消息失败: %w", err)
-	}
-	conv.Messages = messages
 	return &conv, nil
 }
 
@@ -1068,6 +1076,11 @@ func (db *DB) GetMessagesLite(conversationID string) ([]Message, error) {
 	}
 	defer rows.Close()
 
+	return db.scanMessagesLite(rows)
+}
+
+// scanMessagesLite decodes shared lightweight rows; the caller closes rows.
+func (db *DB) scanMessagesLite(rows *sql.Rows) ([]Message, error) {
 	var messages []Message
 	for rows.Next() {
 		var msg Message
@@ -1110,7 +1123,7 @@ func (db *DB) GetMessagesLite(conversationID string) ([]Message, error) {
 		messages = append(messages, msg)
 	}
 
-	return messages, nil
+	return messages, rows.Err()
 }
 
 // turnSliceRange 根据任意一条消息 ID 定位「一轮对话」在 msgs 中的 [start, end) 下标区间（msgs 须已按时间升序，与 GetMessages 一致）。

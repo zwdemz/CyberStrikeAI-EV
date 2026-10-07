@@ -18,6 +18,9 @@ function isTokenValid() {
 }
 
 function saveAuth(token, expiresAt, meta = {}) {
+    if ((authUser && authUser.id) !== (meta.user && meta.user.id) && typeof window.invalidateConversationLiteCache === 'function') {
+        window.invalidateConversationLiteCache();
+    }
     const expiry = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
     authToken = token;
     authTokenExpiry = expiry;
@@ -41,6 +44,8 @@ function saveAuth(token, expiresAt, meta = {}) {
 }
 
 function clearAuthStorage() {
+    if (typeof window.invalidateConversationLiteCache === 'function') window.invalidateConversationLiteCache();
+    if (typeof cancelPendingConversationLoad === 'function') cancelPendingConversationLoad();
     authToken = null;
     authTokenExpiry = null;
     authUser = null;
@@ -323,14 +328,8 @@ async function submitLogin(event) {
 }
 
 async function refreshAppData(showTaskErrors = false) {
-    if (typeof initChatAgentModeFromConfig === 'function') {
-        try {
-            await initChatAgentModeFromConfig();
-        } catch (error) {
-            console.warn('刷新对话模式配置失败:', error);
-        }
-    }
     await Promise.allSettled([
+        typeof initChatAgentModeFromConfig === 'function' ? initChatAgentModeFromConfig() : Promise.resolve(),
         loadConversations(),
         loadActiveTasks(showTaskErrors),
     ]);
@@ -347,14 +346,8 @@ async function refreshAppData(showTaskErrors = false) {
 
 async function bootstrapApp() {
     if (!isAppInitialized) {
-        // 等待 i18n 首包加载完成后再插系统就绪消息，避免清除缓存后语言显示 English 气泡仍是中文
-        try {
-            if (window.i18nReady && typeof window.i18nReady.then === 'function') {
-                await window.i18nReady;
-            }
-        } catch (e) {
-            console.warn('等待 i18n 就绪失败，继续初始化聊天', e);
-        }
+        // The template has fallback labels; languagechange updates them when ready.
+        // A slow locale download must not block the input or restored conversation.
         initializeChatUI();
         isAppInitialized = true;
     }

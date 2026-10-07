@@ -16,10 +16,16 @@ The current baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.co
 
 ### Optimizations
 
+- Load the latest 40 chat messages initially, with cursor-based older history, bounded rendering batches and an indexed ordering query; preserve complete histories for exports and model context.
+- Defer the optional graph layout engine until a graph is opened; initialize the chat shell without waiting for locale data and load independent metadata concurrently.
+- Skip offscreen message layout and avoid rebuilding the turn navigator on every streamed text update.
 - Remove the default extra DNS/TCP/TLS diagnostic connection from HTTP requests; probes are now explicit opt-in.
 
 ### Bug Fixes
 
+- Cancel stale conversation requests and bound history fetch/JSON time to 15 seconds; expose retry controls and keep failed rendering from leaving loading permanently active.
+- Render messages independently of approval metadata while preserving approval readiness checks before sending.
+- Keep cursor boundaries stable when messages share timestamps or new replies arrive; mark short-lived, memory-bounded network fallback snapshots visibly.
 - Keep Nmap scan options separate from valued additional arguments, fixing corrupted `--host-timeout` values.
 - Report HTTP failure type, stage, elapsed time and incomplete response progress instead of ambiguous timeout text.
 - Reject invalid, non-positive and non-finite HTTP timeout values before connecting.
@@ -39,11 +45,13 @@ The current baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.co
 
 ### Validation
 
+Chat history changes pass Linux database, handler, security and role-policy tests and browser checks with 2,000 synthetic messages (40 initial, 80 after one older-page load, no duplicates). JavaScript tests cover cancellation, timeout, stale navigation, renderer failure recovery and lazy graph loading. These are controlled fixture results, not an end-to-end latency guarantee for every deployment.
+
 Checked 8 documents and 133 local links with no broken targets or anchors. Markdown rendering, fenced blocks, bilingual content, documented Go version, and SRC role limits were checked against the repository. Additional checks cover the security executor, SRC role policies and configuration on Windows, plus Python regression tests with local slow-header and slow-body fixtures. No external scan target is contacted.
 
 ### Upgrade and Rollback
 
-Rebuild and restart the server and update `tools/http-framework-test.yaml` together after preserving local customizations. Back up and restore both artifacts together for rollback. No database migration or configuration reset is required. Existing published tags remain unchanged; these changes are collected for the next version.
+Rebuild and restart the server and update `tools/http-framework-test.yaml` together after preserving local customizations. Back up and restore both artifacts together for rollback. Startup adds the non-destructive `idx_messages_conversation_created` index; it may remain after rollback. No configuration reset or message deletion is required. Deploy frontend assets and the server from the same commit. Existing published tags remain unchanged; these changes are collected for the next version.
 
 ## [v1.7.21](https://github.com/zwdemz/CyberStrikeAI-EV/releases/tag/v1.7.21) - 2026-10-07
 

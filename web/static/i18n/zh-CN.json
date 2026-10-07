@@ -535,6 +535,11 @@
     "generatedFromFact": "由项目事实 {{factKey}} 生成"
   },
   "chat": {
+    "historyLoading": "正在加载消息…",
+    "historyFailed": "会话加载失败或超时，请重试。",
+    "historyRetry": "重试加载",
+    "historyOlder": "加载更早的消息",
+    "historyCached": "当前显示缓存，内容可能不是最新。点击重新加载。",
     "toolExecBlocked": "工具 {{name}} 已拦截",
     "newChat": "新对话",
     "newTask": "新任务",

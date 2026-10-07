@@ -1,0 +1,31 @@
+/* Offscreen history stays available for copy/search without repeated layout. */
+#chat-messages > .message {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 180px;
+}
+
+.chat-history-status,
+.chat-history-more {
+    align-self: center;
+    margin: 12px auto;
+    padding: 10px 16px;
+    border: 0;
+    border-radius: 8px;
+    color: inherit;
+    background: var(--bg-secondary, rgba(128, 128, 128, 0.08));
+    text-align: center;
+}
+
+button.chat-history-status,
+.chat-history-status button,
+.chat-history-more {
+    cursor: pointer;
+}
+
+.chat-history-more[hidden] {
+    display: none;
+}
+
+#chat-messages {
+    overflow-anchor: none; /* History prepends explicitly retain the current anchor. */
+}

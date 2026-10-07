@@ -39,8 +39,9 @@ test('超长人工审批内容在限高区域内滚动且操作按钮始终可�
 test('刷新恢复会话时先完成权威审批配置同步再允许发送', () => {
     assert.match(chat, /function waitForHitlConfigReady\(conversationId\)/);
     assert.match(chat, /await waitForHitlConfigReady\(hitlConversationAtSendStart\)/);
-    assert.match(chat, /hitlConfigSyncConversationId = conversationId;[\s\S]{0,240}await hitlConfigSyncPromise;/);
-    assert.match(chat, /await hitlConfigSyncPromise;[\s\S]{0,220}seq !== loadConversationRequestSeq/);
+    assert.match(chat, /hitlConfigSyncConversationId = conversationId;[\s\S]{0,100}hitlConfigSyncPromise = Promise\.resolve\(hitlSyncPromise\)/);
+    assert.match(chat, /async function waitForHitlConfigReady[\s\S]*?await hitlConfigSyncPromise;/);
+    assert.match(chat, /hitlConfigSyncPromise = Promise\.resolve\(hitlSyncPromise\);[\s\S]{0,240}seq !== loadConversationRequestSeq/);
     const hitlPage = fs.readFileSync('web/static/js/hitl.js', 'utf8');
     assert.match(hitlPage, /window\.csaiHitlDefaultConfigReady = initHitlDefaultReviewerFromServer\(\)/);
     assert.match(hitlPage, /window\.csaiHitlDefaultReviewerReady = window\.csaiHitlDefaultConfigReady/);
@@ -294,8 +295,8 @@ test('多对话并发时释放隐藏主流且旧请求不能覆盖新对话状�
     assert.match(chat, /cancelPendingConversationLoad\(\);[\s\S]{0,900}const conversationLoadController = new AbortController\(\)/);
     assert.match(chat, /signal: conversationLoadController\.signal/);
     assert.match(template, /monitor\.js\?v=20260907-blocked-1/);
-    assert.match(template, /chat-scroll\.js\?v=20260815-1/);
-    assert.match(template, /chat\.js\?v=20260907-blocked-1/);
+    assert.match(template, /chat-scroll\.js\?v=20261007-history-1/);
+    assert.match(template, /chat\.js\?v=20261007-history-1/);
     assert.match(template, /style\.css\?v=20260907-blocked-1/);
 });
 

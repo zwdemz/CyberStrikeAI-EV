@@ -19,6 +19,8 @@ window.clearChatConversationHash = clearChatConversationHash;
 let loadConversationRequestSeq = 0;
 let loadConversationAbortController = null;
 let loadConversationPendingId = '';
+let chatHistoryState = null;
+let chatHistoryLoadFailedId = '';
 let chatConversationNavigationSeq = 0;
 
 function isChatConversationLoadPending(conversationId) {
@@ -60,11 +62,16 @@ window.abandonChatConversationForPageNavigation = abandonChatConversationForPage
  */
 const CONVERSATION_LITE_CACHE_MAX = 12;
 const conversationLiteCache = new Map();
+const conversationLiteCacheTimes = new Map();
 
 function getConversationLiteFromCache(conversationId) {
     if (!conversationId) return null;
     const hit = conversationLiteCache.get(conversationId);
     if (!hit) return null;
+    if (Date.now() - (conversationLiteCacheTimes.get(conversationId) || 0) > 60000) {
+        invalidateConversationLiteCache(conversationId);
+        return null;
+    }
     conversationLiteCache.delete(conversationId);
     conversationLiteCache.set(conversationId, hit);
     return hit;
@@ -72,19 +79,28 @@ function getConversationLiteFromCache(conversationId) {
 
 function putConversationLiteCache(conversationId, data) {
     if (!conversationId || !data) return;
-    conversationLiteCache.delete(conversationId);
+    invalidateConversationLiteCache(conversationId);
+    const size = (value) => (value.messages || []).reduce((sum, msg) => sum + String(msg.content || '').length, 0);
+    if (!data.messagePage || size(data) > 1000000) return;
     conversationLiteCache.set(conversationId, data);
+    conversationLiteCacheTimes.set(conversationId, Date.now());
+    while (Array.from(conversationLiteCache.values()).reduce((sum, value) => sum + size(value), 0) > 4000000) {
+        const oldest = conversationLiteCache.keys().next().value;
+        invalidateConversationLiteCache(oldest);
+    }
     while (conversationLiteCache.size > CONVERSATION_LITE_CACHE_MAX) {
         const oldest = conversationLiteCache.keys().next().value;
-        conversationLiteCache.delete(oldest);
+        invalidateConversationLiteCache(oldest);
     }
 }
 
 function invalidateConversationLiteCache(conversationId) {
     if (conversationId) {
         conversationLiteCache.delete(conversationId);
+        conversationLiteCacheTimes.delete(conversationId);
     } else {
         conversationLiteCache.clear();
+        conversationLiteCacheTimes.clear();
     }
 }
 
@@ -2246,6 +2262,10 @@ function adjustTextareaHeight(textarea) {
 
 // 发送消息
 async function sendMessage() {
+    if (currentConversationId && (loadConversationPendingId === currentConversationId || chatHistoryLoadFailedId === currentConversationId)) {
+        showChatToast(chatTranslate('chat.historyRetry', '会话尚未加载，请重试'), 'error');
+        return;
+    }
     const input = document.getElementById('chat-input');
     let message = input.value.trim();
     const hasAttachments = chatAttachments && chatAttachments.length > 0;
@@ -3595,10 +3615,15 @@ function addMessage(role, content, mcpExecutionIds = null, progressId = null, cr
     if (role === 'user') {
         formattedContent = escapeHtml(content).replace(/\n/g, '<br>');
     } else if (typeof window.csMarkdownSanitize !== 'undefined') {
-        formattedContent = window.csMarkdownSanitize.formatMarkdownToHtml(
-            role === 'assistant' ? displayContent : content,
-            { profile: 'chat' }
-        );
+        try {
+            formattedContent = window.csMarkdownSanitize.formatMarkdownToHtml(
+                role === 'assistant' ? displayContent : content,
+                { profile: 'chat' }
+            );
+        } catch (error) {
+            console.warn('Markdown unavailable; displaying plain text');
+            formattedContent = escapeHtml(displayContent).replace(/\n/g, '<br>');
+        }
     } else {
         const rawForEscape = role === 'assistant' ? displayContent : content;
         formattedContent = escapeHtml(rawForEscape).replace(/\n/g, '<br>');
@@ -6365,6 +6390,176 @@ async function hydrateConversationTokenUsage(conversationId, expectedSeq, signal
     });
 }
 
+/** Show a visible loading/error state for the selected conversation, with an explicit retry. */
+function showChatHistoryState(conversationId, failed) {
+    const container = document.getElementById('chat-messages');
+    if (!container) return;
+    const panel = document.createElement('div');
+    panel.className = 'chat-history-status';
+    panel.setAttribute('role', failed ? 'alert' : 'status');
+    const text = document.createElement('p');
+    text.textContent = failed
+        ? chatTranslate('chat.historyFailed', '会话加载失败或超时，请重试。')
+        : chatTranslate('chat.historyLoading', '正在加载最近消息…');
+    panel.appendChild(text);
+    if (failed) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = chatTranslate('chat.historyRetry', '重试加载');
+        retry.onclick = () => loadConversation(conversationId);
+        panel.appendChild(retry);
+    }
+    container.replaceChildren(panel);
+    container.setAttribute('aria-busy', failed ? 'false' : 'true');
+}
+
+/** Mark a short-lived cached response so a network failure cannot look like fresh data. */
+function showChatHistoryCacheNotice(conversationId) {
+    const panel = document.createElement('button');
+    panel.type = 'button';
+    panel.className = 'chat-history-status';
+    panel.textContent = chatTranslate('chat.historyCached', '当前显示缓存，内容可能不是最新。点击重新加载。');
+    panel.onclick = () => loadConversation(conversationId);
+    document.getElementById('chat-messages').prepend(panel);
+}
+
+/** Install an older-message cursor belonging to this navigation only. */
+function installChatHistoryPager(conversationId, seq, page, controller) {
+    const container = document.getElementById('chat-messages');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'chat-history-more';
+    button.textContent = chatTranslate('chat.historyOlder', '加载更早的消息');
+    button.hidden = !(page && page.hasMore);
+    chatHistoryState = { conversationId, seq, page, controller, button, loading: false };
+    button.onclick = () => loadOlderChatHistory();
+    container.prepend(button);
+}
+
+/** Prepend one bounded page, retaining the reader's position and ignoring stale navigation. */
+async function loadOlderChatHistory() {
+    const state = chatHistoryState;
+    if (!state || state.loading || !state.page || !state.page.hasMore) return;
+    const active = () => chatHistoryState === state && state.seq === loadConversationRequestSeq && currentConversationId === state.conversationId && !state.controller.signal.aborted;
+    if (!active()) return;
+    state.loading = true;
+    state.button.disabled = true;
+    state.button.textContent = chatTranslate('chat.historyLoading', '正在加载最近消息…');
+    try {
+        const data = await window.ChatHistory.requestPage(apiFetch, state.conversationId, {
+            signal: state.controller.signal, beforeMessageId: state.page.beforeMessageId
+        });
+        if (!active()) return;
+        const container = document.getElementById('chat-messages');
+        const anchor = container.querySelector('.message');
+        const top = anchor ? anchor.getBoundingClientRect().top : 0;
+        const seen = new Set(Array.from(container.querySelectorAll('[data-backend-message-id]'), node => node.dataset.backendMessageId));
+        if (window.CyberStrikeChatScroll) window.CyberStrikeChatScroll.setScrollDetached();
+        const fragment = document.createDocumentFragment();
+        (data.messages || []).forEach(msg => {
+            if (seen.has(String(msg.id))) return;
+            const node = renderConversationHistoryMessage(msg);
+            if (node) fragment.appendChild(node);
+            seen.add(String(msg.id));
+        });
+        container.insertBefore(fragment, anchor);
+        if (anchor) container.scrollTop += anchor.getBoundingClientRect().top - top;
+        state.page = data.messagePage;
+        state.button.hidden = !(state.page && state.page.hasMore);
+        state.button.textContent = chatTranslate('chat.historyOlder', '加载更早的消息');
+    } catch (error) {
+        if (!active()) return;
+        state.button.textContent = chatTranslate('chat.historyRetry', '重试加载');
+        // A deleted cursor cannot advance; reload the latest page explicitly instead.
+        if (error.status === 400) state.button.onclick = () => loadConversation(state.conversationId);
+    } finally {
+        if (active()) {
+            state.loading = false;
+            state.button.disabled = false;
+        }
+    }
+}
+
+/** Yield between small history batches; cancellation stops work and errors propagate. */
+async function renderChatHistoryBatch(messages, conversationId, seq) {
+    for (let offset = 0; offset < messages.length; offset += 4) {
+        if (seq !== loadConversationRequestSeq || currentConversationId !== conversationId) return;
+        messages.slice(offset, offset + 4).forEach(renderConversationHistoryMessage);
+        if (offset + 4 < messages.length) await new Promise(resolve => setTimeout(resolve, 0));
+    }
+}
+
+/** Restore one persisted message with its timing, tools, copy and delete controls. */
+function renderConversationHistoryMessage(msg) {
+    if (msg.role === 'user' && isInterruptContinueInjectChatMessage(msg.content)) {
+        return;
+    }
+    const assistantContent = String(msg && msg.content != null ? msg.content : '').trim();
+    const terminalState = msg && msg.role === 'assistant'
+        ? assistantTurnTerminalState(msg.processDetails)
+        : null;
+    let displayContent = msg.content;
+    if (msg.role === 'assistant' &&
+        (assistantContent === '处理中...' || assistantContent === 'Processing...') && terminalState) {
+        displayContent = terminalState.detail.message || msg.content;
+    }
+
+    // 消息时间口径：
+    // - user: createdAt 即可（发送后不会再更新）
+    // - assistant: 如果后端提供 updatedAt（任务完成时写回），优先用它，避免占位消息“任务开始时间”误导
+    const msgTime = (msg && msg.role === 'assistant' && msg.updatedAt) ? msg.updatedAt : (msg ? msg.createdAt : null);
+    const mcpIds = (msg.mcpExecutionIds && Array.isArray(msg.mcpExecutionIds)) ? msg.mcpExecutionIds : [];
+    const isAssistantPlaceholder = msg.role === 'assistant' && (
+        assistantContent === '处理中...' || assistantContent === 'Processing...'
+    );
+    const addOpts = (msg.role === 'assistant' && (mcpIds.length > 0 || isAssistantPlaceholder))
+        ? {
+            deferMcpButtons: mcpIds.length > 0,
+            hideAssistantPlaceholder: isAssistantPlaceholder
+        }
+        : null;
+    const messageId = addMessage(msg.role, displayContent, mcpIds, null, msgTime, Object.assign({ scroll: 'none' }, addOpts));
+    const messageEl = document.getElementById(messageId);
+    if (messageEl && msg && msg.id) {
+        messageEl.dataset.backendMessageId = String(msg.id);
+        attachDeleteTurnButton(messageEl);
+    }
+    if (msg.role === 'assistant') {
+        if (messageEl && typeof window.setAssistantTurnTiming === 'function') {
+            const startedAt = msg && msg.createdAt ? msg.createdAt : null;
+            const completedAt = terminalState && terminalState.completedAt
+                ? terminalState.completedAt
+                : (msg && msg.updatedAt ? msg.updatedAt : startedAt);
+            const startedMs = assistantTurnTimestamp(startedAt);
+            const completedMs = assistantTurnTimestamp(completedAt);
+            const isRunning = isAssistantPlaceholder && !terminalState;
+            const status = terminalState ? terminalState.status : (isRunning ? 'running' : 'completed');
+            window.setAssistantTurnTiming(messageEl, {
+                startedAt: startedAt,
+                completedAt: isRunning ? null : completedAt,
+                durationMs: (!isRunning && Number.isFinite(startedMs) && Number.isFinite(completedMs))
+                    ? Math.max(0, completedMs - startedMs)
+                    : undefined,
+                status: status
+            });
+        }
+        if (messageEl && msg.reasoningContent) {
+            setMessageReasoningContent(messageEl, msg.reasoningContent);
+        }
+        const hasField = msg && Object.prototype.hasOwnProperty.call(msg, 'processDetails');
+        renderProcessDetails(messageId, hasField ? (msg.processDetails || []) : null);
+        if (msg.processDetails && msg.processDetails.length > 0) {
+            const hasErrorOrCancelled = msg.processDetails.some(d =>
+                d.eventType === 'error' || d.eventType === 'cancelled'
+            );
+            if (hasErrorOrCancelled) {
+                collapseAllProgressDetails(messageId, null);
+            }
+        }
+    }
+    return messageEl;
+}
+
 async function loadConversation(conversationId) {
     conversationId = String(conversationId || '').trim();
     if (!conversationId) return;
@@ -6379,7 +6574,6 @@ async function loadConversation(conversationId) {
     }
     syncChatConversationHash(conversationId);
     const seq = ++loadConversationRequestSeq;
-    const previousConversationId = currentConversationId;
     cancelPendingConversationLoad();
     detachLiveChatStreamForNavigation(conversationId);
     // 用户单击即代表新的可见会话。必须在任何网络等待之前提交该选择，
@@ -6392,6 +6586,11 @@ async function loadConversation(conversationId) {
     loadConversationPendingId = conversationId;
     const conversationLoadController = new AbortController();
     loadConversationAbortController = conversationLoadController;
+    if (chatHistoryState) chatHistoryState.controller.abort();
+    chatHistoryState = null;
+    chatHistoryLoadFailedId = '';
+    showChatHistoryState(conversationId, false);
+
     if (typeof window.selectChatProjectConversationItem === 'function') {
         window.selectChatProjectConversationItem(conversationId);
     }
@@ -6403,40 +6602,20 @@ async function loadConversation(conversationId) {
     }
     try {
         const cachedConversation = getConversationLiteFromCache(conversationId);
-        let conversation = null;
-        let response = null;
+        let conversation;
+        let usedCache = false;
         try {
-            response = await apiFetch(`/api/conversations/${conversationId}?include_process_details=0`, {
-                signal: conversationLoadController.signal
-            });
-            conversation = await response.json();
-        } catch (fetchError) {
-            if (fetchError && fetchError.name === 'AbortError') return;
-            if (!cachedConversation) throw fetchError;
-            console.warn('加载最新对话失败，使用本地缓存:', fetchError);
-            conversation = cachedConversation;
-        }
-        if (seq !== loadConversationRequestSeq) {
-            return;
-        }
-        if (response && !response.ok) {
-            if (seq === loadConversationRequestSeq) {
-                currentConversationId = previousConversationId;
-                try {
-                    window.currentConversationId = previousConversationId || '';
-                } catch (e) { /* ignore */ }
-                if (previousConversationId) syncChatConversationHash(previousConversationId);
-                else clearChatConversationHash();
-            }
-            showChatToast('加载对话失败: ' + (conversation.error || '未知错误'), 'error');
-            return;
-        }
-        if (response && response.ok) {
+            conversation = await window.ChatHistory.requestPage(apiFetch, conversationId, { signal: conversationLoadController.signal });
+            if (seq !== loadConversationRequestSeq) return;
             putConversationLiteCache(conversationId, conversation);
+        } catch (fetchError) {
+            if (seq !== loadConversationRequestSeq || (fetchError && fetchError.name === 'AbortError')) return;
+            // Never reuse cached history after access denial/deletion or malformed HTTP responses.
+            if (fetchError.status || !cachedConversation || cachedConversation !== getConversationLiteFromCache(conversationId) || !(fetchError.name === 'TimeoutError' || fetchError instanceof TypeError)) throw fetchError;
+            conversation = cachedConversation;
+            usedCache = true;
         }
-        if (seq !== loadConversationRequestSeq) {
-            return;
-        }
+        if (seq !== loadConversationRequestSeq) return;
 
         // 更新当前对话ID
         currentConversationId = conversationId;
@@ -6464,7 +6643,7 @@ async function loadConversation(conversationId) {
             : Promise.resolve();
         hitlConfigSyncConversationId = conversationId;
         hitlConfigSyncPromise = Promise.resolve(hitlSyncPromise);
-        await hitlConfigSyncPromise;
+        // HITL readiness still gates sending; history rendering does not wait for it.
         if (seq !== loadConversationRequestSeq || currentConversationId !== conversationId) {
             return;
         }
@@ -6511,134 +6690,22 @@ async function loadConversation(conversationId) {
 
         // 加载消息 — 分批渲染避免长时间阻塞主线程
         if (conversation.messages && conversation.messages.length > 0) {
-            const FIRST_BATCH = 20;  // 首批同步渲染（用户可见区域）
-            const BATCH_SIZE = 10;   // 后续每批条数
-
-            // 渲染单条消息的辅助函数
-            const renderOneMessage = (msg) => {
-                if (msg.role === 'user' && isInterruptContinueInjectChatMessage(msg.content)) {
-                    return;
-                }
-                const assistantContent = String(msg && msg.content != null ? msg.content : '').trim();
-                const terminalState = msg && msg.role === 'assistant'
-                    ? assistantTurnTerminalState(msg.processDetails)
-                    : null;
-                let displayContent = msg.content;
-                if (msg.role === 'assistant' &&
-                    (assistantContent === '处理中...' || assistantContent === 'Processing...') && terminalState) {
-                    displayContent = terminalState.detail.message || msg.content;
-                }
-
-                // 消息时间口径：
-                // - user: createdAt 即可（发送后不会再更新）
-                // - assistant: 如果后端提供 updatedAt（任务完成时写回），优先用它，避免占位消息“任务开始时间”误导
-                const msgTime = (msg && msg.role === 'assistant' && msg.updatedAt) ? msg.updatedAt : (msg ? msg.createdAt : null);
-                const mcpIds = (msg.mcpExecutionIds && Array.isArray(msg.mcpExecutionIds)) ? msg.mcpExecutionIds : [];
-                const isAssistantPlaceholder = msg.role === 'assistant' && (
-                    assistantContent === '处理中...' || assistantContent === 'Processing...'
-                );
-                const addOpts = (msg.role === 'assistant' && (mcpIds.length > 0 || isAssistantPlaceholder))
-                    ? {
-                        deferMcpButtons: mcpIds.length > 0,
-                        hideAssistantPlaceholder: isAssistantPlaceholder
-                    }
-                    : null;
-                const messageId = addMessage(msg.role, displayContent, mcpIds, null, msgTime, addOpts);
-                const messageEl = document.getElementById(messageId);
-                if (messageEl && msg && msg.id) {
-                    messageEl.dataset.backendMessageId = String(msg.id);
-                    attachDeleteTurnButton(messageEl);
-                }
-                if (msg.role === 'assistant') {
-                    if (messageEl && typeof window.setAssistantTurnTiming === 'function') {
-                        const startedAt = msg && msg.createdAt ? msg.createdAt : null;
-                        const completedAt = terminalState && terminalState.completedAt
-                            ? terminalState.completedAt
-                            : (msg && msg.updatedAt ? msg.updatedAt : startedAt);
-                        const startedMs = assistantTurnTimestamp(startedAt);
-                        const completedMs = assistantTurnTimestamp(completedAt);
-                        const isRunning = isAssistantPlaceholder && !terminalState;
-                        const status = terminalState ? terminalState.status : (isRunning ? 'running' : 'completed');
-                        window.setAssistantTurnTiming(messageEl, {
-                            startedAt: startedAt,
-                            completedAt: isRunning ? null : completedAt,
-                            durationMs: (!isRunning && Number.isFinite(startedMs) && Number.isFinite(completedMs))
-                                ? Math.max(0, completedMs - startedMs)
-                                : undefined,
-                            status: status
-                        });
-                    }
-                    if (messageEl && msg.reasoningContent) {
-                        setMessageReasoningContent(messageEl, msg.reasoningContent);
-                    }
-                    const hasField = msg && Object.prototype.hasOwnProperty.call(msg, 'processDetails');
-                    renderProcessDetails(messageId, hasField ? (msg.processDetails || []) : null);
-                    if (msg.processDetails && msg.processDetails.length > 0) {
-                        const hasErrorOrCancelled = msg.processDetails.some(d =>
-                            d.eventType === 'error' || d.eventType === 'cancelled'
-                        );
-                        if (hasErrorOrCancelled) {
-                            collapseAllProgressDetails(messageId, null);
-                        }
-                    }
-                }
-            };
-
-            const msgs = conversation.messages;
-            const firstBatch = msgs.slice(0, FIRST_BATCH);
-            const rest = msgs.slice(FIRST_BATCH);
-
-            let pendingMessageBatches = Promise.resolve();
-
-            // 首批同步渲染
-            firstBatch.forEach(renderOneMessage);
-
-            // 剩余消息通过 requestAnimationFrame 分批渲染，避免阻塞 UI
-            if (rest.length > 0) {
-                const savedConvId = conversationId;
-                const savedSeq = seq;
-                pendingMessageBatches = new Promise((resolve) => {
-                    let offset = 0;
-                    const renderNextBatch = () => {
-                        if (savedSeq !== loadConversationRequestSeq || currentConversationId !== savedConvId) {
-                            resolve();
-                            return;
-                        }
-                        const batch = rest.slice(offset, offset + BATCH_SIZE);
-                        batch.forEach(renderOneMessage);
-                        offset += BATCH_SIZE;
-                        if (offset < rest.length) {
-                            requestAnimationFrame(renderNextBatch);
-                        } else {
-                            if (window.CyberStrikeChatScroll) {
-                                window.CyberStrikeChatScroll.forceScrollToBottom(false);
-                            } else {
-                                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                            }
-                            resolve();
-                        }
-                    };
-                    requestAnimationFrame(renderNextBatch);
-                });
-            }
-
-            if (window.CyberStrikeChatScroll) {
-                window.CyberStrikeChatScroll.forceScrollToBottom(false);
-            } else {
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            }
+            // Await bounded chunks so renderer errors reach the visible retry state.
+            const pendingMessageBatches = renderChatHistoryBatch(conversation.messages, conversationId, seq);
             addAttackChainButton(conversationId);
             await pendingMessageBatches;
             if (seq !== loadConversationRequestSeq) {
                 return;
             }
+            installChatHistoryPager(conversationId, seq, conversation.messagePage, conversationLoadController);
+            if (window.CyberStrikeChatScroll) window.CyberStrikeChatScroll.forceScrollToBottom(false);
             hydrateConversationTokenUsage(conversationId, seq, conversationLoadController.signal).catch((e) => {
                 if (!e || e.name !== 'AbortError') {
                     console.warn('hydrateConversationTokenUsage failed', e);
                 }
             });
             if (currentConversationId === conversationId && typeof window.restoreHitlInlineForConversation === 'function') {
-                await window.restoreHitlInlineForConversation(conversationId);
+                window.restoreHitlInlineForConversation(conversationId).catch((error) => console.warn('Approval restore failed', error));
             }
             if (
                 window.CyberStrikeChatScroll &&
@@ -6658,9 +6725,11 @@ async function loadConversation(conversationId) {
                 return;
             }
             if (currentConversationId === conversationId && typeof window.restoreHitlInlineForConversation === 'function') {
-                await window.restoreHitlInlineForConversation(conversationId);
+                window.restoreHitlInlineForConversation(conversationId).catch((error) => console.warn('Approval restore failed', error));
             }
         }
+
+        if (usedCache) showChatHistoryCacheNotice(conversationId);
 
         // 页面刷新后主流式连接会中断；若该会话仍在后端运行，自动挂载 task-events 补流继续更新前端迭代进度。
         const skipReplay = typeof window.shouldSkipTaskEventReplayAttach === 'function'
@@ -6683,30 +6752,18 @@ async function loadConversation(conversationId) {
             });
         }
     } catch (error) {
-        if (error && error.name === 'AbortError') return;
-        if (seq === loadConversationRequestSeq) {
-            currentConversationId = previousConversationId;
-            try {
-                window.currentConversationId = previousConversationId || '';
-            } catch (e) { /* ignore */ }
-            if (previousConversationId) syncChatConversationHash(previousConversationId);
-            else clearChatConversationHash();
-            if (typeof window.selectChatProjectConversationItem === 'function') {
-                window.selectChatProjectConversationItem(previousConversationId);
-            }
-        }
-        console.error('加载对话失败:', error);
-        showChatToast('加载对话失败: ' + (error && error.message ? error.message : String(error)), 'error');
+        if (seq !== loadConversationRequestSeq || (error && error.name === 'AbortError')) return;
+        chatHistoryLoadFailedId = conversationId;
+        showChatHistoryState(conversationId, true);
+        console.warn('Conversation history unavailable', error && error.name);
     } finally {
         if (seq === loadConversationRequestSeq && typeof window.finishChatConversationRestore === 'function') {
             window.finishChatConversationRestore(conversationId);
         }
-        if (loadConversationAbortController === conversationLoadController) {
-            loadConversationAbortController = null;
-        }
         if (seq === loadConversationRequestSeq && loadConversationPendingId === conversationId) {
             loadConversationPendingId = '';
         }
+        if (seq === loadConversationRequestSeq) document.getElementById('chat-messages')?.setAttribute('aria-busy', 'false');
     }
 }
 
@@ -7021,7 +7078,7 @@ async function loadAttackChain(conversationId) {
         }
 
         // 渲染攻击链
-        renderAttackChain(chainData);
+        await renderAttackChain(chainData);
 
         // 更新统计信息
         updateAttackChainStats(chainData);
@@ -7049,7 +7106,10 @@ async function loadAttackChain(conversationId) {
 }
 
 // 渲染攻击链
-function renderAttackChain(chainData) {
+async function renderAttackChain(chainData) {
+    const requestedConversation = currentAttackChainConversationId;
+    if (typeof window.ensureGraphLayoutLibrary === 'function') await window.ensureGraphLayoutLibrary();
+    if (requestedConversation !== currentAttackChainConversationId) return;
     const container = document.getElementById('attack-chain-container');
     if (!container) {
         return;
@@ -8200,7 +8260,7 @@ async function regenerateAttackChain() {
         }
 
         // 渲染攻击链
-        renderAttackChain(chainData);
+        await renderAttackChain(chainData);
 
         // 更新统计信息
         updateAttackChainStats(chainData);

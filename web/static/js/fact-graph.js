@@ -481,7 +481,10 @@
         return '2';
     }
 
-    function applyElkLayout(validEdges, isComplex) {
+    async function applyElkLayout(validEdges, isComplex) {
+        const graph = _cy;
+        if (typeof window.ensureGraphLayoutLibrary === 'function') await window.ensureGraphLayoutLibrary();
+        if (!graph || graph !== _cy || graph.destroyed()) return;
         const layoutOptions = {
             name: 'breadthfirst',
             directed: true,
