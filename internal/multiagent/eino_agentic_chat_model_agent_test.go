@@ -5,8 +5,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/prebuilt/supervisor"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -112,6 +114,62 @@ func TestNewEinoAgenticChatModelAgentAdapterRunsThroughClassicAgentBoundary(t *t
 	snapshot := trace.Snapshot()
 	if len(snapshot) != 2 || snapshot[0].Role != schema.System || snapshot[1].Role != schema.User {
 		t.Fatalf("trace snapshot = %#v, want classic system + user trace", snapshot)
+	}
+}
+
+func TestAgenticSupervisorTransfersToConfiguredSubAgent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	worker := &fakeAgenticMessageAgent{
+		name: "worker", description: "Handles a delegated task",
+		events: []*adk.TypedAgentEvent[*schema.AgenticMessage]{{
+			AgentName: "worker",
+			Output: &adk.TypedAgentOutput[*schema.AgenticMessage]{MessageOutput: &adk.TypedMessageVariant[*schema.AgenticMessage]{
+				Message: &schema.AgenticMessage{Role: schema.AgenticRoleTypeAssistant,
+					ContentBlocks: []*schema.ContentBlock{schema.NewContentBlock(&schema.AssistantGenText{Text: "worker completed"})}},
+			}},
+		}},
+	}
+	model := &capturingAgenticChatModel{outputs: []*schema.AgenticMessage{
+		{Role: schema.AgenticRoleTypeAssistant, ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.FunctionToolCall{
+				CallID: "transfer-1", Name: adk.TransferToAgentToolName, Arguments: `{"agent_name":"worker"}`,
+			}),
+		}},
+		{Role: schema.AgenticRoleTypeAssistant, ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.AssistantGenText{Text: "delegation completed"}),
+		}},
+	}}
+	root, err := newEinoAgenticChatModelAgentAdapter(ctx, einoAgenticChatModelAgentConfig{
+		Name: "supervisor", Description: "Delegates tasks", Model: model, MaxIterations: 4,
+	})
+	if err != nil {
+		t.Fatalf("create supervisor model agent: %v", err)
+	}
+	flow, err := supervisor.New(ctx, &supervisor.Config{
+		Supervisor: root,
+		SubAgents:  []adk.Agent{newEinoAgenticMessageAgentAdapter(worker)},
+	})
+	if err != nil {
+		t.Fatalf("create supervisor flow: %v", err)
+	}
+	iter := flow.Run(ctx, &adk.AgentInput{Messages: []*schema.Message{schema.UserMessage("delegate a task")}})
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			t.Fatalf("supervisor event: %v", event.Err)
+		}
+	}
+	if worker.captured == nil {
+		t.Fatal("transfer_to_agent did not invoke the configured sub-agent")
+	}
+	inputs := model.snapshotInputs()
+	if len(inputs) < 2 || len(inputs[0]) == 0 ||
+		!strings.Contains(agenticMessageText(inputs[0][0]), adk.TransferToAgentToolName) {
+		t.Fatalf("supervisor model input lacks transfer instruction: %#v", inputs)
 	}
 }
 

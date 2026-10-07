@@ -2,6 +2,7 @@ package multiagent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/adk"
@@ -104,6 +105,16 @@ func TestEinoAgenticMessageAgentAdapterConvertsInputAndEvents(t *testing.T) {
 func TestEinoAgenticMessageAgentAdapterNilInnerReturnsNil(t *testing.T) {
 	if got := newEinoAgenticMessageAgentAdapter(nil); got != nil {
 		t.Fatalf("adapter = %#v, want nil", got)
+	}
+}
+
+func TestEinoAgenticMessageAgentAdapterRejectsUnsupportedTransfer(t *testing.T) {
+	ctx := context.Background()
+	root := newEinoAgenticMessageAgentAdapter(&fakeAgenticMessageAgent{name: "root"})
+	worker := newEinoAgenticMessageAgentAdapter(&fakeAgenticMessageAgent{name: "worker"})
+	_, err := adk.SetSubAgents(ctx, root, []adk.Agent{worker})
+	if err == nil || !strings.Contains(err.Error(), "does not support sub-agent transfer") {
+		t.Fatalf("SetSubAgents error = %v, want explicit unsupported transfer", err)
 	}
 }
 

@@ -51,6 +51,7 @@ Eino Skills support progressive disclosure. The Agent initially sees names and d
 
 ## Operational Notes
 
+- `supervisor` requires at least one enabled sub-agent. Its AgenticMessage-to-classic adapter forwards Eino's sub-agent registration so the runtime exposes `transfer_to_agent`; unsupported registration fails during construction rather than silently running without delegation. Deep mode uses its separate `task` tool path.
 - Tool visibility is not the same as tool availability in the UI.
 - Running streams keep their startup context even if config changes mid-run.
 - Summarization can write transcripts under `data/conversation_artifacts/...`.
