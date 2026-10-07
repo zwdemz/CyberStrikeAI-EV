@@ -38,7 +38,7 @@ CyberStrikeAI-EV 维护于 [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/C
 
 ## 版本发布与更新记录
 
-使用本仓库的 [Releases](https://github.com/zwdemz/CyberStrikeAI-EV/releases) 和[英文 Changelog](CHANGELOG.md)。后续 Tag 名称采用 SemVer（`vMAJOR.MINOR.PATCH`），附注标签的说明、Release 标题及正文统一使用英语，记录更新、优化、问题修复、安全修复、加固、验证结果及升级与回滚注意事项，并单独注明上游基线。
+使用本仓库的 [Releases](https://github.com/zwdemz/CyberStrikeAI-EV/releases) 。后续 Tag 名称采用 SemVer（`vMAJOR.MINOR.PATCH`），附注标签的说明、Release 标题及正文统一使用英语，记录更新、优化、问题修复、安全修复、加固、验证结果及升级与回滚注意事项，并单独注明上游基线。
 
 开发在 `dev` 进行，签名提交通过 `dev → main` PR 发布；正式版本标签指向 `main` 上已验证的发布提交。详见[发布流程](docs/zh-CN/release-process.md)。
 
@@ -289,7 +289,7 @@ go build -o cyberstrike-ai cmd/server/main.go
 
 EV 发布位于 [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV/releases)。继承的 `upgrade.sh` 当前固定指向 `Ed1s0nZ/CyberStrikeAI`；直接运行会下载上游源码，可能覆盖 EV 定制内容。本定制版使用以下受控升级流程。
 
-1. 阅读目标 EV Release 和 [Changelog](CHANGELOG.md)，核对上游基线、安全修复、配置及数据库变化。
+1. 阅读目标 EV Release ，核对上游基线、安全修复、配置及数据库变化。
 2. 在独立目录获取发布源码，使用可信维护者密钥验证签名标签，按 `go.mod` 要求的 Go 版本构建。
 3. 备份当前程序、源码、配置、一致性数据库快照与自定义 tools/roles/skills/agents，私下记录启动命令及环境。
 4. 等待任务结束后平滑停止服务，替换配套程序与源码、静态文件，合并配置变化；保留凭据和运行数据，同时核对角色及工具策略的新版改动。

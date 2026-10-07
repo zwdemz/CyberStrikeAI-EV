@@ -14,7 +14,7 @@ This guide defines baseline expectations when adding features, APIs, tools, fron
 - Route checks use current PR metadata and trusted default-branch code after the read-only `PR policy` workflow completes. Retargeting and reopening rerun the checks.
 - Releases use merge commits to preserve development ancestry. Keep `dev` and `main`; repository-wide automatic branch deletion stays disabled to retain `dev` after releases.
 - Use Conventional Commits, sign with the configured GPG key, and verify signatures before pushing.
-- Record changes in the English `CHANGELOG.md`. Future release tag annotations, Release titles, and Release notes must use English and follow the categories and signing requirements in the [release process](release-process.md).
+- Record changes in English GitHub Release notes. Keep any local `CHANGELOG.md` ignored and out of commits. Future release tag annotations, Release titles, and Release notes must use English and follow the categories and signing requirements in the [release process](release-process.md).
 - Keep credentials, tokens, private environment details, and other sensitive information out of commit messages and PR titles, descriptions, and comments.
 - Complete checks appropriate to the change before merging. Preserve unrelated local changes; do not rewrite published history or delete branches without explicit authorization.
 
