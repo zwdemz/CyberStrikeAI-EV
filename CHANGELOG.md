@@ -24,6 +24,7 @@ The current baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.co
 
 ### Bug Fixes
 
+- Restore `supervisor` delegation by forwarding Eino's classic sub-agent registration into the AgenticMessage model agent. Reject missing transfer support or an empty supervisor roster explicitly, and use the actual `transfer_to_agent` tool name in supervisor instructions.
 - Prevent parallel `create_asset` and `update_asset` calls from failing on immediate SQLite read-to-write lock upgrades: start primary-database transactions with `BEGIN IMMEDIATE`, use an eight-connection pool and a 10-second busy wait, and retry only SQLite BUSY errors with bounded, cancellable attempts. Preserve batch atomicity and asset access rules.
 - Pin the optional Burp extension Gradle build to a JDK 11-compatible wrapper so CodeQL can resolve Java dependencies instead of inferring them after an incompatible Gradle download.
 - Cancel stale conversation requests and bound history fetch/JSON time to 15 seconds; expose retry controls and keep failed rendering from leaving loading permanently active.
