@@ -793,6 +793,8 @@ async function loadConfig(loadTools = true, options = {}) {
             hitlReviewerEl.value = reviewer === 'audit_agent' ? 'audit_agent' : 'human';
         }
         const hitlAuditModel = hitl.audit_model || {};
+        const auditTemperatureEl = document.getElementById('hitl-audit-model-temperature');
+        if (auditTemperatureEl) auditTemperatureEl.value = hitlAuditModel.temperature ?? '';
         const hitlAuditBackendEl = document.getElementById('hitl-audit-backend');
         if (hitlAuditBackendEl) {
             const backend = String(hitl.audit_backend || '').trim().toLowerCase();
@@ -2002,6 +2004,8 @@ async function applySettings() {
         const prevOpenai = activeChannel;
         const prevRobots = (currentConfig && currentConfig.robots) ? currentConfig.robots : {};
         const prevHitl = (currentConfig && currentConfig.hitl) ? currentConfig.hitl : {};
+        const auditTemperatureInput = document.getElementById('hitl-audit-model-temperature');
+        if (auditTemperatureInput && !auditTemperatureInput.reportValidity()) return;
         const hitlRetentionRaw = document.getElementById('hitl-retention-days')?.value;
         const hitlRetention = parseInt(hitlRetentionRaw, 10);
         const hitlWhitelistRaw = document.getElementById('hitl-tool-whitelist')?.value || '';
@@ -2037,7 +2041,9 @@ async function applySettings() {
                     provider: document.getElementById('hitl-audit-model-provider')?.value || '',
                     base_url: document.getElementById('hitl-audit-model-base-url')?.value.trim() || '',
                     api_key: document.getElementById('hitl-audit-model-api-key')?.value.trim() || '',
-                    model: document.getElementById('hitl-audit-model-name')?.value.trim() || ''
+                    model: document.getElementById('hitl-audit-model-name')?.value.trim() || '',
+                    temperature: document.getElementById('hitl-audit-model-temperature')?.value.trim()
+                        ? Number(document.getElementById('hitl-audit-model-temperature').value) : null
                 },
                 default_reviewer: document.getElementById('hitl-default-reviewer')?.value === 'audit_agent' ? 'audit_agent' : 'human',
                 retention_days: Number.isNaN(hitlRetention) ? 90 : Math.max(0, hitlRetention),

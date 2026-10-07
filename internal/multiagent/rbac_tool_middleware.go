@@ -34,7 +34,7 @@ func localToolRBACMiddleware() compose.ToolMiddleware {
 		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
 				if input != nil {
-					if err := rolepolicy.CheckTool(ctx, input.Name); err != nil {
+					if err := rolepolicy.CheckTool(ctx, originalToolName(ctx, input.Name)); err != nil {
 						return &compose.ToolOutput{Result: err.Error()}, nil
 					}
 				}
@@ -47,7 +47,7 @@ func localToolRBACMiddleware() compose.ToolMiddleware {
 		Streamable: func(next compose.StreamableToolEndpoint) compose.StreamableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.StreamToolOutput, error) {
 				if input != nil {
-					if err := rolepolicy.CheckTool(ctx, input.Name); err != nil {
+					if err := rolepolicy.CheckTool(ctx, originalToolName(ctx, input.Name)); err != nil {
 						return &compose.StreamToolOutput{Result: schema.StreamReaderFromArray([]string{err.Error()})}, nil
 					}
 				}

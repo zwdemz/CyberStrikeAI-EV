@@ -1698,7 +1698,7 @@ function renderHitlLogsTable(items) {
                 '<td class="hitl-logs-cell-mono">' + id + '</td>' +
                 '<td>' + escapeHtml(String(item.toolName || '-')) + '</td>' +
                 '<td class="hitl-logs-cell-mono">' + escapeHtml(String(item.conversationId || '-')) + '</td>' +
-                '<td><span class="hitl-decision-tag ' + decisionCls + '">' + escapeHtml(hitlDecisionLabel(decision)) + '</span></td>' +
+                '<td><span class="hitl-decision-tag ' + decisionCls + '">' + escapeHtml(hitlRecordDecisionLabel(item)) + '</span></td>' +
                 '<td>' + escapeHtml(hitlDecidedByLabel(item.decidedBy)) + (function () {
                     const engine = hitlAuditEngineFromItem(item);
                     const label = hitlAuditEngineLabel(engine.backend, engine.model);
@@ -1845,6 +1845,14 @@ function hitlPendingGoPage(page) {
     refreshHitlPending();
 }
 
+// Render operational audit failures separately while retaining the stored deny decision.
+function hitlRecordDecisionLabel(item) {
+    if (String(item.comment || '').startsWith('[audit_error]')) {
+        return hitlT('auditError', '审查服务异常，工具未执行');
+    }
+    return hitlDecisionLabel(String(item.decision || ''));
+}
+
 function hitlDecisionLabel(decision) {
     const d = String(decision || '').toLowerCase();
     if (d === 'approve') return hitlT('decisionApprove', 'Approve');
@@ -1896,7 +1904,7 @@ async function openHitlLogModal(idOpt) {
     if (decisionEl) {
         const decision = String(item.decision || '');
         const cls = decision === 'approve' ? 'hitl-decision--approve' : (decision === 'reject' ? 'hitl-decision--reject' : '');
-        decisionEl.innerHTML = '<span class="hitl-decision-tag ' + cls + '">' + escapeHtml(hitlDecisionLabel(decision)) + '</span>';
+        decisionEl.innerHTML = '<span class="hitl-decision-tag ' + cls + '">' + escapeHtml(hitlRecordDecisionLabel(item)) + '</span>';
     }
     if (decidedByEl) decidedByEl.textContent = hitlDecidedByLabel(item.decidedBy);
     let engineRow = document.getElementById('hitl-log-detail-engine-row');

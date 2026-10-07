@@ -283,6 +283,7 @@ func RunDeepAgent(
 						Tools:               subToolsForCfg,
 						UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
 						ToolCallMiddlewares: []compose.ToolMiddleware{
+							toolIdentityMiddleware(subTools),
 							modelOutputExecutionGuardMiddleware(),
 							localToolRBACMiddleware(),
 							hitlToolCallMiddleware(),
@@ -465,6 +466,7 @@ func RunDeepAgent(
 			Tools:               mainToolsForCfg,
 			UnknownToolsHandler: einomcp.UnknownToolReminderHandler(),
 			ToolCallMiddlewares: []compose.ToolMiddleware{
+				toolIdentityMiddleware(mainTools),
 				modelOutputExecutionGuardMiddleware(),
 				localToolRBACMiddleware(),
 				hitlToolCallMiddleware(),

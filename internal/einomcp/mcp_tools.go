@@ -36,6 +36,7 @@ func ToolsFromDefinitions(
 	einoAgentName string,
 ) ([]tool.BaseTool, error) {
 	out := make([]tool.BaseTool, 0, len(defs))
+	names := make(map[string]string, len(defs))
 	for _, d := range defs {
 		if d.Type != "function" || d.Function.Name == "" {
 			continue
@@ -44,15 +45,19 @@ func ToolsFromDefinitions(
 		if err != nil {
 			return nil, fmt.Errorf("tool %q: %w", d.Function.Name, err)
 		}
+		if previous, exists := names[info.Name]; exists {
+			return nil, fmt.Errorf("tool name collision between %q and %q", previous, d.Function.Name)
+		}
+		names[info.Name] = d.Function.Name
 		out = append(out, &mcpBridgeTool{
-			info:           info,
-			name:           d.Function.Name,
-			agent:          ag,
-			holder:         holder,
-			record:         rec,
-			chunk:          toolOutputChunk,
-			invokeNotify:   invokeNotify,
-			einoAgentName:  strings.TrimSpace(einoAgentName),
+			info:          info,
+			name:          d.Function.Name,
+			agent:         ag,
+			holder:        holder,
+			record:        rec,
+			chunk:         toolOutputChunk,
+			invokeNotify:  invokeNotify,
+			einoAgentName: strings.TrimSpace(einoAgentName),
 		})
 	}
 	return out, nil
@@ -77,7 +82,7 @@ func toolInfoFromDefinition(d agent.Tool) (*schema.ToolInfo, error) {
 		// 空参数对象
 	}
 	return &schema.ToolInfo{
-		Name:        fn.Name,
+		Name:        sanitizeOpenAIToolName(fn.Name),
 		Desc:        fn.Description,
 		ParamsOneOf: schema.NewParamsOneOfByJSONSchema(&js),
 	}, nil
@@ -93,6 +98,9 @@ type mcpBridgeTool struct {
 	invokeNotify  *ToolInvokeNotifyHolder
 	einoAgentName string
 }
+
+// OriginalName returns the MCP routing and policy identity; it never returns the provider alias.
+func (m *mcpBridgeTool) OriginalName() string { return m.name }
 
 func (m *mcpBridgeTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	_ = ctx
