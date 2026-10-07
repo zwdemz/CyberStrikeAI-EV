@@ -53,7 +53,14 @@ Output:
 
 #### Option C: Gradle (optional)
 
-If you already have Gradle available, you can still use `build.gradle` to build.
+The checked-in wrapper pins Gradle 8.14.3, which can run on JDK 11. No system Gradle installation is needed:
+
+```bash
+cd plugins/burp-suite/cyberstrikeai-burp-extension
+./gradlew shadowJar
+```
+
+Output: `build/libs/cyberstrikeai-burp-extension-all.jar`. The first run downloads and verifies the Gradle distribution.
 
 ### Load in Burp Suite
 

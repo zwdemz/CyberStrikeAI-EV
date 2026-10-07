@@ -20,7 +20,7 @@
 - **Request / Response 回看**：右侧 Tab 可直接查看该次捕获到的原始请求/响应
 - **Stop 取消**：任务创建会话后可调用 `/api/agent-loop/cancel` 停止当前会话任务
 
-### 编译（不依赖 Gradle/Maven，推荐）
+### 编译
 
 > 给普通用户：你们应当直接发 **编译好的 jar**，用户在 Burp 里加载即可，**不需要编译**。
 
@@ -70,6 +70,17 @@ cd plugins/burp-suite/cyberstrikeai-burp-extension
 产物：
 
 - `dist/cyberstrikeai-burp-extension.jar`
+
+#### 方式 C（可选）：Gradle Wrapper
+
+仓库自带的 Wrapper 固定使用 Gradle 8.14.3，可在 JDK 11 上运行，无需预装 Gradle：
+
+```bash
+cd plugins/burp-suite/cyberstrikeai-burp-extension
+./gradlew shadowJar
+```
+
+产物：`build/libs/cyberstrikeai-burp-extension-all.jar`。首次执行会下载并校验 Gradle 发行包。
 
 ### 在 Burp Suite 中加载
 
