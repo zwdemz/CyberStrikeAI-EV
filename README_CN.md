@@ -2,18 +2,45 @@
   <img src="images/logo.png" alt="CyberStrikeAI Logo" width="200">
 </div>
 
-# CyberStrikeAI
+# CyberStrikeAI-EV
 
 [中文](README_CN.md) | [English](README.md)
 
-**CyberStrikeAI 是 AI 原生网络安全的智能执行中枢——让意图转化为受治理的行动，让证据沉淀为运营记忆，并让每次行动优化下一次行动。**
+**面向授权定向验证、SRC 专项流程和修复复测的 CyberStrikeAI 定制版。**
 
-CyberStrikeAI 将规划、执行、人工监督、证据与复盘连接在同一个可审计工作空间中。项目基于 Go 构建，融合 Eino 智能体、MCP 原生工具、RAG 知识、可视化工作流以及攻击链建模与分析能力，面向已获得明确授权的安全任务。
+CyberStrikeAI-EV 维护于 [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV)，基于上游 [AIPentest/CyberStrikeAI v1.7.21](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.21)，对应上游提交 `82b0af10f8519bf4baaa08958a8dbe38299a7685`。项目保留 Go/Eino 智能体平台、MCP 集成、知识检索、工作流和审计能力，补充 EV 的角色范围限制、工具就绪处理、DNSLog 集成、稳定性优化与安全修复。本仓库为独立维护的定制分支；上游与 EV 的同名版本标签不代表源码完全一致。
 
 **从这里开始：** [快速上手](#快速上手一条命令部署) · [中文文档](docs/zh-CN/README.md) · [安全加固](docs/zh-CN/security-hardening.md)
 
 > [!IMPORTANT]
 > 仅可对自有系统或已获得明确授权的目标使用 CyberStrikeAI。在共享或生产环境启用高风险工具、WebShell 或 C2 前，请先阅读[安全模型](docs/zh-CN/security-model.md)和[安全加固指南](docs/zh-CN/security-hardening.md)。
+
+## 专项定向用途
+
+| 场景 | 定向用途 | 使用边界 |
+| --- | --- | --- |
+| 教育 SRC | 使用测试账号和模拟师生记录，核对单个授权主机的指定接口并留存最小证据。 | `EDUSRC渗透测试` 角色禁止高危利用、大量批量扫描和读取真实个人明细。 |
+| 企业 SRC | 按 SRC 平台规则复现范围内的问题，记录请求差分、前置条件和修复证据。 | `企业SRC渗透测试` 角色禁止批量扩展目标、凭据攻击、破坏性操作和业务状态变更。 |
+| API、JWT 与接口文档检查 | 离线检查测试 JWT、静态分析本地 OpenAPI 文档，或比对获准的 GET/HEAD/OPTIONS 响应。 | 使用角色工具白名单，不将离线分析扩展为在线利用，不修改业务数据。 |
+| 修复复测 | 对已修复的指定接口重复少量获准检查，对比修复前后的证据。 | 区分已确认、疑似、未验证与环境受限，凭据及个人信息必须脱敏。 |
+
+两个 SRC 角色采用服务端 `src-low-impact` 策略：一次运行仅允许首个网络调用选定的主机，网络工具调用最多 50 次、间隔至少 1 秒且串行执行，Nmap 最多检查 10 个明确端口；子代理共享限制。HTTP 仅允许 GET/HEAD/OPTIONS，禁止 Shell、任意 Python、包安装及批量任务。这些限制是工具调用配额，不是网络包配额，也不代表目标已获授权；GET 接口仍可能改变状态，操作员必须预先明确范围和安全测试数据。详见 [SRC 工具策略与安装](docs/src-tool-policy.md)。
+
+## EV 定制内容
+
+- **角色与执行控制：** 教育、企业 SRC 提示词与运行时工具及参数限制共同生效，配合平台 RBAC、审计日志和可配置调用拦截；不把提示词本身视为安全边界。
+- **工具就绪处理：** 缺失命令交由维护者安装后重载。受限 SRC 角色不得通过 Python 降级或子代理绕过缺失工具和禁用策略；Ubuntu 安装程序将工具及依赖放在 `tools/runtime/`。
+- **新增 DNSLog 提供方：** [`dig-pm-dnslog`](docs/dig-pm-dnslog.md) 属于原生 MCP 工具，通过 HTTPS/WSS 工作，会话绑定用户与对话，无需 Python 依赖；不会自动加入两个受限 SRC 角色。
+- **摘要恢复：** 输出被明确截断时，使用原始输入和原有输出预算执行一次精简重试；不完整摘要不会替换原会话历史。详见[故障排查](docs/zh-CN/troubleshooting.md)。
+- **依赖修复与存储控制：** 更新存在已知漏洞的依赖，提供存储预览、删除确认，自动存储清理默认关闭；保留上游 v1.7.21 的本地化与存储更新。详见[同步记录](docs/zh-CN/upstream-v1.7.21-sync.md)。
+
+下方保留的 WebShell、C2、广泛侦察与批量任务能力不属于这两个 SRC 角色的可用范围。其他角色是否可用取决于权限、配置和该环境的明确授权。
+
+## 版本发布与更新记录
+
+使用本仓库的 [Releases](https://github.com/zwdemz/CyberStrikeAI-EV/releases) 和[英文 Changelog](CHANGELOG.md)。后续 Tag 名称采用 SemVer（`vMAJOR.MINOR.PATCH`），附注标签的说明、Release 标题及正文统一使用英语，记录更新、优化、问题修复、安全修复、加固、验证结果及升级与回滚注意事项，并单独注明上游基线。
+
+开发在 `dev` 进行，签名提交通过 `dev → main` PR 发布；正式版本标签指向 `main` 上已验证的发布提交。详见[发布流程](docs/zh-CN/release-process.md)。
 
 ## 界面与集成预览
 
@@ -191,13 +218,13 @@ CyberStrikeAI 将规划、执行、人工监督、证据与复盘连接在同一
 ### 快速上手（一条命令部署）
 
 **环境要求：**
-- Go 1.25+（[下载安装](https://go.dev/dl/)，以 `go.mod` 为准）
+- Go 1.26.8+（[下载安装](https://go.dev/dl/)，以 `go.mod` 为准）
 - Python 3.10+ ([下载安装](https://www.python.org/downloads/))
 
 **一条命令部署：**
 ```bash
-git clone https://github.com/Ed1s0nZ/CyberStrikeAI.git
-cd CyberStrikeAI
+git clone --branch main https://github.com/zwdemz/CyberStrikeAI-EV.git
+cd CyberStrikeAI-EV
 chmod +x run.sh && ./run.sh
 ```
 
@@ -236,21 +263,13 @@ chmod +x run.sh && ./run.sh
      ```
    - 或启动前直接编辑 `config.yaml` 文件。`ai.default_channel` 会作为新对话和未显式选择通道任务的默认模型；对话页也可以在会话设置里选择某个已保存通道。
 2. **登录系统** - 首次启动时控制台会显示自动生成的 `admin` 初始密码；也可在「平台权限 → 用户管理」中创建账号
-3. **安装安全工具（可选）** - 按需安装 `tools/` 目录中的工具；未安装的工具在执行时会自动跳过或改用替代方案。常用示例：
+3. **仅安装所选角色需要的工具。** Ubuntu 上的教育、企业 SRC 角色使用：
 
-   **macOS（Homebrew）：**
    ```bash
-   brew install nmap masscan sqlmap nikto gobuster ffuf hydra hashcat nuclei subfinder
+   bash tools/install-src-tools.sh
    ```
 
-   **Linux（Kali / Debian / Ubuntu）：**
-   ```bash
-   sudo apt update
-   sudo apt install -y nmap masscan sqlmap nikto gobuster hydra hashcat john binwalk
-   # 部分发行版需自行安装：ffuf、nuclei、subfinder 等可用 go install 或见各工具官网
-   ```
-
-   完整工具列表见 `tools/` 目录；各工具安装方式以官方文档为准。
+   程序与依赖安装在 `tools/runtime/`，无需 sudo。安装后重载工具配置或重启服务。缺失工具由维护者修复，受限角色不能改用任意 Python 或 Shell 绕过；其他角色仅在自身权限允许且依赖已安装时使用等价替代方案。详见 [SRC 工具策略](docs/src-tool-policy.md)与[工具定义](tools/README.md)。此安装器仅适用于 Ubuntu，Windows/macOS 需另行配置兼容工具。
 
 **其他启动方式：**
 ```bash
@@ -268,21 +287,15 @@ go build -o cyberstrike-ai cmd/server/main.go
 
 ### 版本升级与兼容性
 
-1. （首次使用）启用脚本：`chmod +x upgrade.sh`
-2. 一键升级：`./upgrade.sh`（可选参数：`--tag vX.Y.Z`、`--no-venv`、`--yes`）。本地的 `tools/`、`roles/`、`skills/` 会始终保留不被覆盖。
-3. 脚本会备份你的 `config.yaml` 和 `data/`，从 GitHub Release 升级代码，更新 `config.yaml` 的 `version` 字段后重启服务。
+EV 发布位于 [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV/releases)。继承的 `upgrade.sh` 当前固定指向 `Ed1s0nZ/CyberStrikeAI`；直接运行会下载上游源码，可能覆盖 EV 定制内容。本定制版使用以下受控升级流程。
 
-推荐的一键指令：
-`chmod +x upgrade.sh && ./upgrade.sh --yes`
+1. 阅读目标 EV Release 和 [Changelog](CHANGELOG.md)，核对上游基线、安全修复、配置及数据库变化。
+2. 在独立目录获取发布源码，使用可信维护者密钥验证签名标签，按 `go.mod` 要求的 Go 版本构建。
+3. 备份当前程序、源码、配置、一致性数据库快照与自定义 tools/roles/skills/agents，私下记录启动命令及环境。
+4. 等待任务结束后平滑停止服务，替换配套程序与源码、静态文件，合并配置变化；保留凭据和运行数据，同时核对角色及工具策略的新版改动。
+5. 按原启动配置恢复，检查登录、角色限制、工具就绪及相关功能。回滚参照[发布流程](docs/zh-CN/release-process.md)，评估影响后再处理升级后产生的数据，避免直接覆盖。
 
-如果升级失败，可以从 `.upgrade-backup/` 恢复，或按旧方式手动拷贝 `/data` 和 `config.yaml` 后再运行 `./run.sh`。
-
-依赖/提示：
-* 需要 `curl` 或 `wget` 用于下载 GitHub Release 包。
-* 建议/需要 `rsync` 用于安全同步代码。
-* 如果遇到 GitHub API 限流，运行前设置 `export GITHUB_TOKEN="..."` 再执行 `./upgrade.sh`。
-
-⚠️ **升级前必读：** 请查看目标版本的 Release Notes，确认配置、数据库和 API 是否变化。即使只是补丁版本也应先备份，不能仅凭版本号判断兼容性。
+v1.7.21 基线将默认摘要预留提高到 40960；如需保留旧默认且符合模型上限，显式配置 `multi_agent.eino_middleware.summarization_output_reserve_tokens: 8192`。自动存储清理默认关闭。不能仅凭补丁版本号判断兼容性。
 
 
 ## 配置
@@ -316,7 +329,7 @@ ai:
 ## 项目结构
 
 ```
-CyberStrikeAI/
+CyberStrikeAI-EV/
 ├── cmd/                 # Web 服务、MCP stdio 入口及辅助工具
 ├── internal/            # Agent、MCP 核心、路由、C2（`internal/c2`）与执行器
 ├── web/                 # 前端静态资源与模板
@@ -333,22 +346,23 @@ CyberStrikeAI/
 
 ## 基础体验示例
 
-```
-扫描 192.168.1.1 的开放端口
-对 192.168.1.1 做 80/443/22 重点扫描
-检查 https://example.com/page?id=1 是否存在 SQL 注入
-枚举 https://example.com 的隐藏目录与组件漏洞
-获取 example.com 的子域并批量执行 nuclei
+选择 SRC 角色及获准的测试主机；执行前将下方示例域名替换为明确授权的目标。
+
+```text
+使用教育 SRC 角色，用两个测试账号比对 training.example.test 上获准的 /profile 接口 GET 响应，不读取真实学生记录。
+离线解释我的测试 JWT 字段，不连接在线目标，不尝试签名破解。
+用内置规则静态检查上传的 OpenAPI 文档，将已有证据与未验证风险分别列出。
 ```
 
 ## 进阶剧本示例
 
+```text
+使用企业 SRC 角色复测一个已修复的历史问题，保持原授权主机和测试记录，不扩展目标。
+整理已有脱敏证据，将发现标记为已确认、疑似、未验证或环境受限。
+任务开始前核对角色允许的工具与缺失依赖，缺失工具交给维护者修复，不绕过角色策略。
 ```
-加载侦察剧本：先 amass/subfinder，再对存活主机进行目录爆破。
-挂载基于 Burp 的外部 MCP，完成认证流量回放并回传到攻击链。
-将 5MB nuclei 报告压缩并生成摘要，附加到对话记录。
-构建最新一次测试的攻击链，只导出风险 >= 高的节点列表。
-```
+
+下方社区荣誉及支持渠道属于上游 CyberStrikeAI 项目。
 
 ## 404星链计划 
 <img src="./images/404StarLinkLogo.png" width="30%">
@@ -365,7 +379,7 @@ CyberStrikeAI 现已加入 [404星链计划](https://github.com/knownsec/404Star
 
 ---
 
-## 社区与支持
+## 上游社区与支持
 
 - 在 [Discord](https://discord.gg/8PjVCMu8Zw) 加入社区。
 
