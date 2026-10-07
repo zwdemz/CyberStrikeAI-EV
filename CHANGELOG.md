@@ -10,6 +10,7 @@ The current baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.co
 
 ### Updates
 
+- Allow GitHub-registered SSH signing keys for verified commits and annotated release tags while retaining OpenPGP support; distinguish SSH push authentication from signature verification.
 - Document the EV fork's purpose, education/enterprise SRC workflows, API/JWT/schema checks, and focused remediation verification in both READMEs.
 - Distinguish inherited platform capabilities from the restricted SRC tool scope, including the additional DNSLog MCP provider.
 - Require English tag annotations, Release titles/notes, and changelog entries with explicit update, optimization, fix, hardening, validation, and migration sections.

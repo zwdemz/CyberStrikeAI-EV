@@ -8,7 +8,7 @@ Use this guide for maintainers and operators preparing upgrades or releases.
 
 - Maintain changes directly on `dev`; publish to `main` through a same-repository `dev → main` PR after the required checks pass. Never push directly to `main`.
 - Use SemVer tag names such as `v1.7.21`, with English prerelease suffixes such as `-rc.1` when needed. EV versions may advance independently of upstream; always name the upstream repository, release, and commit separately.
-- Create a GPG-signed annotated tag pointing to the verified release commit on `main`. Verify the commit and tag locally and check GitHub's verification status after pushing.
+- Create an SSH- or OpenPGP-signed annotated tag pointing to the verified release commit on `main`. Register the public key as a GitHub signing key, verify the commit and tag locally, and check GitHub's Verified status after pushing. SSH authentication for a push alone does not verify a commit or tag signature.
 - Write tag annotations, Release titles, Release notes, and [`CHANGELOG.md`](../../CHANGELOG.md) in English. A title can be the version alone or the version plus an English summary; the tag annotation must summarize concrete changes and reference the corresponding changelog entry.
 - Do not move or reuse a published tag for later fixes or documentation edits. Collect those changes under `Unreleased`, then publish a new version when ready. A documentation PR alone does not require a new tag.
 - Keep credentials, private hosts, deployment paths, runtime logs, personal data, and other sensitive environment details out of public release metadata and artifacts.

@@ -9,7 +9,7 @@
 - `main` accepts only PRs from this repository's `dev`. Fork branches named `dev` and any other source branch cannot release to `main`.
 - The required release checks are `PR policy tests` and `pr-route/main`. Keep route publication in the trusted default-branch workflow; never execute PR code in its write-enabled job.
 - Keep `dev` and `main` after merges. Keep repository-wide automatic branch deletion disabled so release merges retain `dev`.
-- Use Conventional Commits, sign commits with the configured GPG key, and verify signatures before pushing.
+- Use Conventional Commits. Sign commits and annotated release tags with a GitHub-registered signing key (SSH or OpenPGP), verify signatures locally, and confirm GitHub marks pushed signatures as Verified.
 - Use SemVer release tag names (`vMAJOR.MINOR.PATCH`, with English prerelease suffixes when needed). Write annotated tag messages, Release titles, and Release notes in English.
 - Maintain `CHANGELOG.md` in English. Release notes must record updates, optimizations, bug fixes, security fixes, hardening, validation, and upgrade/rollback considerations; explicitly state when a category has no changes. Identify the upstream baseline separately from the EV release version.
 - Create signed annotated release tags only for the verified release commit on `main` after its `dev → main` PR passes the required checks and merges. Do not move existing published tags for documentation updates; record unreleased changes until the next version.
