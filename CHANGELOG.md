@@ -16,17 +16,21 @@ The current baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.co
 
 ### Optimizations
 
-No runtime changes in this documentation update.
+- Remove the default extra DNS/TCP/TLS diagnostic connection from HTTP requests; probes are now explicit opt-in.
 
 ### Bug Fixes
 
+- Keep Nmap scan options separate from valued additional arguments, fixing corrupted `--host-timeout` values.
+- Report HTTP failure type, stage, elapsed time and incomplete response progress instead of ambiguous timeout text.
+- Reject invalid, non-positive and non-finite HTTP timeout values before connecting.
 - Correct README clone instructions to use the EV repository's `main` branch and align the documented Go requirement with `go.mod`.
 - Replace the upstream-targeting upgrade recommendation with an EV-specific controlled upgrade procedure.
 - Correct the description of missing-tool handling so it does not imply restricted roles can bypass policy through Python fallback.
 
 ### Security Fixes
 
-No runtime security fixes in this documentation update.
+- Omit raw HTTP exception messages from failure diagnostics to avoid disclosing credentials or proxy URLs.
+- Replace TLS-failure workaround advice with certificate and connection diagnostics; no automatic insecure fallback is introduced.
 
 ### Hardening
 
@@ -35,11 +39,11 @@ No runtime security fixes in this documentation update.
 
 ### Validation
 
-Checked 8 documents and 133 local links with no broken targets or anchors. Markdown rendering, fenced blocks, bilingual content, documented Go version, and SRC role limits were checked against the repository. Runtime code and configuration are unchanged.
+Checked 8 documents and 133 local links with no broken targets or anchors. Markdown rendering, fenced blocks, bilingual content, documented Go version, and SRC role limits were checked against the repository. Additional checks cover the security executor, SRC role policies and configuration on Windows, plus Python regression tests with local slow-header and slow-body fixtures. No external scan target is contacted.
 
 ### Upgrade and Rollback
 
-No runtime migration is required. Existing published tags remain unchanged; documentation changes are collected here for the next version.
+Rebuild and restart the server and update `tools/http-framework-test.yaml` together after preserving local customizations. Back up and restore both artifacts together for rollback. No database migration or configuration reset is required. Existing published tags remain unchanged; these changes are collected for the next version.
 
 ## [v1.7.21](https://github.com/zwdemz/CyberStrikeAI-EV/releases/tag/v1.7.21) - 2026-10-07
 
