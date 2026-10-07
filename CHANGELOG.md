@@ -4,9 +4,13 @@ This file records changes to CyberStrikeAI-EV in English. EV release versions an
 
 ## Unreleased
 
+No changes since the refreshed v1.7.21 release.
+
+## [v1.7.21](https://github.com/zwdemz/CyberStrikeAI-EV/releases/tag/v1.7.21) - 2026-10-08 (refreshed)
+
 ### Upstream Baseline
 
-The current baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.21), commit `82b0af10f8519bf4baaa08958a8dbe38299a7685`.
+The upstream baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.21), commit `82b0af10f8519bf4baaa08958a8dbe38299a7685`. This requested refresh incorporates fixes merged after the initial EV v1.7.21 publication at `846d1ae084c819f6ddf4c8dfc15c9e926d0e10b4`.
 
 ### Updates
 
@@ -54,15 +58,17 @@ Chat history changes pass Linux database, handler, security and role-policy test
 
 Checked 8 documents and 133 local links with no broken targets or anchors. Markdown rendering, fenced blocks, bilingual content, documented Go version, and SRC role limits were checked against the repository. Additional checks cover the security executor, SRC role policies and configuration on Windows, plus Python regression tests with local slow-header and slow-body fixtures. No external scan target is contacted.
 
+The supervisor transfer regression passed Linux multi-agent tests, three race-enabled repeats, and a production server build. A mocked model confirmed `transfer_to_agent` invokes the configured worker; a real provider conversation was not exercised. The SSH-signed workflow update passed local commit and tag verification, and GitHub marked its pushed commit as Verified.
+
 ### Upgrade and Rollback
 
-Rebuild and restart the server and update `tools/http-framework-test.yaml` together after preserving local customizations. Back up and restore both artifacts together for rollback. Startup adds the non-destructive `idx_messages_conversation_created` index; it may remain after rollback. No configuration reset or message deletion is required. Deploy frontend assets and the server from the same commit. Existing published tags remain unchanged; these changes are collected for the next version.
+Rebuild and restart the server and update `tools/http-framework-test.yaml` together after preserving local customizations. Back up and restore both artifacts together for rollback. Startup adds the non-destructive `idx_messages_conversation_created` index; it may remain after rollback. No configuration reset or message deletion is required. Deploy frontend assets and the server from the same commit. This authorized refresh replaces the previously published v1.7.21 tag, so fetch the tag and source archive again rather than relying on cached copies. The initial publication is recorded below.
 
-## [v1.7.21](https://github.com/zwdemz/CyberStrikeAI-EV/releases/tag/v1.7.21) - 2026-10-07
+## v1.7.21 initial publication (historical) - 2026-10-07
 
 ### Upstream Baseline
 
-Synchronized [AIPentest/CyberStrikeAI v1.7.21](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.21), commit `82b0af10f8519bf4baaa08958a8dbe38299a7685`, through [PR #11](https://github.com/zwdemz/CyberStrikeAI-EV/pull/11). EV release commit: `846d1ae084c819f6ddf4c8dfc15c9e926d0e10b4`. [Compare with EV v1.7.20](https://github.com/zwdemz/CyberStrikeAI-EV/compare/v1.7.20...v1.7.21).
+Synchronized [AIPentest/CyberStrikeAI v1.7.21](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.21), commit `82b0af10f8519bf4baaa08958a8dbe38299a7685`, through [PR #11](https://github.com/zwdemz/CyberStrikeAI-EV/pull/11). Initial EV release commit: `846d1ae084c819f6ddf4c8dfc15c9e926d0e10b4`. [Compare the initial publication with EV v1.7.20](https://github.com/zwdemz/CyberStrikeAI-EV/compare/v1.7.20...846d1ae084c819f6ddf4c8dfc15c9e926d0e10b4).
 
 ### Updates
 
