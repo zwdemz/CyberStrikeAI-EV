@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -301,9 +302,36 @@ func appendAssetAccess(query string, args []interface{}, access RBACListAccess, 
 	return query, append(args, access.UserID, access.UserID, access.UserID, access.UserID)
 }
 
+// UpsertAssets inserts or updates a batch using a background context. Inputs are
+// normalized in place; errors roll back the entire batch. Callers with a request
+// context should use UpsertAssetsContext so lock waits can be cancelled.
 func (db *DB) UpsertAssets(assets []*Asset, ownerUserID string, allowGlobal ...bool) (AssetImportResult, error) {
+	return db.UpsertAssetsContext(context.Background(), assets, ownerUserID, allowGlobal...)
+}
+
+// UpsertAssetsContext serializes the batch through SQLite's immediate write
+// transaction. Only SQLITE_BUSY errors are retried, up to three whole attempts;
+// validation and authorization errors return immediately. Cancellation stops
+// both a lock wait and the retry delay. All results describe committed work.
+func (db *DB) UpsertAssetsContext(ctx context.Context, assets []*Asset, ownerUserID string, allowGlobal ...bool) (AssetImportResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var result AssetImportResult
+	err := db.retrySQLiteBusy(ctx, "asset upsert", func() error {
+		var attemptErr error
+		result, attemptErr = db.upsertAssetsOnce(ctx, assets, ownerUserID, allowGlobal...)
+		return attemptErr
+	})
+	if err != nil {
+		return AssetImportResult{}, err
+	}
+	return result, nil
+}
+
+func (db *DB) upsertAssetsOnce(ctx context.Context, assets []*Asset, ownerUserID string, allowGlobal ...bool) (AssetImportResult, error) {
 	result := AssetImportResult{}
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
 	}
@@ -325,12 +353,12 @@ func (db *DB) UpsertAssets(assets []*Asset, ownerUserID string, allowGlobal ...b
 		}
 		var existingID string
 		var existingOwner sql.NullString
-		err := tx.QueryRow(`SELECT id,owner_user_id FROM assets WHERE dedup_key = ?`, key).Scan(&existingID, &existingOwner)
+		err := tx.QueryRowContext(ctx, `SELECT id,owner_user_id FROM assets WHERE dedup_key = ?`, key).Scan(&existingID, &existingOwner)
 		tagsJSON, _ := json.Marshal(asset.Tags)
 		if err == sql.ErrNoRows {
 			asset.ID = uuid.NewString()
 			asset.FirstSeenAt, asset.LastSeenAt, asset.CreatedAt, asset.UpdatedAt = now, now, now, now
-			_, err = tx.Exec(`INSERT INTO assets (
+			_, err = tx.ExecContext(ctx, `INSERT INTO assets (
 				id,dedup_key,project_id,host,ip,port,domain,protocol,title,server,country,province,city,source,source_query,status,tags_json,
 				responsible_person,department,business_system,environment,criticality,
 				first_seen_at,last_seen_at,created_at,updated_at,owner_user_id
@@ -343,7 +371,7 @@ func (db *DB) UpsertAssets(assets []*Asset, ownerUserID string, allowGlobal ...b
 				return result, fmt.Errorf("创建资产失败: %w", err)
 			}
 			if ownerUserID != "" {
-				if _, err := tx.Exec(`INSERT OR IGNORE INTO rbac_resource_assignments (id,user_id,resource_type,resource_id,created_at) SELECT ?,id,?,?,? FROM rbac_users WHERE id=?`, uuid.NewString(), "asset", asset.ID, now, ownerUserID); err != nil {
+				if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO rbac_resource_assignments (id,user_id,resource_type,resource_id,created_at) SELECT ?,id,?,?,? FROM rbac_users WHERE id=?`, uuid.NewString(), "asset", asset.ID, now, ownerUserID); err != nil {
 					return result, fmt.Errorf("授权新资产失败: %w", err)
 				}
 			}
@@ -359,7 +387,7 @@ func (db *DB) UpsertAssets(assets []*Asset, ownerUserID string, allowGlobal ...b
 			result.Skipped++
 			continue
 		}
-		_, err = tx.Exec(`UPDATE assets SET
+		_, err = tx.ExecContext(ctx, `UPDATE assets SET
 			host=CASE WHEN ?<>'' THEN ? ELSE host END, ip=CASE WHEN ?<>'' THEN ? ELSE ip END,
 			domain=CASE WHEN ?<>'' THEN ? ELSE domain END, protocol=CASE WHEN ?<>'' THEN ? ELSE protocol END,
 			title=CASE WHEN ?<>'' THEN ? ELSE title END, server=CASE WHEN ?<>'' THEN ? ELSE server END,
@@ -383,7 +411,7 @@ func (db *DB) UpsertAssets(assets []*Asset, ownerUserID string, allowGlobal ...b
 			return result, fmt.Errorf("更新资产失败: %w", err)
 		}
 		if ownerUserID != "" && (!existingOwner.Valid || strings.TrimSpace(existingOwner.String) == ownerUserID) {
-			if _, err := tx.Exec(`INSERT OR IGNORE INTO rbac_resource_assignments (id,user_id,resource_type,resource_id,created_at) SELECT ?,id,?,?,? FROM rbac_users WHERE id=?`, uuid.NewString(), "asset", existingID, now, ownerUserID); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO rbac_resource_assignments (id,user_id,resource_type,resource_id,created_at) SELECT ?,id,?,?,? FROM rbac_users WHERE id=?`, uuid.NewString(), "asset", existingID, now, ownerUserID); err != nil {
 				return result, fmt.Errorf("授权资产失败: %w", err)
 			}
 		}
@@ -882,7 +910,20 @@ func (db *DB) GetAsset(id string, access RBACListAccess) (*Asset, error) {
 	return scanAsset(db.QueryRow(query, args...))
 }
 
+// UpdateAsset validates and replaces one asset, retrying transient write locks.
+// Use UpdateAssetContext for request cancellation; missing or inaccessible IDs
+// return sql.ErrNoRows and are never retried.
 func (db *DB) UpdateAsset(id string, a *Asset, access RBACListAccess) error {
+	return db.UpdateAssetContext(context.Background(), id, a, access)
+}
+
+// UpdateAssetContext applies one atomic UPDATE with bounded SQLITE_BUSY retry.
+// The full asset value is supplied by the caller; validation errors return
+// immediately and context cancellation stops retries.
+func (db *DB) UpdateAssetContext(ctx context.Context, id string, a *Asset, access RBACListAccess) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	normalizeAsset(a)
 	if err := validateAsset(a); err != nil {
 		return err
@@ -893,18 +934,20 @@ func (db *DB) UpdateAsset(id string, a *Asset, access RBACListAccess) error {
 	}
 	tags, _ := json.Marshal(a.Tags)
 	where, args := appendAssetAccess(" WHERE id = ?", []interface{}{id}, access, "assets")
-	res, err := db.Exec(`UPDATE assets SET dedup_key=?,project_id=?,host=?,ip=?,port=?,domain=?,protocol=?,title=?,server=?,country=?,province=?,city=?,
+	return db.retrySQLiteBusy(ctx, "asset update", func() error {
+		res, err := db.ExecContext(ctx, `UPDATE assets SET dedup_key=?,project_id=?,host=?,ip=?,port=?,domain=?,protocol=?,title=?,server=?,country=?,province=?,city=?,
 		responsible_person=?,department=?,business_system=?,environment=?,criticality=?,source=?,source_query=?,status=?,tags_json=?,updated_at=?`+where,
-		append([]interface{}{key, nullIfEmpty(a.ProjectID), a.Host, a.IP, a.Port, a.Domain, a.Protocol, a.Title, a.Server, a.Country, a.Province, a.City,
-			a.ResponsiblePerson, a.Department, a.BusinessSystem, a.Environment, a.Criticality, a.Source, a.SourceQuery, a.Status, string(tags), time.Now()}, args...)...)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+			append([]interface{}{key, nullIfEmpty(a.ProjectID), a.Host, a.IP, a.Port, a.Domain, a.Protocol, a.Title, a.Server, a.Country, a.Province, a.City,
+				a.ResponsiblePerson, a.Department, a.BusinessSystem, a.Environment, a.Criticality, a.Source, a.SourceQuery, a.Status, string(tags), time.Now()}, args...)...)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
 }
 
 type AssetBulkPatch struct {
