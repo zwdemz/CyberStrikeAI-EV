@@ -143,6 +143,7 @@ func RunEinoSingleChatModelAgent(
 		maxTotalTokens:       appCfg.OpenAI.MaxTotalTokens,
 		toolMaxBytes:         toolMaxBytesFromMW(&ma.EinoMiddleware),
 		conversationID:       conversationID,
+		db:                   db,
 		trace:                modelFacingTrace,
 		middlewareConfig:     &ma.EinoMiddleware,
 	})

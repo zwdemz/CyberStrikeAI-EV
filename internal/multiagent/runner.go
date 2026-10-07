@@ -435,6 +435,7 @@ func RunDeepAgent(
 		maxTotalTokens:       appCfg.OpenAI.MaxTotalTokens,
 		toolMaxBytes:         toolMaxBytesFromMW(&ma.EinoMiddleware),
 		conversationID:       conversationID,
+		db:                   db,
 		trace:                modelFacingTrace,
 		middlewareConfig:     &ma.EinoMiddleware,
 	})
@@ -454,6 +455,7 @@ func RunDeepAgent(
 		maxTotalTokens:       appCfg.OpenAI.MaxTotalTokens,
 		toolMaxBytes:         toolMaxBytesFromMW(&ma.EinoMiddleware),
 		conversationID:       conversationID,
+		db:                   db,
 		trace:                modelFacingTrace,
 		middlewareConfig:     &ma.EinoMiddleware,
 	})
@@ -533,6 +535,7 @@ func RunDeepAgent(
 				maxTotalTokens:   appCfg.OpenAI.MaxTotalTokens,
 				toolMaxBytes:     toolMaxBytesFromMW(&ma.EinoMiddleware),
 				conversationID:   conversationID,
+				db:               db,
 				skipTrace:        true,
 				middlewareConfig: &ma.EinoMiddleware,
 			}),

@@ -741,6 +741,7 @@ func (db *DB) initTables() error {
 	CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_process_details_message_id ON process_details(message_id);
 	CREATE INDEX IF NOT EXISTS idx_process_details_conversation_id ON process_details(conversation_id);
+	CREATE INDEX IF NOT EXISTS idx_process_details_conversation_event_time ON process_details(conversation_id, event_type, created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_model_token_usage_created_at ON model_token_usage(created_at);
 	CREATE INDEX IF NOT EXISTS idx_model_token_usage_conversation ON model_token_usage(conversation_id);
 	CREATE INDEX IF NOT EXISTS idx_model_token_usage_project ON model_token_usage(project_id);

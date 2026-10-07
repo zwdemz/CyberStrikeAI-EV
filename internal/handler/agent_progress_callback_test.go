@@ -241,3 +241,33 @@ func TestEnrichProgressEventData(t *testing.T) {
 		}
 	})
 }
+
+func TestCreateProgressCallbackStopsWhenToolResultCannotBePersisted(t *testing.T) {
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "progress.sqlite"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := db.CreateConversation("durability", database.ConversationCreateMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := db.AddMessage(conversation.ID, "assistant", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var events []string
+	h := &AgentHandler{db: db, logger: zap.NewNop(), tasks: NewAgentTaskManager(), taskEventBus: NewTaskEventBus()}
+	callback := h.createProgressCallback(ctx, cancel, conversation.ID, message.ID,
+		func(eventType, _ string, _ interface{}) { events = append(events, eventType) })
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	callback("tool_result", "completed", map[string]interface{}{"toolName": "write_file", "success": true})
+	if context.Cause(ctx) == nil {
+		t.Fatal("a lost completed result must stop the run")
+	}
+	if len(events) != 1 || events[0] != "error" {
+		t.Fatalf("tool completion was reported without a durable record: %v", events)
+	}
+}

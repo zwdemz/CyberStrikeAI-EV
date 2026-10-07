@@ -16,6 +16,7 @@ The current baseline remains [AIPentest/CyberStrikeAI v1.7.21](https://github.co
 
 ### Optimizations
 
+- Recover a bounded, payload-free index of completed conversation tool steps from the durable event timeline before each Eino model call, including after context reduction. Stop a run if a completed tool result cannot be persisted, so the next step does not silently proceed without a record.
 - Load the latest 40 chat messages initially, with cursor-based older history, bounded rendering batches and an indexed ordering query; preserve complete histories for exports and model context.
 - Defer the optional graph layout engine until a graph is opened; initialize the chat shell without waiting for locale data and load independent metadata concurrently.
 - Skip offscreen message layout and avoid rebuilding the turn navigator on every streamed text update.
