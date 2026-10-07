@@ -39,7 +39,7 @@ The inherited WebShell, C2, broad reconnaissance, and batch capabilities listed 
 
 ## Releases and Change History
 
-Use this fork's [Releases](https://github.com/zwdemz/CyberStrikeAI-EV/releases) and [English changelog](CHANGELOG.md). Future tag names use SemVer (`vMAJOR.MINOR.PATCH`); annotated tag messages, Release titles, and Release notes are written in English. Notes record updates, optimizations, bug fixes, security fixes, hardening, validation, and upgrade/rollback considerations, with the upstream baseline identified separately.
+Use this fork's [Releases](https://github.com/zwdemz/CyberStrikeAI-EV/releases). Future tag names use SemVer (`vMAJOR.MINOR.PATCH`); annotated tag messages, Release titles, and Release notes are written in English. Notes record updates, optimizations, bug fixes, security fixes, hardening, validation, and upgrade/rollback considerations, with the upstream baseline identified separately.
 
 Development takes place on `dev`; signed changes reach `main` through a `dev → main` PR. Release tags point to the verified release commit on `main`. See the [release process](docs/en-US/release-process.md).
 
@@ -290,7 +290,7 @@ If server logs show `client sent an HTTP request to an HTTPS server`, a client i
 
 EV releases are published in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV/releases). The inherited `upgrade.sh` currently hardcodes `Ed1s0nZ/CyberStrikeAI`; running it unmodified downloads upstream code and can overwrite EV customizations. Use the controlled procedure below for this fork.
 
-1. Read the target EV Release notes and [changelog](CHANGELOG.md), including the upstream baseline, security fixes, and configuration or database changes.
+1. Read the target EV Release notes, including the upstream baseline, security fixes, and configuration or database changes.
 2. Obtain the release source in a separate directory, verify the signed tag against a trusted maintainer key, and build with the Go version required by `go.mod`.
 3. Back up the current executable, source, configuration, a consistent database snapshot, and custom tools/roles/skills/agents. Record the launch command and environment privately.
 4. After active tasks finish, stop the service gracefully. Install the matching executable and source/static files, merge configuration changes, and review changes to role/tool policies while preserving local credentials and runtime data.

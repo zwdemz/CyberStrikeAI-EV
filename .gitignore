@@ -85,3 +85,6 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+
+# Local release drafting notes
+/CHANGELOG.md
