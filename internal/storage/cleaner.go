@@ -160,7 +160,7 @@ func (c *Cleaner) storageConfig() config.StorageConfig {
 	if c.cfg == nil {
 		return config.StorageConfig{}
 	}
-	return c.cfg.Storage
+	return c.cfg.StorageSnapshot()
 }
 
 // rootOf 返回类别根目录的绝对路径；未配置时返回空串。

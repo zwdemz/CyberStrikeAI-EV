@@ -15,6 +15,7 @@ import (
 
 	"github.com/cloudwego/eino-ext/components/model/agenticopenai"
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/cloudwego/eino/schema/claude"
@@ -561,5 +562,48 @@ func TestSummaryTextBudget(t *testing.T) {
 		if !strings.Contains(budgetedSummaryInstruction(reserve), fmt.Sprintf("%d tokens", normal)) {
 			t.Fatal("missing output budget")
 		}
+	}
+}
+
+func TestSummaryLengthRetryReplacesInstructionWithinFullInputBudget(t *testing.T) {
+	finalInstruction := budgetedSummaryInstruction(1024)
+	input := []*schema.Message{
+		schema.SystemMessage("summarize safely"),
+		schema.UserMessage("history occupying the remaining input budget"),
+		schema.UserMessage(finalInstruction),
+	}
+	inputBytes := 0
+	for _, message := range input {
+		inputBytes += len(message.Content)
+	}
+	counter := einoSummarizationTokenCounter("gpt-4o")
+	initialTokens, err := counter(context.Background(), &summarization.TokenCounterInput{Messages: input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	generate := func(_ context.Context, got []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+		calls++
+		if calls == 1 {
+			return nil, &summaryLengthError{cause: errors.New("length")}
+		}
+		if len(got) != len(input) || got[0] != input[0] || got[1] != input[1] || got[2] == input[2] {
+			t.Fatalf("retry appended to full budget or changed transcript: %#v", got)
+		}
+		retryBytes := 0
+		for _, message := range got {
+			retryBytes += len(message.Content)
+		}
+		if retryBytes > inputBytes || !strings.Contains(got[2].Content, "1024 tokens") || input[2].Content != finalInstruction {
+			t.Fatalf("retry grew full input: old=%d new=%d", inputBytes, retryBytes)
+		}
+		retryTokens, err := counter(context.Background(), &summarization.TokenCounterInput{Messages: got})
+		if err != nil || retryTokens > initialTokens {
+			t.Fatalf("retry exceeded tokenizer budget: old=%d new=%d err=%v", initialTokens, retryTokens, err)
+		}
+		return schema.AssistantMessage("<summary>done</summary>", nil), nil
+	}
+	if _, err := generateSummaryWithLengthRecovery(context.Background(), input, nil, generate, schema.UserMessage); err != nil || calls != 2 {
+		t.Fatalf("retry err=%v calls=%d", err, calls)
 	}
 }

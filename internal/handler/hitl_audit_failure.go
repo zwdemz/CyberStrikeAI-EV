@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"cyberstrike-ai/internal/openai"
+	"cyberstrike-ai/internal/typesafe"
 )
 
 // auditFailure preserves the deny decision while recording a distinct operational
@@ -38,4 +39,24 @@ func auditCallFailure(err error) hitlDecision {
 		return auditFailure("cancelled", 0)
 	}
 	return auditFailure("connection_or_protocol_error", 0)
+}
+
+func typeSafeAuditFailure(category string, status int) hitlDecision {
+	failure := auditFailure(category, status)
+	failure.Comment = strings.Replace(failure.Comment, "[audit_error]", "[audit_error] TypeSafe", 1)
+	return failure
+}
+
+func typeSafeAuditCallFailure(err error) hitlDecision {
+	var apiErr *typesafe.APIError
+	if errors.As(err, &apiErr) {
+		return typeSafeAuditFailure("upstream_request_failed", apiErr.StatusCode)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return typeSafeAuditFailure("timeout", 0)
+	}
+	if errors.Is(err, context.Canceled) {
+		return typeSafeAuditFailure("cancelled", 0)
+	}
+	return typeSafeAuditFailure("connection_or_protocol_error", 0)
 }

@@ -47,8 +47,22 @@ func (db *DB) ProjectLastActivity(id string) (time.Time, bool, error) {
 		return time.Time{}, false, err
 	}
 	created, updated := parseDBTime(createdAt), parseDBTime(updatedAt)
-	if created.After(updated) {
-		return created, true, nil
+	last := updated
+	if created.After(last) {
+		last = created
 	}
-	return updated, true, nil
+	// Project timestamps do not necessarily advance when a child conversation
+	// is used. Protect its workspace while any child is still active.
+	var childCreated, childUpdated sql.NullString
+	if err := db.QueryRow(`SELECT MAX(created_at), MAX(updated_at) FROM conversations WHERE project_id = ?`, id).Scan(&childCreated, &childUpdated); err != nil {
+		return time.Time{}, false, err
+	}
+	for _, child := range []sql.NullString{childCreated, childUpdated} {
+		if child.Valid {
+			if at := parseDBTime(child.String); at.After(last) {
+				last = at
+			}
+		}
+	}
+	return last, true, nil
 }

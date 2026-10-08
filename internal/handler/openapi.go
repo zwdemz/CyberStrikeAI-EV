@@ -288,6 +288,12 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 				"Vulnerability": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
+						"finding_key":       map[string]interface{}{"type": "string", "maxLength": 512},
+						"deduplicated":      map[string]interface{}{"type": "boolean", "description": "True when a report was appended to an existing finding"},
+						"observation_count": map[string]interface{}{"type": "integer"},
+						"observations":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
+						"assessment":        map[string]interface{}{"type": "object"},
+						"rating_history":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
 						"id": map[string]interface{}{
 							"type":        "string",
 							"description": "漏洞ID",
@@ -566,6 +572,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 					"type":     "object",
 					"required": []string{"conversation_id", "title", "description", "severity", "type", "target", "reproduction_steps", "evidence", "impact", "recommendation"},
 					"properties": map[string]interface{}{
+						"finding_key": map[string]interface{}{"type": "string", "maxLength": 512},
 						"conversation_id": map[string]interface{}{
 							"type":        "string",
 							"description": "对话ID",
@@ -2564,9 +2571,12 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"description": "创建成功",
 							"content": map[string]interface{}{
 								"application/json": map[string]interface{}{
-									"schema": map[string]interface{}{
-										"$ref": "#/components/schemas/Vulnerability",
-									},
+									"schema": map[string]interface{}{"anyOf": []interface{}{
+										map[string]interface{}{"$ref": "#/components/schemas/Vulnerability"},
+										map[string]interface{}{"type": "object", "description": "Minimal write-only result; duplicate responses omit the canonical ID", "properties": map[string]interface{}{
+											"id": map[string]interface{}{"type": "string"}, "deduplicated": map[string]interface{}{"type": "boolean"}, "observation_saved": map[string]interface{}{"type": "boolean"},
+										}},
+									}},
 								},
 							},
 						},
@@ -3486,6 +3496,32 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"403": map[string]interface{}{
 							"description": "缺少 storage:read 权限",
 						},
+					},
+				},
+			},
+			"/api/storage/policy": map[string]interface{}{
+				"put": map[string]interface{}{
+					"tags":        []string{"Storage"},
+					"summary":     "Update storage retention policy",
+					"description": "Updates only storage configuration; requires storage:write.",
+					"operationId": "updateStoragePolicy",
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{"application/json": map[string]interface{}{
+							"schema": map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+								"auto_clean":         map[string]interface{}{"type": "boolean"},
+								"interval_minutes":   map[string]interface{}{"type": "integer", "minimum": 5},
+								"orphan_grace_days":  map[string]interface{}{"type": "integer", "minimum": 0},
+								"active_grace_hours": map[string]interface{}{"type": "integer", "minimum": 1},
+								"categories":         map[string]interface{}{"type": "object"},
+							}},
+						}},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{"description": "Policy saved"},
+						"400": map[string]interface{}{"description": "Invalid policy"},
+						"401": map[string]interface{}{"description": "Unauthenticated"},
+						"403": map[string]interface{}{"description": "Missing storage:write"},
 					},
 				},
 			},

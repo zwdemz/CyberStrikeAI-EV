@@ -80,3 +80,51 @@ func TestStorageCleanupPermissionAndConfirmation(t *testing.T) {
 		})
 	}
 }
+
+func TestStorageWriterCanSaveOnlyStoragePolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("openai:\n  model: untouched\nstorage:\n  auto_clean: false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	endpoint := handler.NewStorageHandler(nil, cfg, zap.NewNop())
+	endpoint.SetConfigPath(path)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		permission := c.GetHeader("X-Test-Permission")
+		c.Set(security.ContextSessionKey, security.Session{
+			UserID: "operator", Scope: "all", Permissions: map[string]bool{permission: true},
+		})
+		c.Next()
+	}, security.RBACMiddleware(nil))
+	router.PUT("/api/storage/policy", endpoint.UpdatePolicy)
+	request := func(permission, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/storage/policy", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Test-Permission", permission)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+		return response
+	}
+	if response := request("storage:read", `{"auto_clean":true}`); response.Code != http.StatusForbidden {
+		t.Fatalf("reader saved policy: %d %s", response.Code, response.Body.String())
+	}
+	if response := request("storage:write", `{"auto_clean":true,"categories":{"workspace":{"retention_days":45}}}`); response.Code != http.StatusOK {
+		t.Fatalf("storage writer could not save policy: %d %s", response.Code, response.Body.String())
+	}
+	if !cfg.Storage.AutoCleanEffective() || cfg.Storage.CategoryRetentionDays(config.StorageCategoryWorkspace) != 45 {
+		t.Fatalf("runtime storage policy not updated: %+v", cfg.Storage)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "model: untouched") || !strings.Contains(string(data), "retention_days: 45") {
+		t.Fatalf("storage save changed unrelated config or missed retention: %s", data)
+	}
+	if response := request("storage:write", `{"openai":{"model":"tampered"}}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("storage endpoint accepted unrelated config: %d %s", response.Code, response.Body.String())
+	}
+}

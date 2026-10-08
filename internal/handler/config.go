@@ -927,63 +927,17 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 	}
 
 	if req.Storage != nil {
-		st := &h.config.Storage
-		if req.Storage.AutoClean != nil {
-			v := *req.Storage.AutoClean
-			st.AutoClean = &v
+		configFileMu.Lock()
+		err := h.config.UpdateStoragePolicy(func(current config.StorageConfig) (config.StorageConfig, error) {
+			next := mergeStoragePolicy(current, *req.Storage)
+			return next, saveStoragePolicy(h.configPath, next)
+		})
+		configFileMu.Unlock()
+		if err != nil {
+			h.logger.Error("save storage policy failed", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "storage policy could not be saved"})
+			return
 		}
-		if req.Storage.IntervalMinutes != nil {
-			v := *req.Storage.IntervalMinutes
-			if v < 5 {
-				v = 5
-			}
-			st.IntervalMinutes = &v
-		}
-		if req.Storage.OrphanGraceDays != nil {
-			v := *req.Storage.OrphanGraceDays
-			if v < 0 {
-				v = 0
-			}
-			st.OrphanGraceDays = &v
-		}
-		if req.Storage.ActiveGraceHours != nil {
-			v := *req.Storage.ActiveGraceHours
-			if v < 1 {
-				v = 1
-			}
-			st.ActiveGraceHours = &v
-		}
-		if req.Storage.Categories != nil {
-			if st.Categories == nil {
-				st.Categories = make(map[string]config.StorageCategoryConfig, len(req.Storage.Categories))
-			}
-			// 只接受注册表内的类别键，未注册的键直接忽略，避免被写进 config.yaml。
-			for _, key := range config.StorageCategoryOrder {
-				patch, ok := req.Storage.Categories[key]
-				if !ok {
-					continue
-				}
-				cur := st.Categories[key]
-				if patch.Enabled != nil {
-					v := *patch.Enabled
-					cur.Enabled = &v
-				}
-				if patch.RetentionDays != nil {
-					v := *patch.RetentionDays
-					if v < 0 {
-						v = 0
-					}
-					cur.RetentionDays = &v
-				}
-				st.Categories[key] = cur
-			}
-		}
-		h.logger.Info("更新运行空间清理配置",
-			zap.Bool("auto_clean", st.AutoCleanEffective()),
-			zap.Int("interval_minutes", st.IntervalMinutesEffective()),
-			zap.Int("orphan_grace_days", st.OrphanGraceDaysEffective()),
-			zap.Int("active_grace_hours", st.ActiveGraceHoursEffective()),
-		)
 	}
 
 	// 更新Knowledge配置
@@ -1911,7 +1865,7 @@ func (h *ConfigHandler) saveConfig() error {
 	updateRobotsConfig(root, h.config.Robots)
 	updateHitlConfig(root, h.config.Hitl)
 	updateToolGuardConfig(root, h.config.ToolGuard)
-	updateStorageConfig(root, h.config.Storage)
+	updateStorageConfig(root, h.config.StorageSnapshot())
 	updateMultiAgentConfig(root, h.config.MultiAgent)
 	// 更新外部MCP配置（使用external_mcp.go中的函数，同一包中可直接调用）
 	updateExternalMCPConfig(root, h.config.ExternalMCP)

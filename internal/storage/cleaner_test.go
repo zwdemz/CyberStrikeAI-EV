@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
+	"go.uber.org/zap"
 )
 
 // fakeActivity 是 Activity 的测试替身。
@@ -135,6 +137,47 @@ func TestCleanExpiresIdleWorkspaceAndKeepsFresh(t *testing.T) {
 	}
 	if cat.FreedBytes != 4096 {
 		t.Errorf("FreedBytes = %d, want 4096", cat.FreedBytes)
+	}
+}
+
+func TestProjectWorkspaceSurvivesActiveChildConversation(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "activity.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	project, err := db.CreateProject(&database.Project{Name: "old project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := db.CreateConversation("active child", database.ConversationCreateMeta{ProjectID: project.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-40 * 24 * time.Hour).Format(time.RFC3339Nano)
+	fresh := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE projects SET created_at=?, updated_at=? WHERE id=?`, old, old, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE conversations SET created_at=?, updated_at=? WHERE id=?`, old, fresh, conversation.ID); err != nil {
+		t.Fatal(err)
+	}
+	last, found, err := db.ProjectLastActivity(project.ID)
+	if err != nil || !found || !last.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("last project activity = %v, exists=%v, err=%v", last, found, err)
+	}
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	projectDir := filepath.Join(workspace, "projects", project.ID)
+	ageTree(t, projectDir, map[string]int{"work.txt": 10}, 40*24*time.Hour, now)
+	c := newTestCleaner(t, &config.Config{Storage: config.StorageConfig{
+		Categories: map[string]config.StorageCategoryConfig{config.StorageCategoryWorkspace: categoryCfg(30)},
+	}}, Paths{Workspace: workspace}, db, now)
+	if _, err := c.Clean(CleanRequest{DryRun: false, Categories: []string{config.StorageCategoryWorkspace}, Trigger: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(projectDir) {
+		t.Fatal("workspace for project with active child conversation was removed")
 	}
 }
 
@@ -329,7 +372,7 @@ func TestChatUploadsDatedLayoutAndEmptyDirPrune(t *testing.T) {
 	tmp := t.TempDir()
 	uploads := filepath.Join(tmp, "chat_uploads")
 	dateDir := filepath.Join(uploads, "2026-06-01")
-	convDir := filepath.Join(dateDir, "conv-old")
+	convDir := filepath.Join(dateDir, "11111111-1111-4111-8111-111111111111")
 	ageTree(t, convDir, map[string]int{"report.pdf": 100}, 120*24*time.Hour, now)
 
 	cfg := &config.Config{Storage: config.StorageConfig{
@@ -359,6 +402,49 @@ func TestChatUploadsDatedLayoutAndEmptyDirPrune(t *testing.T) {
 	}
 	if cat.RemovedUnits != 1 {
 		t.Errorf("RemovedUnits = %d, want 1", cat.RemovedUnits)
+	}
+}
+
+func TestChatUploadsNonDateFoldersFollowRetentionOnConfirmedCleanup(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	uploads := filepath.Join(t.TempDir(), "chat_uploads")
+	report := filepath.Join(uploads, "reports", "quarterly")
+	dateSession := filepath.Join(uploads, "2026-09-01", "22222222-2222-4222-8222-222222222222")
+	invalidSession := filepath.Join(uploads, "2026-09-01", "quarterly")
+	ageTree(t, report, map[string]int{"report.txt": 10}, 3*24*time.Hour, now)
+	ageTree(t, dateSession, map[string]int{"upload.txt": 10}, 3*24*time.Hour, now)
+	ageTree(t, invalidSession, map[string]int{"report.txt": 10}, 3*24*time.Hour, now)
+	empty := filepath.Join(uploads, "reports", "empty")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := newTestCleaner(t, &config.Config{Storage: config.StorageConfig{
+		Categories: map[string]config.StorageCategoryConfig{config.StorageCategoryChatUploads: categoryCfg(90)},
+	}}, Paths{ChatUploads: uploads}, fakeActivity{}, now)
+	rep, err := c.Clean(CleanRequest{DryRun: true, Categories: []string{config.StorageCategoryChatUploads}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Totals.ReclaimableUnits != 1 || !exists(report) || !exists(dateSession) {
+		t.Fatalf("preview classified non-date folder as an orphan: %+v", rep.Totals)
+	}
+	rep, err = c.Clean(CleanRequest{DryRun: false, Categories: []string{config.StorageCategoryChatUploads}, Trigger: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists(report) || !exists(invalidSession) || !exists(empty) || exists(dateSession) || rep.Totals.RemovedUnits != 1 {
+		t.Fatalf("confirmed cleanup removed unrelated folders or kept dated orphan: %+v", rep.Totals)
+	}
+	oldReport := filepath.Join(uploads, "reports", "prior-year")
+	oldInvalidSession := filepath.Join(uploads, "2026-09-01", "prior-year")
+	ageTree(t, oldReport, map[string]int{"report.txt": 10}, 91*24*time.Hour, now)
+	ageTree(t, oldInvalidSession, map[string]int{"report.txt": 10}, 91*24*time.Hour, now)
+	rep, err = c.Clean(CleanRequest{DryRun: false, Categories: []string{config.StorageCategoryChatUploads}, Trigger: "manual"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists(oldReport) || exists(oldInvalidSession) || !exists(report) || !exists(invalidSession) || rep.Totals.RemovedUnits != 2 {
+		t.Fatalf("non-date folder did not follow 90-day retention: %+v", rep.Totals)
 	}
 }
 

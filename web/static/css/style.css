@@ -35026,6 +35026,7 @@ html[data-theme="dark"] .projects-panel-count { color: var(--accent-color); back
 .projects-severity--medium { background: #fef9c3; color: #854d0e; }
 .projects-severity--low { background: #dbeafe; color: #1e40af; }
 .projects-severity--info { background: #f1f5f9; color: #475569; }
+.projects-severity--pending { background: #e2e8f0; color: #334155; }
 .projects-show-archived-label {
     font-size: 0.8125rem;
     color: var(--text-secondary, #64748b);

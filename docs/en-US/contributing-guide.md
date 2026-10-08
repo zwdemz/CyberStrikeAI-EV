@@ -6,14 +6,15 @@ This guide defines baseline expectations when adding features, APIs, tools, fron
 
 ## Branch and Pull Request Workflow
 
-- Develop features, fixes, and documentation directly on `dev`, starting from the latest `origin/dev`. Do not create `codex/*` or other work branches for this repository.
-- After local checks and signature verification, push commits directly to `dev`. Its ruleset requires verified signatures and disallows force pushes and deletion. Inbound PRs and PR-only status checks are not required for `dev`.
+- Maintainers with write access develop features, fixes, and documentation directly on `dev`, starting from the latest `origin/dev`. Do not create `codex/*` or other work branches in this repository.
+- After local checks and signature verification, maintainers push commits directly to `dev`. Its ruleset requires verified signatures and disallows force pushes and deletion. Inbound PRs and PR-only status checks are not required for maintainers' `dev` changes.
+- External contributors fork this repository, create a work branch from the latest upstream `dev` in their fork, and open a PR from that branch to this repository's `dev`. Maintainers review and merge accepted work into `dev`; contributors do not open release PRs to `main`.
 - Promote changes from `dev` to `main` through a PR; never push directly to `main`.
 - `main` accepts only this repository's `dev` branch. An external fork named `dev` or any other source branch cannot release to `main`.
 - `main` retains its PR requirement, protection from force pushes and deletion, and required GitHub Actions checks: `PR policy tests` and `pr-route/main`. Administrators have no bypass.
 - Route checks use current PR metadata and trusted default-branch code after the read-only `PR policy` workflow completes. Retargeting and reopening rerun the checks.
 - Releases use merge commits to preserve development ancestry. Keep `dev` and `main`; repository-wide automatic branch deletion stays disabled to retain `dev` after releases.
-- Use Conventional Commits, sign with the configured GPG key, and verify signatures before pushing.
+- Use Conventional Commits, sign with a registered SSH or OpenPGP signing key, and verify signatures before pushing.
 - Record changes in English GitHub Release notes. Keep any local `CHANGELOG.md` ignored and out of commits. Future release tag annotations, Release titles, and Release notes must use English and follow the categories and signing requirements in the [release process](release-process.md).
 - Keep credentials, tokens, private environment details, and other sensitive information out of commit messages and PR titles, descriptions, and comments.
 - Complete checks appropriate to the change before merging. Preserve unrelated local changes; do not rewrite published history or delete branches without explicit authorization.

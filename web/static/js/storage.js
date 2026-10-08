@@ -4,7 +4,7 @@
 //   GET  /api/storage/meta    清理策略与类别元信息
 //   GET  /api/storage/status  文件系统容量 + 各类别占用/可回收量
 //   POST /api/storage/cleanup 预览（dry_run）或执行清理
-//   PUT  /api/config          保存策略（storage 段）
+//   PUT  /api/storage/policy          保存策略（storage 段）
 (function () {
     'use strict';
 
@@ -350,12 +350,10 @@
     window.saveStorageSettings = async function () {
         var payload = collectPolicy();
         await withBusy(async function () {
-            // 只调 PUT /api/config：UpdateConfig 会合并 storage 段并写回 config.yaml，
-            // 清理器每次执行都实时读取配置，无需 /api/config/apply 触发重启类副作用。
-            var r = await apiFetch('/api/config', {
+            var r = await apiFetch('/api/storage/policy', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ storage: payload })
+                body: JSON.stringify(payload)
             });
             if (!r.ok) throw new Error(await readErr(r, st('settingsStorage.saveFailed', '保存失败')));
             await loadMeta();

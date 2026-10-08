@@ -43,8 +43,9 @@ func budgetedSummaryInstruction(reserve int) string {
 }
 
 // generateSummaryWithLengthRecovery retries a truncated generation once using
-// the original input plus a shorter-output instruction. It never feeds partial
-// output back into history, raises token limits, or mutates the caller's slice.
+// the original input with its final instruction replaced by a shorter one.
+// It never feeds partial output back into history, raises token limits, or
+// mutates the caller's slice.
 // Cancellation, transport errors and other incomplete responses return directly;
 // the middleware remains responsible for its existing transient-error policy.
 func generateSummaryWithLengthRecovery[T any](
@@ -64,8 +65,16 @@ func generateSummaryWithLengthRecovery[T any](
 		reserve = *tokens
 	}
 	retryInput := append(make([]*T, 0, len(input)+1), input...)
-	retryInput = append(retryInput, userMessage(fmt.Sprintf(
-		"上一轮摘要触及输出长度上限。请根据同一历史重新生成完整的精简摘要，目标不超过 %d tokens。只输出闭合的 <summary>，省略 <analysis>；保留授权范围、禁止项、当前任务、核心发现和下一步，合并重复项，不抄录长日志。不要续写被截断的文本，不调用工具。", summaryTextTarget(reserve, true))))
+	compactInstruction := userMessage(fmt.Sprintf(
+		"Return only a closed <summary> of at most %d tokens. Preserve scope, prohibitions, current task, confirmed findings and next step. Omit analysis and tool calls.", summaryTextTarget(reserve, true)))
+	if len(retryInput) > 1 {
+		// The budgeted transcript may already fill the input limit. Replace its
+		// final instruction instead of appending another message.
+		retryInput[len(retryInput)-1] = compactInstruction
+	} else {
+		// Direct calls with one input message retain that message on retry.
+		retryInput = append(retryInput, compactInstruction)
+	}
 	out, err = generate(ctx, retryInput, opts...)
 	var exhausted *summaryLengthError
 	if errors.As(err, &exhausted) {

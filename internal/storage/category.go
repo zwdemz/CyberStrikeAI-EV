@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/config"
+	"github.com/google/uuid"
 )
 
 // deletionMarkerSuffix 标记「已判定删除、正在移除」的目录。
@@ -243,6 +244,16 @@ func scanDatedSessionDirs(root string) ([]Unit, error) {
 		if err != nil {
 			continue
 		}
+		// Only the uploader's YYYY-MM-DD layout contains conversation IDs.
+		// Other second-level entries follow category retention, not the orphan grace.
+		if !isDateDir(d.Name()) {
+			for _, entry := range convs {
+				if u, err := statUnit(filepath.Join(dateDir, entry.Name()), "", ScopeNone); err == nil {
+					units = append(units, u)
+				}
+			}
+			continue
+		}
 		for _, cd := range convs {
 			if !cd.IsDir() {
 				// 直接落在日期目录下的散文件：按非会话型文件清理。
@@ -252,7 +263,7 @@ func scanDatedSessionDirs(root string) ([]Unit, error) {
 				continue
 			}
 			session, scope := cd.Name(), ScopeConversation
-			if chatUploadsPlaceholderConvs[session] {
+			if chatUploadsPlaceholderConvs[session] || !isConversationID(session) {
 				session, scope = "", ScopeNone
 			}
 			if u, err := statUnit(filepath.Join(dateDir, cd.Name()), session, scope); err == nil {
@@ -261,6 +272,16 @@ func scanDatedSessionDirs(root string) ([]Unit, error) {
 		}
 	}
 	return units, nil
+}
+
+func isDateDir(name string) bool {
+	parsed, err := time.Parse("2006-01-02", name)
+	return err == nil && parsed.Format("2006-01-02") == name
+}
+
+func isConversationID(name string) bool {
+	id, err := uuid.Parse(name)
+	return err == nil && id.String() == name
 }
 
 // scanSubdirFiles 枚举 root/<subdir>/ 下的文件（不递归），用于 C2 产物。
@@ -399,6 +420,9 @@ func pruneEmptyDirs(root string, depth int) int {
 	removed := 0
 	for _, e := range entries {
 		if !e.IsDir() {
+			continue
+		}
+		if depth == 2 && !isDateDir(e.Name()) {
 			continue
 		}
 		sub := filepath.Join(root, e.Name())

@@ -740,7 +740,7 @@ function renderProjectFactActions(keyEsc, idEsc, confidence) {
 
 function formatSeverityBadge(severity) {
     const s = (severity || 'info').toLowerCase();
-    const cls = 'projects-severity--' + (['critical', 'high', 'medium', 'low', 'info'].includes(s) ? s : 'info');
+    const cls = 'projects-severity--' + (['pending', 'critical', 'high', 'medium', 'low', 'info'].includes(s) ? s : 'info');
     return `<span class="projects-severity ${cls}">${escapeHtml(severity || '—')}</span>`;
 }
 

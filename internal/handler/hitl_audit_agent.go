@@ -114,27 +114,32 @@ func (h *AgentHandler) auditLLMConfig() config.OpenAIConfig {
 
 func (h *AgentHandler) auditAgentReviewTypeSafe(ctx context.Context, hitlMode, toolName string, payload map[string]interface{}) hitlDecision {
 	if h == nil || h.config == nil {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 未配置"}
+		return typeSafeAuditFailure("configuration_error", 0)
 	}
 	baseURL, apiKey, model := h.config.Hitl.TypeSafeConfigEffective()
 	if apiKey == "" {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe API Key 未配置"}
+		return typeSafeAuditFailure("configuration_error", 0)
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-
 	client, err := typesafe.NewClient(baseURL, apiKey, model, nil)
 	if err != nil {
-		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 地址未获服务器授权或配置无效，保守拒绝"}
+		return typeSafeAuditFailure("endpoint_not_approved", 0)
 	}
 	policy := h.config.Hitl.JevOperatorPolicy(hitlMode)
 	result, err := client.SystemOne(callCtx, hitl.BuildJevState(hitlMode, toolName, payload, policy), hitl.JevAuditQuestions(policy))
 	if err != nil {
-		h.logger.Warn("审计 Agent TypeSafe 调用失败", zap.Error(err), zap.String("tool", toolName))
-		return hitlDecision{Decision: "reject", Comment: "audit agent: TypeSafe 调用失败，保守拒绝"}
+		failure := typeSafeAuditCallFailure(err)
+		if h.logger != nil {
+			h.logger.Warn("TypeSafe audit call failed", zap.String("category", failure.Comment), zap.String("tool", toolName))
+		}
+		return failure
+	}
+	if err := hitl.ValidateJevResult(result, policy); err != nil {
+		return typeSafeAuditFailure("invalid_response", 0)
 	}
 	decision, comment := hitl.DecideJev(result)
 	if comment == "" {
