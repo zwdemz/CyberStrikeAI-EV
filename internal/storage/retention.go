@@ -34,7 +34,7 @@ func (s *Service) AutoCleanEnabled() bool {
 	if s == nil || s.cfg == nil {
 		return false
 	}
-	return s.cfg.Storage.AutoCleanEffective()
+	return s.cfg.StorageSnapshot().AutoCleanEffective()
 }
 
 // Interval 返回清理间隔；每轮重新读取，因此改配置无需重启。
@@ -42,7 +42,7 @@ func (s *Service) Interval() time.Duration {
 	if s == nil || s.cfg == nil {
 		return minSweepInterval
 	}
-	d := time.Duration(s.cfg.Storage.IntervalMinutesEffective()) * time.Minute
+	d := time.Duration(s.cfg.StorageSnapshot().IntervalMinutesEffective()) * time.Minute
 	if d < minSweepInterval {
 		return minSweepInterval
 	}

@@ -15,15 +15,20 @@ import (
 
 // StorageHandler 提供运行空间占用统计与垃圾清理 API。
 type StorageHandler struct {
-	cleaner *storage.Cleaner
-	cfg     *config.Config
-	audit   *audit.Service
-	logger  *zap.Logger
+	cleaner    *storage.Cleaner
+	cfg        *config.Config
+	audit      *audit.Service
+	logger     *zap.Logger
+	configPath string
 }
 
 // NewStorageHandler 创建存储清理 handler。
 func NewStorageHandler(cleaner *storage.Cleaner, cfg *config.Config, logger *zap.Logger) *StorageHandler {
 	return &StorageHandler{cleaner: cleaner, cfg: cfg, logger: logger}
+}
+
+func (h *StorageHandler) SetConfigPath(path string) {
+	h.configPath = path
 }
 
 // SetAudit wires platform audit logging.
@@ -152,5 +157,5 @@ func (h *StorageHandler) effectiveConfig() config.StorageConfig {
 	if h.cfg == nil {
 		return config.StorageConfig{}
 	}
-	return h.cfg.Storage
+	return h.cfg.StorageSnapshot()
 }

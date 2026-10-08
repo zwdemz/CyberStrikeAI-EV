@@ -4,10 +4,17 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
+	"math"
 	"os"
 	"strings"
 
-	"github.com/disintegration/imaging"
+	_ "golang.org/x/image/bmp"
+	"golang.org/x/image/draw"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 // ImagePayload 送入 VL API 的图片字节与 MIME。
@@ -18,16 +25,16 @@ type ImagePayload struct {
 
 // PreprocessMeta 记录缩放与编码结果，供工具输出与排障。
 type PreprocessMeta struct {
-	OriginalPath      string
-	OriginalBytes     int64
-	OriginalWidth     int
-	OriginalHeight    int
-	OutputWidth       int
-	OutputHeight      int
-	OutputBytes       int
-	OutputMIMEType    string
-	JPEGQuality       int // 0 表示未 JPEG 重编码（原图直传）
-	PreprocessMode    string // passthrough | jpeg
+	OriginalPath   string
+	OriginalBytes  int64
+	OriginalWidth  int
+	OriginalHeight int
+	OutputWidth    int
+	OutputHeight   int
+	OutputBytes    int
+	OutputMIMEType string
+	JPEGQuality    int    // 0 表示未 JPEG 重编码（原图直传）
+	PreprocessMode string // passthrough | jpeg
 }
 
 // PreprocessOptions 图片预处理参数。
@@ -39,7 +46,7 @@ type PreprocessOptions struct {
 	SkipPreprocessBelowBytes int64 // 0 = 始终压缩；>0 时小图+尺寸合规可直传
 }
 
-// PreprocessImageFile 读取图片；大图或超尺寸走 imaging 缩放+JPEG，否则可原图直传。
+// PreprocessImageFile 读取图片；大图或超尺寸走标准解码器与 Catmull-Rom 缩放+JPEG，否则可原图直传。
 func PreprocessImageFile(path string, opt PreprocessOptions) (ImagePayload, PreprocessMeta, error) {
 	var meta PreprocessMeta
 	meta.OriginalPath = path
@@ -73,7 +80,7 @@ func PreprocessImageFile(path string, opt PreprocessOptions) (ImagePayload, Prep
 		return payload, meta, err
 	}
 
-	return compressWithImaging(path, opt, maxDim, maxPayload, meta)
+	return compressImage(path, opt, maxDim, maxPayload, meta)
 }
 
 func tryPassthrough(path string, size int64, w, h int, format string, opt PreprocessOptions, maxDim int, maxPayload int64) (ImagePayload, PreprocessMeta, bool, error) {
@@ -118,8 +125,13 @@ func tryPassthrough(path string, size int64, w, h int, format string, opt Prepro
 	return ImagePayload{Bytes: raw, MIMEType: mime}, meta, true, nil
 }
 
-func compressWithImaging(path string, opt PreprocessOptions, maxDim int, maxPayload int64, meta PreprocessMeta) (ImagePayload, PreprocessMeta, error) {
-	src, err := imaging.Open(path)
+func compressImage(path string, opt PreprocessOptions, maxDim int, maxPayload int64, meta PreprocessMeta) (ImagePayload, PreprocessMeta, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return ImagePayload{}, meta, err
+	}
+	defer file.Close()
+	src, _, err := image.Decode(file)
 	if err != nil {
 		return ImagePayload{}, meta, fmt.Errorf("open image: %w", err)
 	}
@@ -127,7 +139,7 @@ func compressWithImaging(path string, opt PreprocessOptions, maxDim int, maxPayl
 	meta.OriginalWidth = bounds.Dx()
 	meta.OriginalHeight = bounds.Dy()
 
-	dst := imaging.Fit(src, maxDim, maxDim, imaging.Lanczos)
+	dst := fitImage(src, maxDim)
 	outBounds := dst.Bounds()
 	meta.OutputWidth = outBounds.Dx()
 	meta.OutputHeight = outBounds.Dy()
@@ -141,10 +153,10 @@ func compressWithImaging(path string, opt PreprocessOptions, maxDim int, maxPayl
 	for attempt := 0; attempt < 6; attempt++ {
 		if attempt > 0 {
 			dim = int(float64(dim) * 0.85)
-			if dim < 256 {
-				dim = 256
+			if dim < 1 {
+				dim = 1
 			}
-			dst = imaging.Fit(src, dim, dim, imaging.Lanczos)
+			dst = fitImage(src, dim)
 			outBounds = dst.Bounds()
 			meta.OutputWidth = outBounds.Dx()
 			meta.OutputHeight = outBounds.Dy()
@@ -152,7 +164,7 @@ func compressWithImaging(path string, opt PreprocessOptions, maxDim int, maxPayl
 		q := quality
 		for q >= 60 {
 			var buf bytes.Buffer
-			if err := imaging.Encode(&buf, dst, imaging.JPEG, imaging.JPEGQuality(q)); err != nil {
+			if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: q}); err != nil {
 				return ImagePayload{}, meta, fmt.Errorf("encode jpeg: %w", err)
 			}
 			if int64(buf.Len()) <= maxPayload {
@@ -209,4 +221,20 @@ func DecodeImageConfig(path string) (image.Config, string, error) {
 	}
 	defer f.Close()
 	return image.DecodeConfig(f)
+}
+
+// fitImage preserves aspect ratio without upscaling. Callers supply a decoded
+// image with positive dimensions and a positive maximum dimension.
+func fitImage(src image.Image, maxDimension int) image.Image {
+	bounds := src.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width <= maxDimension && height <= maxDimension {
+		return src
+	}
+	ratio := math.Min(float64(maxDimension)/float64(width), float64(maxDimension)/float64(height))
+	width = max(1, int(math.Round(float64(width)*ratio)))
+	height = max(1, int(math.Round(float64(height)*ratio)))
+	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, draw.Src, nil)
+	return dst
 }

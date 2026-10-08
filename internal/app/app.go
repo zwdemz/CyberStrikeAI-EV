@@ -420,6 +420,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	storageService := storage.NewService(storageCleaner, cfg, log.Logger)
 	storage.StartRetentionLoop(storageService, log.Logger)
 	storageHandler := handler.NewStorageHandler(storageCleaner, cfg, log.Logger)
+	storageHandler.SetConfigPath(configPath)
 	storageHandler.SetAudit(auditSvc)
 
 	agent.SetPromptBaseDir(configDir)
@@ -1154,6 +1155,7 @@ func setupRoutes(
 		// 运行空间占用与垃圾清理
 		protected.GET("/storage/meta", app.storageHandler.Meta)
 		protected.GET("/storage/status", app.storageHandler.Status)
+		protected.PUT("/storage/policy", app.storageHandler.UpdatePolicy)
 		protected.POST("/storage/cleanup", app.storageHandler.Cleanup)
 
 		// 外部MCP管理

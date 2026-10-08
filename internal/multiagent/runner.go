@@ -17,6 +17,7 @@ import (
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/einomcp"
 	"cyberstrike-ai/internal/project"
+	"cyberstrike-ai/internal/projectprompt"
 	"cyberstrike-ai/internal/reasoning"
 	"cyberstrike-ai/internal/rolepolicy"
 	"cyberstrike-ai/internal/security"
@@ -33,6 +34,24 @@ import (
 )
 
 // RunResult 与单 Agent 循环结果字段对齐，便于复用存储与 SSE 收尾逻辑。
+// Delegated Deep and Supervisor specialists share the conversation's durable
+// tool timeline. Bind the database while constructing their model tail.
+func appendDelegatedAgentTailMiddlewares(
+	handlers []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage],
+	cfg einoChatModelTailConfig,
+	db *database.DB,
+) []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage] {
+	cfg.db = db
+	return appendEinoAgenticChatModelTailMiddlewares(handlers, cfg)
+}
+
+func specialistInstructionWithSeverityPolicy(instruction string) string {
+	if strings.Contains(instruction, projectprompt.VulnerabilitySeverityGuidance) {
+		return instruction
+	}
+	return strings.TrimSpace(instruction) + "\n\n" + projectprompt.VulnerabilitySeverityGuidance
+}
+
 type RunResult struct {
 	Response             string
 	MCPExecutionIDs      []string
@@ -248,7 +267,7 @@ func RunDeepAgent(
 				}
 				subHandlers = append(subHandlers, agenticSkillMW)
 			}
-			subHandlers = appendEinoAgenticChatModelTailMiddlewares(subHandlers, einoChatModelTailConfig{
+			subHandlers = appendDelegatedAgentTailMiddlewares(subHandlers, einoChatModelTailConfig{
 				logger:               logger,
 				phase:                "sub_agent:" + id,
 				agenticSummarization: subSumMw,
@@ -257,9 +276,9 @@ func RunDeepAgent(
 				toolMaxBytes:         toolMaxBytesFromMW(&ma.EinoMiddleware),
 				conversationID:       conversationID,
 				middlewareConfig:     &ma.EinoMiddleware,
-			})
+			}, db)
 
-			subInstrFinal := project.AppendVisionImageAnalysisIfReady(instr, appCfg.Vision.Ready())
+			subInstrFinal := project.AppendVisionImageAnalysisIfReady(specialistInstructionWithSeverityPolicy(instr), appCfg.Vision.Ready())
 			subInstrFinal = injectToolNamesOnlyInstruction(ctx, subInstrFinal, subTools, subToolSearchActive)
 			if logger != nil {
 				subNames := collectToolNames(ctx, subTools)

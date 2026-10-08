@@ -3,6 +3,7 @@ package hitl
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"cyberstrike-ai/internal/typesafe"
@@ -23,6 +24,52 @@ const (
 )
 
 const jevStateMaxFieldRunes = 8000
+
+// ValidateJevResult distinguishes an incomplete provider response from an
+// actual policy decision. Missing scores otherwise become zero and could
+// incorrectly approve a tool call.
+func ValidateJevResult(result *typesafe.Result, operatorPolicy string) error {
+	if result == nil {
+		return fmt.Errorf("missing TypeSafe result")
+	}
+	for id := range JevAuditQuestions(operatorPolicy) {
+		answer, ok := result.Answers[id]
+		if !ok || answer == nil {
+			return fmt.Errorf("missing TypeSafe answer %s", id)
+		}
+		if id == jevQDecision {
+			choice, _ := answer["choice"].(string)
+			if choice != "approve" && choice != "reject" {
+				return fmt.Errorf("invalid TypeSafe decision")
+			}
+			if _, ok := jevProbability(answer["confidence"]); !ok {
+				return fmt.Errorf("invalid TypeSafe confidence")
+			}
+			continue
+		}
+		if _, ok := jevProbability(answer["noul"]); !ok {
+			return fmt.Errorf("invalid TypeSafe score %s", id)
+		}
+	}
+	return nil
+}
+
+func jevProbability(raw any) (float64, bool) {
+	var score float64
+	switch value := raw.(type) {
+	case float64:
+		score = value
+	case json.Number:
+		var err error
+		score, err = value.Float64()
+		if err != nil {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	return score, !math.IsNaN(score) && score >= 0 && score <= 1
+}
 
 // JevAuditQuestions is the built-in CyberStrikeAI approval policy, asked in English for Jev accuracy.
 // A non-empty operatorPolicy adds a Noul/Choice overlay so the organization prompt is evaluated as state, not as a chat system prompt.

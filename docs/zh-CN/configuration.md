@@ -233,6 +233,8 @@ storage:
 
 清理运行期间产生的磁盘垃圾，入口在「系统设置 → 存储清理」，也可用 `POST /api/storage/cleanup` 触发。
 
+保存保留策略使用 `PUT /api/storage/policy`，需要 `storage:write` 权限；接口仅更新 `config.yaml` 的 `storage` 段，下次清理立即生效，无需重启。其他配置仍需要 `config:write`。
+
 - `auto_clean` 默认关闭：升级后不会在管理员不知情的情况下删除既有数据；关闭时仍可手动预览与清理。
 - `interval_minutes` 后台清理间隔，最小 5；`orphan_grace_days` 是会话/项目已删除但目录残留时的最小保留天数；`active_grace_hours` 内的活动会话一律跳过。
 - 各类别 `retention_days` 为 0 表示不按保留期清理，但**孤儿目录仍会回收**（会话已删除的目录没有保留价值）。

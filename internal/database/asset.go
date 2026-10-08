@@ -599,6 +599,12 @@ const assetVulnerabilityMatchExpr = `(
 	OR (COALESCE(assets.last_scan_task_id,'')<>'' AND EXISTS (
 		SELECT 1 FROM batch_tasks bt WHERE bt.id=assets.last_scan_task_id AND bt.conversation_id=v.conversation_id
 	))
+	OR EXISTS (SELECT 1 FROM vulnerability_observations vo WHERE vo.vulnerability_id=v.id AND (
+		(COALESCE(assets.last_scan_conversation_id,'')<>'' AND vo.conversation_id=assets.last_scan_conversation_id)
+		OR (COALESCE(assets.last_scan_task_id,'')<>'' AND EXISTS (
+			SELECT 1 FROM batch_tasks bt WHERE bt.id=assets.last_scan_task_id AND bt.conversation_id=vo.conversation_id
+		))
+	))
 )`
 
 const assetVulnerabilityCountExpr = `(SELECT COUNT(DISTINCT v.id) FROM vulnerabilities v WHERE ` + assetVulnerabilityMatchExpr + `)`

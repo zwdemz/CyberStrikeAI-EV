@@ -140,6 +140,8 @@ storage:
 
 Reclaims disk space used by runtime artifacts. Manage it from **System settings → Storage cleanup**, or trigger it with `POST /api/storage/cleanup`.
 
+Saving the retention policy uses `PUT /api/storage/policy` with `storage:write`; it updates only the `storage` section of `config.yaml` and applies to the next cleanup without a restart. Other configuration still requires `config:write`.
+
 - `auto_clean` is off by default: upgrading never deletes existing data behind an administrator's back. Manual preview and cleanup still work while it is off.
 - `interval_minutes` is the background sweep interval (floor 5). `orphan_grace_days` is the minimum age before a directory whose conversation/project no longer exists is reclaimed. Sessions active within `active_grace_hours` are always skipped.
 - A category `retention_days` of 0 disables age-based cleanup, but **orphaned directories are still reclaimed** — a directory whose session is gone has no retention value.
