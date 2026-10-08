@@ -2661,6 +2661,8 @@
     "errorGeneric": "Something went wrong. Please try again."
   },
   "vulnerabilityPage": {
+    "observations": "Observations (latest 20)",
+    "observationsError": "Unable to load observations; reopen to retry",
     "alertTitle": "Robot vulnerability alerts",
     "alertDescription": "Push newly discovered vulnerabilities to robots bound to this account, filtered by severity.",
     "alertHint": "Send newly discovered vulnerabilities at or above this severity to your bound robot accounts.",
