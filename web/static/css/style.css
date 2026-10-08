@@ -46655,3 +46655,8 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
     font-size: .75rem;
     line-height: 1.6;
 }
+
+/* Pending findings have no severity rank; use a neutral presentation. */
+.stat-stacked-seg.pending { background: #94a3b8; }
+.vulnerability-card.severity-pending { border-left-color: #94a3b8; }
+.severity-badge.severity-pending { background: rgba(148, 163, 184, 0.15); color: #64748b; }

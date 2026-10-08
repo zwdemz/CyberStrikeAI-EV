@@ -4880,5 +4880,43 @@
         "delete": "删除执行监控记录"
       }
     }
-  }
+  },
+  "vulnerabilityRating": {
+  "title": "证据与定级",
+  "pending": "待定级",
+  "legacy": "历史记录：尚未经过新模型评估",
+  "evidence_status": "证据状态",
+  "impact_level": "已证实影响",
+  "scope": "已证实范围",
+  "asset_value": "资产价值",
+  "access": "利用权限门槛",
+  "interaction": "用户交互",
+  "rationale": "定级依据",
+  "preconditions": "前置条件（无条件也须明确填写）",
+  "potential_impact": "未验证的潜在影响（不计入定级）",
+  "override_reason": "人工调整理由（留空采用建议等级）",
+  "unknown": "未知",
+  "unverified": "未验证",
+  "partial": "部分验证",
+  "verified": "报告人已验证证据",
+  "none": "无",
+  "limited": "有限信息或轻微影响",
+  "moderate": "局部越权或有限权限",
+  "major": "重大数据或账号控制影响",
+  "critical": "核心资产／广泛重大影响",
+  "single": "单条记录／单个用户／一次交互",
+  "multiple": "多个对象／多次交互",
+  "system": "整个系统",
+  "public": "公开",
+  "internal": "内部",
+  "sensitive": "敏感",
+  "ordinary": "普通权限（含普通登录账号）",
+  "restricted": "特殊资质或高权限",
+  "suggested_severity": "建议等级",
+  "proposed_severity": "提交等级",
+  "adjustment": "规则说明",
+  "version": "规则版本",
+  "history": "历史定级（最近20次）",
+  "help": "系统根据填写的事实计算等级，未验证的问题保持待定级。人工调整须已验证证据并说明理由；系统不自动证明事实真实性。"
+}
 }

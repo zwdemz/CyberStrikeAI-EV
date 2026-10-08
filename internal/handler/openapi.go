@@ -303,7 +303,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"severity": map[string]interface{}{
 							"type":        "string",
 							"description": "严重程度",
-							"enum":        []string{"critical", "high", "medium", "low", "info"},
+							"enum":        []string{"pending", "critical", "high", "medium", "low", "info"},
 						},
 						"status": map[string]interface{}{
 							"type":        "string",
@@ -581,7 +581,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"severity": map[string]interface{}{
 							"type":        "string",
 							"description": "严重程度",
-							"enum":        []string{"critical", "high", "medium", "low", "info"},
+							"enum":        []string{"pending", "critical", "high", "medium", "low", "info"},
 						},
 						"status": map[string]interface{}{
 							"type":        "string",
@@ -607,6 +607,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"type":        "string",
 							"description": "修复建议",
 						},
+						"assessment":   map[string]interface{}{"type": "object", "description": "EV impact assessment: evidence_status, impact_level, scope, asset_value, access, interaction, rationale, preconditions, potential_impact; optional manual override_reason. Missing evidence results in pending. See docs/en-US/vulnerability-severity.md."},
 						"retest_notes": map[string]interface{}{"type": "string", "description": "复测方式"},
 					},
 				},
@@ -624,7 +625,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 						"severity": map[string]interface{}{
 							"type":        "string",
 							"description": "严重程度",
-							"enum":        []string{"critical", "high", "medium", "low", "info"},
+							"enum":        []string{"pending", "critical", "high", "medium", "low", "info"},
 						},
 						"status": map[string]interface{}{
 							"type":        "string",
@@ -650,6 +651,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"type":        "string",
 							"description": "修复建议",
 						},
+						"assessment":   map[string]interface{}{"type": "object", "description": "EV impact assessment: evidence_status, impact_level, scope, asset_value, access, interaction, rationale, preconditions, potential_impact; optional manual override_reason. Missing evidence results in pending. See docs/en-US/vulnerability-severity.md."},
 						"retest_notes": map[string]interface{}{"type": "string", "description": "复测方式"},
 					},
 				},
@@ -2512,7 +2514,7 @@ func (h *OpenAPIHandler) GetOpenAPISpec(c *gin.Context) {
 							"description": "严重程度",
 							"schema": map[string]interface{}{
 								"type": "string",
-								"enum": []string{"critical", "high", "medium", "low", "info"},
+								"enum": []string{"pending", "critical", "high", "medium", "low", "info"},
 							},
 						},
 						{

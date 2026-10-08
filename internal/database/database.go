@@ -994,6 +994,9 @@ func (db *DB) initTables() error {
 		return fmt.Errorf("创建索引失败: %w", err)
 	}
 
+	if err := db.migrateVulnerabilityAssessment(); err != nil {
+		return err
+	}
 	if err := db.migrateVulnerabilityDedup(); err != nil {
 		return fmt.Errorf("initialize vulnerability deduplication: %w", err)
 	}
