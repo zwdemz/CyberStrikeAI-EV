@@ -2649,6 +2649,8 @@
     "errorGeneric": "操作失败，请稍后重试。"
   },
   "vulnerabilityPage": {
+    "observations": "发现记录（最近20次）",
+    "observationsError": "发现记录加载失败，请重新展开重试",
     "alertTitle": "机器人漏洞提醒",
     "alertDescription": "按严重级别将新发现的漏洞推送至当前账号绑定的机器人。",
     "alertHint": "发现符合级别的新漏洞后，通过已绑定机器人账号推送。",
