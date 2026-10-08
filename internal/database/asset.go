@@ -609,8 +609,10 @@ const assetRiskScoreQueryExpr = `COALESCE((
 	WHERE LOWER(COALESCE(v.status,'open')) NOT IN ('fixed','false_positive','ignored') AND ` + assetVulnerabilityMatchExpr + `
 ),0)`
 
+const assetPendingVulnerabilityExpr = `EXISTS(SELECT 1 FROM vulnerabilities v WHERE v.severity='pending' AND LOWER(COALESCE(v.status,'open')) NOT IN ('fixed','false_positive','ignored') AND ` + assetVulnerabilityMatchExpr + `)`
+
 const assetRiskLevelQueryExpr = `(CASE WHEN ` + assetEffectiveLastScanExpr + ` IS NULL THEN 'unassessed' ELSE CASE ` + assetRiskScoreQueryExpr + `
-	WHEN 5 THEN 'critical' WHEN 4 THEN 'high' WHEN 3 THEN 'medium' WHEN 2 THEN 'low' WHEN 1 THEN 'info' ELSE 'normal' END END)`
+	WHEN 5 THEN 'critical' WHEN 4 THEN 'high' WHEN 3 THEN 'medium' WHEN 2 THEN 'low' WHEN 1 THEN 'info' ELSE CASE WHEN ` + assetPendingVulnerabilityExpr + ` THEN 'unassessed' ELSE 'normal' END END END)`
 
 const assetVulnerabilityCountCachedExpr = `COALESCE(assets.vulnerability_count,0)`
 const assetRiskScoreCachedExpr = `COALESCE(assets.risk_score,0)`
@@ -722,6 +724,16 @@ func (db *DB) RefreshAssetRiskCache(assetID string) error {
 		return fmt.Errorf("刷新资产扫描状态失败: %w", err)
 	}
 	level := assetRiskLevelFromScore(score, lastScan != nil)
+	// A completed scan with unresolved evidence must not be labelled normal.
+	if score == 0 {
+		var pending bool
+		if err := db.QueryRow("SELECT "+assetPendingVulnerabilityExpr+" FROM assets WHERE assets.id=?", assetID).Scan(&pending); err != nil {
+			return err
+		}
+		if pending {
+			level = "unassessed"
+		}
+	}
 	if _, err := db.Exec(`UPDATE assets SET vulnerability_count=?, risk_score=?, risk_level=? WHERE id=?`, count, score, level, assetID); err != nil {
 		return fmt.Errorf("更新资产风险缓存失败: %w", err)
 	}

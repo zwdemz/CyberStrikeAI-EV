@@ -4892,5 +4892,43 @@
         "delete": "Delete execution-monitor records"
       }
     }
-  }
+  },
+  "vulnerabilityRating": {
+  "title": "Evidence-based assessment",
+  "pending": "Pending assessment",
+  "legacy": "Legacy record: not assessed by the current model",
+  "evidence_status": "Evidence status",
+  "impact_level": "Demonstrated impact",
+  "scope": "Demonstrated scope",
+  "asset_value": "Asset value",
+  "access": "Access requirements",
+  "interaction": "User interaction",
+  "rationale": "Rating rationale",
+  "preconditions": "Prerequisites (explicitly state none if applicable)",
+  "potential_impact": "Unverified potential impact (excluded from rating)",
+  "override_reason": "Manual override reason (leave empty to use suggested rating)",
+  "unknown": "Unknown",
+  "unverified": "Unverified",
+  "partial": "Partially verified",
+  "verified": "Evidence verified by reporter",
+  "none": "None",
+  "limited": "Limited information / minor impact",
+  "moderate": "Local authorization breach / limited control",
+  "major": "Major data or account control impact",
+  "critical": "Critical / widespread core impact",
+  "single": "Single record or user",
+  "multiple": "Multiple records/users or interactions",
+  "system": "System-wide",
+  "public": "Public",
+  "internal": "Internal",
+  "sensitive": "Sensitive",
+  "ordinary": "Ordinary access (including normal accounts)",
+  "restricted": "Special qualification or elevated access",
+  "suggested_severity": "Suggested severity",
+  "proposed_severity": "Submitted severity",
+  "adjustment": "Rule explanation",
+  "version": "Rule version",
+  "history": "Previous ratings (latest 20)",
+  "help": "Severity is calculated from reported facts. Unverified evidence stays pending. Manual changes require verified evidence and an override reason; the application does not independently verify claims."
+}
 }
