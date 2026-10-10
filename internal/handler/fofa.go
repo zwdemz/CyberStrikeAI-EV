@@ -44,6 +44,16 @@ func NewFofaHandler(cfg *config.Config, logger *zap.Logger) *FofaHandler {
 	}
 }
 
+// apiUserAgent resolves API identification, including environment-only clients
+// constructed without a configuration object.
+func (h *FofaHandler) apiUserAgent() string {
+	settings := config.APIClientConfig{}
+	if h.cfg != nil {
+		settings = h.cfg.APIClient
+	}
+	return settings.EffectiveUserAgent()
+}
+
 type fofaSearchRequest struct {
 	Provider string `json:"provider,omitempty"`
 	Query    string `json:"query" binding:"required"`
@@ -649,7 +659,7 @@ func (h *FofaHandler) Search(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
 		return
 	}
-	httpReq.Header.Set("User-Agent", "CyberStrikeAI/1.7.4")
+	httpReq.Header.Set("User-Agent", h.apiUserAgent())
 	httpReq.Header.Set("Accept", "application/json")
 
 	resp, err := h.client.Do(httpReq)
@@ -1073,7 +1083,7 @@ func (h *FofaHandler) doJSONRequest(c *gin.Context, method, endpoint, apiKey, he
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
 		return false
 	}
-	httpReq.Header.Set("User-Agent", "CyberStrikeAI/1.7.4")
+	httpReq.Header.Set("User-Agent", h.apiUserAgent())
 	httpReq.Header.Set("Accept", "application/json")
 	if body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
