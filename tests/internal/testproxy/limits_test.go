@@ -91,3 +91,16 @@ func TestProbeUsesProxyAndPreservesTargetStatus(t *testing.T) {
 		t.Fatal("target rate limit counted as proxy failure")
 	}
 }
+func TestProbeURLsAreCopied(t *testing.T) {
+	s, _, _ := fixture(t)
+	input := []string{"https://controlled.example.invalid/health"}
+	if err := s.ConfigureProbeURLs(input); err != nil {
+		t.Fatal(err)
+	}
+	input[0] = "https://changed.example.invalid/"
+	returned := s.ProbeURLs()
+	returned[0] = "https://changed.example.invalid/"
+	if s.ProbeURLs()[0] != "https://controlled.example.invalid/health" {
+		t.Fatal("probe configuration mutated")
+	}
+}
