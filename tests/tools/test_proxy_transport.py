@@ -17,7 +17,7 @@ class Proxy(socketserver.BaseRequestHandler):
   seen.append(('request',data.split(b'\r\n')[0].decode()))
   c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\nPROXY_FIXTURE_OK_123')
 server=socketserver.ThreadingTCPServer(('127.0.0.1',0),Proxy);threading.Thread(target=server.serve_forever,daemon=True).start()
-python=sys.executable
+python=os.environ.get('TEST_PROXY_PYTHON',sys.executable)
 for scheme in ['http','socks5']:
  env={**os.environ,'CYBERSTRIKE_TEST_PROXY':f'{scheme}://127.0.0.1:{server.server_address[1]}','NO_PROXY':'*'}
  r=subprocess.run([python]+recipe['args']+['--url','http://proxy-fixture.invalid/check','--proxy','http://127.0.0.1:1','--timeout','3'],env=env,capture_output=True,text=True,timeout=10)

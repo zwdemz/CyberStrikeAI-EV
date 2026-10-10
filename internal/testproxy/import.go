@@ -1,4 +1,4 @@
-// Package testproxy manages opt-in project test proxies independently of model clients.
+// Package testproxy manages opt-in account test proxies independently of model clients.
 package testproxy
 
 import (
@@ -31,7 +31,8 @@ func ParseImport(raw string) ([]Node, error) {
 	raw = strings.TrimSpace(strings.TrimPrefix(raw, "\ufeff"))
 	var records [][]string
 	first := strings.Split(raw, "\n")[0]
-	if strings.Contains(first, "|") {
+	isURLList := strings.HasPrefix(first, "http://") || strings.HasPrefix(first, "https://") || strings.HasPrefix(first, "socks5://")
+	if !isURLList && strings.Contains(first, "|") {
 		for _, line := range strings.Split(raw, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -49,7 +50,7 @@ func ParseImport(raw string) ([]Node, error) {
 				records = append(records, row)
 			}
 		}
-	} else if strings.Contains(first, "\t") || strings.Contains(first, ",") {
+	} else if !isURLList && (strings.Contains(first, "\t") || strings.Contains(first, ",")) {
 		r := csv.NewReader(strings.NewReader(raw))
 		r.FieldsPerRecord = -1
 		r.TrimLeadingSpace = true
@@ -73,7 +74,13 @@ func ParseImport(raw string) ([]Node, error) {
 	}
 	head := map[string]int{}
 	for i, name := range records[0] {
-		head[strings.ToLower(strings.TrimSpace(name))] = i
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key != "" {
+			if _, exists := head[key]; exists {
+				return nil, fmt.Errorf("duplicate column header")
+			}
+			head[key] = i
+		}
 	}
 	_, table := head["proxyaddr"]
 	if _, ok := head["host"]; ok {
@@ -125,6 +132,9 @@ func ParseImport(raw string) ([]Node, error) {
 			switch strings.ToLower(get("状态", "status", "enabled")) {
 			case "禁用", "停用", "false", "0", "disabled":
 				enabled = false
+			case "", "启用", "true", "1", "enabled":
+			default:
+				return nil, fmt.Errorf("invalid node status at row %d", rowIndex+1)
 			}
 		}
 		u, err := url.Parse(address)

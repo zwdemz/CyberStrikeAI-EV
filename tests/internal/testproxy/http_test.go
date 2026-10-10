@@ -51,7 +51,7 @@ func TestManagementAPIRequiresAuthenticationAndValidatesImports(t *testing.T) {
 		r.ServeHTTP(w, req)
 		return w
 	}
-	for _, tc := range []struct{ method, path string }{{"GET", ""}, {"DELETE", "/pool"}, {"POST", "/import"}, {"POST", "/probe"}, {"GET", "/binding/project"}, {"PUT", "/binding/project"}} {
+	for _, tc := range []struct{ method, path string }{{"GET", ""}, {"DELETE", "/pool"}, {"POST", "/import"}, {"POST", "/probe"}, {"GET", "/preference"}, {"PUT", "/preference"}, {"GET", "/binding/project"}, {"PUT", "/binding/project"}} {
 		if w := call(tc.method, tc.path, "{}", ""); w.Code != 401 {
 			t.Fatalf("unauthorized %s = %d", tc.path, w.Code)
 		}
@@ -85,4 +85,20 @@ func TestManagementAPIRequiresAuthenticationAndValidatesImports(t *testing.T) {
 	if w = call("PUT", "/binding/nonexistent", `{"pool_id":"`+pool.ID+`"}`, token); w.Code == 200 {
 		t.Fatal("bound missing project")
 	}
+	if w = call("PUT", "/preference", `{"pool_id":"`+pool.ID+`","user_id":"someone-else"}`, token); w.Code != 200 {
+		t.Fatalf("save preference %d", w.Code)
+	}
+	if w = call("GET", "/preference", "", token); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(pool.ID)) {
+		t.Fatal("preference not restored")
+	}
+	if w = call("PUT", "/preference", `{"pool_id":"missing"}`, token); w.Code != 400 {
+		t.Fatal("accepted missing pool")
+	}
+	if w = call("PUT", "/preference", `{"pool_id":""}`, viewer); w.Code != 403 {
+		t.Fatal("unprivileged preference write")
+	}
+	if w = call("PUT", "/preference", `{`, token); w.Code != 400 {
+		t.Fatal("accepted invalid JSON")
+	}
+
 }

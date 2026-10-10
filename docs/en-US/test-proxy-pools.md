@@ -1,10 +1,10 @@
 # Test proxy pools
 
-Manage pools in **Settings → Test proxy pools**, then bind a project. The UI follows the existing light/dark theme. Model API and knowledge indexing traffic retain their existing network settings.
+Manage pools in **Settings → Test proxy pools**, then save the current account preference (no project required). The UI follows the existing light/dark theme. Model API and knowledge indexing traffic retain their existing network settings.
 
-Paste Markdown tables, CSV, TSV, or one HTTP/HTTPS/SOCKS5 URL per line. Explicit ports are required. Validate the sanitized preview before importing. Supported columns include `Host`, `Port`, `类型`, `账号`, `密码`, `地区`, `状态`, `DB_id`, and `ProxyAddr`. Conflicting columns and duplicate endpoints reject the entire import. Limits: 200 nodes per import, 256 KiB text, 50 pools. Imports create immutable pools; replace bindings before deleting an old pool.
+Paste Markdown tables, CSV, TSV, or one HTTP/HTTPS/SOCKS5 URL per line. Explicit ports are required. Validate the sanitized preview before importing. Supported columns include `Host`, `Port`, `类型`, `账号`, `密码`, `地区`, `状态`, `DB_id`, and `ProxyAddr`. Conflicting columns and duplicate endpoints reject the entire import. Limits: 200 nodes per import, 256 KiB text, 50 pools. Imports create immutable pools; replace account preferences and legacy bindings before deleting an old pool.
 
-Only `http-framework-test` currently supports bound project traffic. Unsupported shell, scanner, and external MCP execution tools are blocked for bound projects; local record operations remain available. Each conversation uses a sticky node. There is no automatic proxy rotation, direct fallback, request replay, or retry to bypass target rate limits. HTTP 403/429/5xx responses do not trigger rotation. `NO_PROXY` and tool proxy arguments cannot override the project binding. SOCKS5 resolves target hostnames through the proxy.
+Only `http-framework-test` currently supports opted-in account traffic. Unsupported shell, scanner, and external MCP execution tools are blocked for opted-in accounts; local record operations remain available. Each conversation uses a sticky node. There is no automatic proxy rotation, direct fallback, request replay, or retry to bypass target rate limits. HTTP 403/429/5xx responses do not trigger rotation. `NO_PROXY` and tool proxy arguments cannot override the account preference. SOCKS5 resolves target hostnames through the proxy.
 
 This is application-level admission, not host-wide containment. Separately executed programs and privileged extensions require independent container/network namespace egress controls.
 
@@ -64,3 +64,13 @@ Synthetic data only. Browser regression: `NODE_PATH=/path/to/node_modules node t
 ![Light theme](../../images/test-proxy/light.png)
 
 ![Dark theme](../../images/test-proxy/dark.png)
+
+## Persistent account preference
+
+`GET /api/test-proxy-pools/preference` returns `{pool_id,configured}`. `PUT` accepts `{pool_id}`; an empty string explicitly opts out. Both require authentication and `config:write`. Identity comes from authentication middleware, never client-supplied user IDs. Changes survive conversations and restarts and do not affect other accounts. Natural-language chat does not automatically change this setting.
+
+The `test_proxy_preferences(user_id,pool_id)` table uses the account primary key, cascading account deletion and a pool foreign key. Until an account explicitly saves a preference, legacy project constraints remain to avoid unintended direct connections during upgrades. Legacy binding APIs remain available for migration; the UI no longer requires projects. Restore the old binary and Web assets to roll back, but first stop affected work: older binaries cannot enforce account preferences. Keep the new database records instead of discarding newer business data.
+
+Imports reject duplicate headers and unknown status values, rather than silently enabling nodes. Markdown trailing empty columns, CSV, TSV and URL lists remain supported. Imported latency is not a fresh health check.
+
+Probes make one HEAD request to an explicitly configured controlled endpoint, without redirects or direct fallback. HTTP 407 is an authentication failure; cancellation and timeout have distinct messages. `reachable` means a response arrived; `usable` requires 2xx from the probe endpoint. Other target statuses, including 403 and 429, never trigger rotation. A successful check does not guarantee access to every site.

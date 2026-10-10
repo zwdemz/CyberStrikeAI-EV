@@ -14,11 +14,11 @@ func (db *DB) DeleteTestProxyPool(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 	var count int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM test_proxy_bindings WHERE pool_id=?`, id).Scan(&count); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM test_proxy_bindings WHERE pool_id=?) + (SELECT count(*) FROM test_proxy_preferences WHERE pool_id=?)`, id, id).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
-		return fmt.Errorf("pool is bound to a project")
+		return fmt.Errorf("pool is selected by a project or account")
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM test_proxy_pools WHERE id=?`, id); err != nil {
 		return err
@@ -29,7 +29,8 @@ func (db *DB) DeleteTestProxyPool(ctx context.Context, id string) error {
 // InitTestProxyStorage creates private pool and project-binding storage. Errors stop initialization.
 func (db *DB) InitTestProxyStorage() error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS test_proxy_pools (id TEXT PRIMARY KEY, document BLOB NOT NULL);
-CREATE TABLE IF NOT EXISTS test_proxy_bindings (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, pool_id TEXT NOT NULL REFERENCES test_proxy_pools(id));`)
+CREATE TABLE IF NOT EXISTS test_proxy_bindings (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, pool_id TEXT NOT NULL REFERENCES test_proxy_pools(id));
+CREATE TABLE IF NOT EXISTS test_proxy_preferences (user_id TEXT PRIMARY KEY REFERENCES rbac_users(id) ON DELETE CASCADE, pool_id TEXT REFERENCES test_proxy_pools(id));`)
 	return err
 }
 
@@ -75,4 +76,22 @@ func (db *DB) TestProxyBinding(ctx context.Context, projectID string) (string, e
 		return "", nil
 	}
 	return id, err
+}
+
+// SaveTestProxyPreference persists one authenticated account's explicit selection.
+// Empty poolID stores an explicit opt-out. Foreign keys reject missing accounts or pools.
+func (db *DB) SaveTestProxyPreference(ctx context.Context, userID, poolID string) error {
+	_, err := db.ExecContext(ctx, `INSERT INTO test_proxy_preferences(user_id,pool_id) VALUES(?,NULLIF(?,'')) ON CONFLICT(user_id) DO UPDATE SET pool_id=excluded.pool_id`, userID, poolID)
+	return err
+}
+
+// TestProxyPreference returns the selected pool and whether a preference exists.
+// An explicit empty selection differs from an account that has not migrated legacy bindings.
+func (db *DB) TestProxyPreference(ctx context.Context, userID string) (string, bool, error) {
+	var id string
+	err := db.QueryRowContext(ctx, `SELECT COALESCE(pool_id,'') FROM test_proxy_preferences WHERE user_id=?`, userID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return id, err == nil, err
 }
