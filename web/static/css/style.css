@@ -46723,3 +46723,42 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
     white-space: nowrap;
     line-height: 1.5;
 }
+
+/* Assessment details: short dimensions share columns; narrative evidence uses the full row. */
+.vuln-rating-details {
+    margin: 20px 0;
+    padding: 18px;
+    min-width: 0;
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+}
+.vuln-rating-details > h4 { margin: 0 0 16px; color: var(--text-primary); }
+.vuln-rating-details .vuln-rating-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 24px;
+    margin: 0;
+}
+.vuln-rating-field { min-width: 0; }
+.vuln-rating-field-wide { grid-column: 1 / -1; }
+.vuln-rating-details dt {
+    margin: 0 0 6px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+.vuln-rating-details dd {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.7;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+@media (max-width: 720px) {
+    .vuln-rating-details { padding: 14px; }
+    .vuln-rating-details .vuln-rating-grid { grid-template-columns: minmax(0, 1fr); }
+}
