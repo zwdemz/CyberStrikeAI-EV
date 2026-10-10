@@ -48,4 +48,7 @@ jobs:
           exec /fixture -test.v -test.timeout=60s
           '
       - if: runner.os == 'Linux'
-        run: go test ./internal/security ./internal/handler ./internal/mcp ./internal/typesafe ./tests/internal/typesafe ./tests/internal/handler ./tests/internal/rolepolicy ./tests/internal/config ./internal/agent ./internal/multiagent ./internal/workflow
+        name: Test and build Linux application
+        run: |
+          go test -p 2 ./... -count=1 -timeout 5m
+          go build -mod=readonly -o /tmp/cyberstrike-ai ./cmd/server
