@@ -316,6 +316,14 @@ func (idx *Indexer) RunRebuildIndex(ctx context.Context) error {
 	return idx.runRebuildIndex(ctx)
 }
 
+// RunIndexItems indexes supplied IDs after the caller acquires the run slot.
+// It reports progress and uses the shared failure cutoff; callers must release the slot.
+func (idx *Indexer) RunIndexItems(ctx context.Context, itemIDs []string) error {
+	idx.resetLastError()
+	idx.setIndexRunTotal(len(itemIDs))
+	return idx.indexItemIDsWithLimit(ctx, itemIDs, "增量索引完成", 2)
+}
+
 // RunIndexMissing 在已占用索引任务槽位后执行缺失索引补齐（供 HTTP handler 后台任务使用）。
 func (idx *Indexer) RunIndexMissing(ctx context.Context) error {
 	return idx.runIndexMissing(ctx)
@@ -386,9 +394,13 @@ func scanKnowledgeItemIDs(rows *sql.Rows) ([]string, error) {
 }
 
 func (idx *Indexer) indexItemIDs(ctx context.Context, itemIDs []string, doneMessage string, skipComplete ...bool) error {
+	return idx.indexItemIDsWithLimit(ctx, itemIDs, doneMessage, 5, skipComplete...)
+}
+
+// indexItemIDsWithLimit preserves the caller-specific consecutive failure budget.
+func (idx *Indexer) indexItemIDsWithLimit(ctx context.Context, itemIDs []string, doneMessage string, maxConsecutiveFailures int, skipComplete ...bool) error {
 	failedCount := 0
 	consecutiveFailures := 0
-	maxConsecutiveFailures := 5
 	firstFailureItemID := ""
 	var firstFailureError error
 

@@ -605,21 +605,22 @@ async function updateIndexProgress() {
                 <div class="knowledge-index-progress">
                     <div class="progress-header">
                         <span class="progress-icon">🔨</span>
-                        <span class="progress-text">正在构建索引: ${indexedItems}/${totalItems} (${progressPercent.toFixed(1)}%)</span>
+                        <span class="progress-text">已索引 ${indexedItems}/${totalItems} (${progressPercent.toFixed(1)}%)，待补建 ${Math.max(0, totalItems - indexedItems)} 项</span>
                     </div>
                     <div class="progress-bar-container">
                         <div class="progress-bar" style="width: ${progressPercent}%"></div>
                     </div>
                     <div class="progress-hint">
-                        索引构建完成后，语义搜索功能将可用
+                        当前没有索引构建任务运行；已有索引可用于检索，缺失项需补建。
                         ${showResume ? '<br><button type="button" onclick="buildKnowledgeIndex()" style="margin-top:8px;background:#007bff;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;">构建索引</button>' : ''}
                     </div>
                 </div>
             `;
             
-            // 如果还没有开始轮询，开始轮询
-            if (!indexProgressInterval) {
-                indexProgressInterval = setInterval(updateIndexProgress, 3000); // 每3秒刷新一次
+            // Incomplete coverage is not an active job.
+            if (indexProgressInterval) {
+                clearInterval(indexProgressInterval);
+                indexProgressInterval = null;
             }
         }
     } catch (error) {
@@ -835,7 +836,7 @@ async function refreshKnowledgeBase() {
         const data = await response.json();
         // 根据返回的消息显示不同的提示
         if (data.items_to_index && data.items_to_index > 0) {
-            showNotification(`扫描完成，开始索引 ${data.items_to_index} 个新添加或更新的知识项`, 'success');
+            showNotification(`扫描完成，开始索引 ${data.items_to_index} 个新增、更新或缺失索引的知识项`, 'success');
         } else {
             showNotification(data.message || '扫描完成，没有需要索引的新项或更新项', 'success');
         }
@@ -897,7 +898,7 @@ async function startKnowledgeIndexJob(mode = 'missing') {
                 <div class="progress-bar-container">
                     <div class="progress-bar" style="width: 0%"></div>
                 </div>
-                <div class="progress-hint">索引构建完成后，语义搜索功能将可用</div>
+                <div class="progress-hint">当前没有索引构建任务运行；已有索引可用于检索，缺失项需补建。</div>
             </div>
         `;
     }

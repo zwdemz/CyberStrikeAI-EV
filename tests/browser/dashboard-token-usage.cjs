@@ -33,6 +33,11 @@ const root = path.resolve(__dirname, '../..');
         await page.waitForSelector('.dashboard-token-metrics');
         assert.equal(await page.locator('.dashboard-token-metrics dd').first().innerText(), '12,345');
         assert.equal(await page.locator('#dashboard-token-dialog img').count(), 0);
+        await page.selectOption('#dashboard-token-scope', 'all');
+        await page.waitForFunction(()=>requests.at(-1).includes('days=7') && !requests.at(-1).includes('project_id='));
+        await page.selectOption('#dashboard-token-scope', 'current');
+        await page.waitForFunction(()=>requests.at(-1).includes('project_id=fixture%26project'));
+
         assert.ok((await page.evaluate(()=>requests[0])).includes('project_id=fixture%26project'));
         for (const theme of ['light','dark']) {
             await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);

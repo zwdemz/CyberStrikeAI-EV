@@ -719,7 +719,7 @@ function renderDashboardTokenUsage(res) {
     const today = res && res.today ? Number(res.today.totalTokens || 0) : 0;
     if (!Number.isFinite(total) || total <= 0) {
         setEl('dashboard-kpi-token-usage', '0');
-        setKpiSubText('dashboard-kpi-token-sub-text', dt('dashboard.noTokenUsageYet', null, '暂无用量'));
+        setKpiSubText('dashboard-kpi-token-sub-text', (typeof getActiveProjectId === 'function' && getActiveProjectId() ? '当前项目近 7 天无已记录用量' : '当前可见范围近 7 天无已记录用量'));
         return;
     }
     setEl('dashboard-kpi-token-usage', formatTokenUsageCompact(total));
@@ -780,7 +780,11 @@ function openDashboardTokenUsage() {
     const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
     const content = make('div', undefined, 'dashboard-token-content');
     const scopeURL = dashboardProjectScopedUrl('/api/usage/tokens?limit=100');
-    const note = make('p', label('范围沿用打开时的仪表盘项目筛选；仅统计已记录且你有权限查看的模型用量。缓存与推理为细分项，不额外累加到总量；这不是计费账单。', 'Uses the dashboard project filter at opening and only recorded usage you may access. Cache and reasoning are breakdowns, not additions to the total; this is not a billing statement.'), 'dashboard-token-note');
+    const scopeLabel = make('label', label('项目范围', 'Project scope'));
+    const scope = make('select'); scope.id = 'dashboard-token-scope'; scopeLabel.htmlFor = scope.id;
+    [['current', label('当前仪表盘范围', 'Current dashboard scope')], ['all', label('全部有权查看的项目', 'All accessible projects')]].forEach(([value, text]) => { const option = make('option', text); option.value = value; scope.append(option); });
+    controls.insertBefore(scopeLabel, retry); controls.insertBefore(scope, retry);
+    const note = make('p', label('默认范围沿用打开时的仪表盘项目筛选；仅统计已记录且你有权限查看的模型用量。缓存与推理为细分项，不额外累加到总量；这不是计费账单。', 'Uses the dashboard project filter at opening and only recorded usage you may access. Cache and reasoning are breakdowns, not additions to the total; this is not a billing statement.'), 'dashboard-token-note');
     dialog.append(header, controls, note, status, content);
     document.body.append(dialog);
     let controller, timeout, generation = 0;
@@ -807,7 +811,7 @@ function openDashboardTokenUsage() {
         timeout = setTimeout(() => activeController.abort(), 15000);
         content.replaceChildren(); status.textContent = label('正在加载统计…', 'Loading statistics…');
         try {
-            const response = await apiFetch(scopeURL + '&days=' + range.value, {signal});
+            const response = await apiFetch((scope.value === 'all' ? '/api/usage/tokens?limit=100' : scopeURL) + '&days=' + range.value, {signal});
             if (!response.ok) throw new Error(response.status === 403 ? label('没有查看用量的权限。', 'You do not have permission to view usage.') : label('统计加载失败，请稍后重试。', 'Could not load usage. Please retry.'));
             const data = await response.json();
             if (request !== generation || signal.aborted) return;
@@ -828,7 +832,7 @@ function openDashboardTokenUsage() {
             if (request === generation) clearTimeout(timeout);
         }
     }
-    range.onchange = load; retry.onclick = load;
+    range.onchange = load; scope.onchange = load; retry.onclick = load;
     dialog.showModal(); load();
 }
 
