@@ -162,7 +162,7 @@ async function refreshDashboard() {
             fetchJson(dashboardProjectScopedUrl('/api/c2/tasks?page=1&page_size=1')),
             fetchJson('/api/projects/dashboard-summary?fact_limit=10'),
             selectedSeverityStatus ? fetchJson('/api/vulnerabilities/stats?status=' + encodeURIComponent(selectedSeverityStatus)) : Promise.resolve(null),
-            fetchJson(dashboardProjectScopedUrl('/api/usage/tokens?days=7&limit=5'))
+            fetchJson('/api/usage/tokens?days=7&limit=5')
         ]);
 
         // 如果在 await 期间 controller 已被 abort，说明又有新刷新启动了，丢弃本次结果
@@ -719,7 +719,7 @@ function renderDashboardTokenUsage(res) {
     const today = res && res.today ? Number(res.today.totalTokens || 0) : 0;
     if (!Number.isFinite(total) || total <= 0) {
         setEl('dashboard-kpi-token-usage', '0');
-        setKpiSubText('dashboard-kpi-token-sub-text', (typeof getActiveProjectId === 'function' && getActiveProjectId() ? '当前项目近 7 天无已记录用量' : '当前可见范围近 7 天无已记录用量'));
+        setKpiSubText('dashboard-kpi-token-sub-text', dt('dashboard.noTokenUsageInRange', null, '全部可见项目近 7 天无已记录用量'));
         return;
     }
     setEl('dashboard-kpi-token-usage', formatTokenUsageCompact(total));
@@ -782,9 +782,9 @@ function openDashboardTokenUsage() {
     const scopeURL = dashboardProjectScopedUrl('/api/usage/tokens?limit=100');
     const scopeLabel = make('label', label('项目范围', 'Project scope'));
     const scope = make('select'); scope.id = 'dashboard-token-scope'; scopeLabel.htmlFor = scope.id;
-    [['current', label('当前仪表盘范围', 'Current dashboard scope')], ['all', label('全部有权查看的项目', 'All accessible projects')]].forEach(([value, text]) => { const option = make('option', text); option.value = value; scope.append(option); });
+    [['all', label('全部有权查看的项目', 'All accessible projects')], ['current', label('当前活动项目', 'Current active project')]].forEach(([value, text]) => { const option = make('option', text); option.value = value; scope.append(option); });
     controls.insertBefore(scopeLabel, retry); controls.insertBefore(scope, retry);
-    const note = make('p', label('默认范围沿用打开时的仪表盘项目筛选；仅统计已记录且你有权限查看的模型用量。缓存与推理为细分项，不额外累加到总量；这不是计费账单。', 'Uses the dashboard project filter at opening and only recorded usage you may access. Cache and reasoning are breakdowns, not additions to the total; this is not a billing statement.'), 'dashboard-token-note');
+    const note = make('p', label('默认统计全部有权查看的项目；选择“当前活动项目”才使用打开弹窗时的活动项目。仅统计已记录用量。缓存与推理为细分项，不额外累加到总量；这不是计费账单。', 'Defaults to all accessible projects. Current active project uses the project at opening. Only recorded usage is counted. Cache and reasoning are breakdowns, not additions to the total; this is not a billing statement.'), 'dashboard-token-note');
     dialog.append(header, controls, note, status, content);
     document.body.append(dialog);
     let controller, timeout, generation = 0;
