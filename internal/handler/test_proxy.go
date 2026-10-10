@@ -14,6 +14,10 @@ import (
 func RegisterTestProxyRoutes(api *gin.RouterGroup, auth *security.AuthManager, db *database.DB, log *zap.Logger) {
 	group := api.Group("/test-proxy-pools", security.AuthMiddleware(auth), security.RequirePermission("config:write"))
 	group.Use(func(c *gin.Context) {
+		if testproxy.Current() == nil {
+			c.AbortWithStatusJSON(503, gin.H{"error": "Proxy service unavailable"})
+			return
+		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 300*1024)
 		c.Next()
 	})
@@ -29,6 +33,31 @@ func RegisterTestProxyRoutes(api *gin.RouterGroup, auth *security.AuthManager, d
 			return
 		}
 		c.JSON(200, gin.H{"pools": pools, "health": s.Status()})
+	})
+
+	// Account identity comes exclusively from authentication middleware, never request JSON.
+	group.GET("/preference", func(c *gin.Context) {
+		id, exists, err := testproxy.Current().Preference(c.Request.Context())
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Could not read account proxy preference"})
+			return
+		}
+		c.JSON(200, gin.H{"pool_id": id, "configured": exists})
+	})
+	group.PUT("/preference", func(c *gin.Context) {
+		var req struct {
+			PoolID string `json:"pool_id"`
+		}
+		if c.ShouldBindJSON(&req) != nil || len(req.PoolID) > 64 {
+			c.JSON(400, gin.H{"error": "Invalid preference"})
+			return
+		}
+		if err := testproxy.Current().SetPreference(c.Request.Context(), req.PoolID); err != nil {
+			c.JSON(400, gin.H{"error": "Could not save account proxy preference"})
+			return
+		}
+		log.Info("Account test proxy preference changed", zap.String("pool_id", req.PoolID))
+		c.JSON(200, gin.H{"ok": true})
 	})
 	group.POST("/import", func(c *gin.Context) {
 		var req struct {

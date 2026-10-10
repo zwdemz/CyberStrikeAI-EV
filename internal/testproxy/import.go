@@ -1,4 +1,4 @@
-// Package testproxy manages opt-in project test proxies independently of model clients.
+// Package testproxy manages opt-in account test proxies independently of model clients.
 package testproxy
 
 import (
@@ -31,7 +31,8 @@ func ParseImport(raw string) ([]Node, error) {
 	raw = strings.TrimSpace(strings.TrimPrefix(raw, "\ufeff"))
 	var records [][]string
 	first := strings.Split(raw, "\n")[0]
-	if strings.Contains(first, "|") {
+	isURLList := strings.HasPrefix(first, "http://") || strings.HasPrefix(first, "https://") || strings.HasPrefix(first, "socks5://")
+	if !isURLList && strings.Contains(first, "|") {
 		for _, line := range strings.Split(raw, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -49,7 +50,7 @@ func ParseImport(raw string) ([]Node, error) {
 				records = append(records, row)
 			}
 		}
-	} else if strings.Contains(first, "\t") || strings.Contains(first, ",") {
+	} else if !isURLList && (strings.Contains(first, "\t") || strings.Contains(first, ",")) {
 		r := csv.NewReader(strings.NewReader(raw))
 		r.FieldsPerRecord = -1
 		r.TrimLeadingSpace = true
@@ -73,7 +74,13 @@ func ParseImport(raw string) ([]Node, error) {
 	}
 	head := map[string]int{}
 	for i, name := range records[0] {
-		head[strings.ToLower(strings.TrimSpace(name))] = i
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key != "" {
+			if _, exists := head[key]; exists {
+				return nil, fmt.Errorf("duplicate column header")
+			}
+			head[key] = i
+		}
 	}
 	_, table := head["proxyaddr"]
 	if _, ok := head["host"]; ok {
@@ -112,7 +119,7 @@ func ParseImport(raw string) ([]Node, error) {
 			if host != "" && !strings.EqualFold(strings.Trim(host, "[]"), u.Hostname()) || port != "" && port != u.Port() || get("类型", "type", "protocol") != "" && kind != strings.ToLower(u.Scheme) {
 				return nil, fmt.Errorf("conflicting endpoint columns at row %d", rowIndex+1)
 			}
-			user, pass := get("账号", "username", "user"), get("密码", "password")
+			user, pass := proxyTableCredentials(get("账号", "username", "user"), get("密码", "password"))
 			if user != "" || pass != "" {
 				if u.User != nil && u.User.String() != url.UserPassword(user, pass).String() {
 					return nil, fmt.Errorf("conflicting credentials at row %d", rowIndex+1)
@@ -125,6 +132,9 @@ func ParseImport(raw string) ([]Node, error) {
 			switch strings.ToLower(get("状态", "status", "enabled")) {
 			case "禁用", "停用", "false", "0", "disabled":
 				enabled = false
+			case "", "启用", "true", "1", "enabled":
+			default:
+				return nil, fmt.Errorf("invalid node status at row %d", rowIndex+1)
 			}
 		}
 		u, err := url.Parse(address)
@@ -152,4 +162,15 @@ func ParseImport(raw string) ([]Node, error) {
 		return nil, fmt.Errorf("a pool must have 1–200 unique nodes")
 	}
 	return out, nil
+}
+
+// proxyTableCredentials recognizes paired blank export markers only in table columns.
+// If either field contains a real value, preserve both fields (including a literal dash
+// password). URL userinfo is never normalized by this helper.
+func proxyTableCredentials(user, password string) (string, string) {
+	isBlank := func(value string) bool { return value == "" || value == "-" || value == "--" }
+	if isBlank(user) && isBlank(password) {
+		return "", ""
+	}
+	return user, password
 }

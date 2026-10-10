@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -115,9 +116,18 @@ func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map
 	start := time.Now()
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, errors.New("proxy probe failed: connection, TLS, authentication or timeout; no direct fallback")
+		if errors.Is(err, context.Canceled) {
+			return nil, errors.New("proxy probe canceled")
+		}
+		if os.IsTimeout(err) {
+			return nil, errors.New("proxy probe timed out; no direct fallback")
+		}
+		return nil, errors.New("proxy connection, TLS or tunnel authentication failed; no direct fallback")
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusProxyAuthRequired {
+		return nil, errors.New("proxy authentication failed (HTTP 407)")
+	}
 	failed = false
-	return map[string]interface{}{"node_id": nodeID, "http_status": response.StatusCode, "latency_ms": time.Since(start).Milliseconds(), "reachable": true}, nil
+	return map[string]interface{}{"node_id": nodeID, "http_status": response.StatusCode, "latency_ms": time.Since(start).Milliseconds(), "reachable": true, "usable": response.StatusCode >= 200 && response.StatusCode < 300}, nil
 }

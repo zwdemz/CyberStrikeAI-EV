@@ -17,12 +17,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/mcp"
 )
 
 // Store isolates persistence. Implementations must parameterize queries and enforce project foreign keys.
 type Store interface {
 	SaveTestProxyPool(context.Context, string, []byte) error
+	SaveTestProxyPreference(context.Context, string, string) error
+	TestProxyPreference(context.Context, string) (string, bool, error)
 	TestProxyPools(context.Context) ([][]byte, error)
 	BindTestProxy(context.Context, string, string) error
 	TestProxyBinding(context.Context, string) (string, error)
@@ -185,7 +188,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		}
 	}
 	if err := s.store.DeleteTestProxyPool(ctx, id); err != nil {
-		return errors.New("could not delete pool; unbind projects first")
+		return errors.New("could not delete pool; clear account preferences and legacy bindings first")
 	}
 	for key := range s.states {
 		if strings.HasPrefix(key, id+":") {
@@ -226,6 +229,13 @@ func (s *Service) Bind(ctx context.Context, projectID, poolID string) error {
 	if projectID == "" {
 		return errors.New("project is required")
 	}
+	if err := s.validatePool(ctx, poolID); err != nil {
+		return err
+	}
+	return s.store.BindTestProxy(ctx, projectID, poolID)
+}
+
+func (s *Service) validatePool(ctx context.Context, poolID string) error {
 	if poolID != "" {
 		pools, err := s.pools(ctx)
 		if err != nil {
@@ -243,11 +253,40 @@ func (s *Service) Bind(ctx context.Context, projectID, poolID string) error {
 			return errors.New("pool has no enabled nodes")
 		}
 	}
-	return s.store.BindTestProxy(ctx, projectID, poolID)
+	return nil
 }
 
-// Binding resolves trusted project context. Database failures are never treated as direct-connect permission.
+// Preference reads only the trusted authenticated account; missing identity fails closed.
+func (s *Service) Preference(ctx context.Context) (string, bool, error) {
+	p, ok := authctx.PrincipalFromContext(ctx)
+	if !ok {
+		return "", false, errors.New("authenticated account required")
+	}
+	return s.store.TestProxyPreference(ctx, p.UserID)
+}
+
+// SetPreference remembers an explicit choice across sessions; callers require configuration permission.
+// Invalid or disabled pools and persistence failures leave the previous selection unchanged.
+func (s *Service) SetPreference(ctx context.Context, poolID string) error {
+	p, ok := authctx.PrincipalFromContext(ctx)
+	if !ok {
+		return errors.New("authenticated account required")
+	}
+	if err := s.validatePool(ctx, poolID); err != nil {
+		return err
+	}
+	return s.store.SaveTestProxyPreference(ctx, p.UserID, poolID)
+}
+
+// Binding resolves the authenticated account preference, then legacy project constraints.
+// Database failures are never treated as direct-connect permission.
 func (s *Service) Binding(ctx context.Context) (string, error) {
+	if _, ok := authctx.PrincipalFromContext(ctx); ok {
+		id, exists, err := s.Preference(ctx)
+		if err != nil || exists {
+			return id, err
+		}
+	}
 	id := mcp.MCPProjectIDFromContext(ctx)
 	if id == "" && mcp.MCPConversationIDFromContext(ctx) != "" {
 		var err error
