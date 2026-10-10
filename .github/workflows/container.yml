@@ -1,0 +1,55 @@
+name: Linux container
+on:
+  pull_request:
+    paths: ['Dockerfile', 'compose.yaml', 'scripts/docker-entrypoint.sh', '.dockerignore', '.github/workflows/container.yml']
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate publication target
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$PRERELEASE" == false ]]
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Validate Compose and build
+        run: |
+          docker compose config --quiet
+          docker build --tag cyberstrike-ai-ev:check .
+          test "$(docker inspect --format '{{.Config.User}}' cyberstrike-ai-ev:check)" = '10001:10001'
+      - name: Smoke test non-root container
+        run: |
+          docker run -d --name ev-smoke --cap-drop ALL --security-opt no-new-privileges cyberstrike-ai-ev:check
+          trap 'docker rm -f ev-smoke >/dev/null' EXIT
+          ready=false
+          for attempt in $(seq 1 60); do
+            if docker exec ev-smoke curl --fail --silent --max-time 2 http://127.0.0.1:8080/ >/dev/null; then ready=true; break; fi
+            sleep 2
+          done
+          test "$ready" = true
+      - name: Publish release image
+        if: github.event_name == 'release'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag cyberstrike-ai-ev:check "$image:$RELEASE_TAG"
+          docker push "$image:$RELEASE_TAG"

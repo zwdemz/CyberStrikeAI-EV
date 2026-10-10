@@ -112,6 +112,13 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		return nil, fmt.Errorf("初始化数据库失败: %w", err)
 	}
 
+	recovery, err := db.RecoverInterruptedTasks()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("recover interrupted tasks: %w", err)
+	}
+	log.Logger.Info("Recovered interrupted task state", zap.Int64("tasks", recovery.Tasks), zap.Int64("queues", recovery.Queues), zap.Int64("messages", recovery.Messages))
+
 	// 认证管理器（数据库初始化后挂载 RBAC）
 	authManager := security.NewAuthManager(cfg.Auth.SessionDurationHours)
 	if generatedPassword, err := authManager.AttachRBACStore(db); err != nil {
@@ -158,6 +165,9 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	mcpServer := mcp.NewServerWithStorage(log.Logger, db)
 	mcpServer.SetToolAuthorizer(mcpToolAuthorizer(db))
 	mcpServer.SetToolGuard(toolGuard)
+	if err := mcpServer.ConfigureTrustedProxies(cfg.Server.TrustedProxies); err != nil {
+		return nil, fmt.Errorf("configure MCP trusted proxies: %w", err)
+	}
 	mcpServer.ConfigureHTTPToolCallTimeoutFromAgentMinutes(cfg.Agent.ToolTimeoutMinutes)
 	mcpServer.ConfigureToolWaitTimeoutSeconds(cfg.Agent.ToolWaitTimeoutSeconds)
 	mcpServer.ConfigureToolResultMaxBytes(cfg.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
