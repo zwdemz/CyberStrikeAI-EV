@@ -1,7 +1,9 @@
 package config
 
 import (
+	"maps"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -52,6 +54,11 @@ func expandEnvVar(s string) string {
 // ExpandConfigEnv 展开 ExternalMCPServerConfig 中所有支持环境变量的字段。
 // 展开范围：Command、Args、Env values、URL、Headers values。
 func ExpandConfigEnv(cfg *ExternalMCPServerConfig) {
+	// Configuration values are copied by value into running clients. Detach their
+	// reference fields before expansion so those clients retain immutable inputs.
+	cfg.Args = slices.Clone(cfg.Args)
+	cfg.Env = maps.Clone(cfg.Env)
+	cfg.Headers = maps.Clone(cfg.Headers)
 	cfg.Command = expandEnvVar(cfg.Command)
 	for i, arg := range cfg.Args {
 		cfg.Args[i] = expandEnvVar(arg)

@@ -13,6 +13,7 @@ import (
 	einoembedopenai "github.com/cloudwego/eino-ext/components/embedding/openai"
 	"github.com/cloudwego/eino/components/embedding"
 	"go.uber.org/zap"
+	"golang.org/x/sync/semaphore"
 	"golang.org/x/time/rate"
 )
 
@@ -26,7 +27,8 @@ type Embedder struct {
 	rateLimitDelay time.Duration
 	maxRetries     int
 	retryDelay     time.Duration
-	mu             sync.Mutex
+	waitSlots      *semaphore.Weighted
+	waitOnce       sync.Once
 }
 
 // NewEmbedder 基于 Eino eino-ext OpenAI Embedder；openAIConfig 用于在知识库未单独配置 key 时回退 API Key。
@@ -118,19 +120,28 @@ func (e *Embedder) EmbeddingModelName() string {
 	return "text-embedding-3-small"
 }
 
-func (e *Embedder) waitRateLimiter() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
+// waitRateLimiter serializes throttle waits and returns cancellation before an API call.
+func (e *Embedder) waitRateLimiter(ctx context.Context) error {
+	e.waitOnce.Do(func() { e.waitSlots = semaphore.NewWeighted(1) })
+	if err := e.waitSlots.Acquire(ctx, 1); err != nil {
+		return err
+	}
+	defer e.waitSlots.Release(1)
 	if e.rateLimiter != nil {
-		ctx := context.Background()
-		if err := e.rateLimiter.Wait(ctx); err != nil && e.logger != nil {
-			e.logger.Warn("速率限制器等待失败", zap.Error(err))
+		if err := e.rateLimiter.Wait(ctx); err != nil {
+			return err
 		}
 	}
 	if e.rateLimitDelay > 0 {
-		time.Sleep(e.rateLimitDelay)
+		timer := time.NewTimer(e.rateLimitDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
+	return ctx.Err()
 }
 
 // EmbedText 单条嵌入（float32，与历史存储格式一致）。
@@ -166,8 +177,9 @@ func (e *Embedder) EmbedStrings(ctx context.Context, texts []string, opts ...emb
 				return nil, ctx.Err()
 			case <-time.After(wait):
 			}
-		} else {
-			e.waitRateLimiter()
+		}
+		if err := e.waitRateLimiter(ctx); err != nil {
+			return nil, err
 		}
 
 		raw, err := e.eino.EmbedStrings(ctx, texts, opts...)

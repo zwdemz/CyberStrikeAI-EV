@@ -79,3 +79,16 @@ func TestExpandConfigEnv(t *testing.T) {
 		t.Errorf("Headers[Authorization] = %q, want %q", cfg.Headers["Authorization"], "Bearer secret123")
 	}
 }
+
+func TestExpandConfigEnvPreservesSharedClientInputs(t *testing.T) {
+	t.Setenv("EV_EXPANSION_FIXTURE", "expanded")
+	source := ExternalMCPServerConfig{Args: []string{"${EV_EXPANSION_FIXTURE}"}, Env: map[string]string{"fixture": "${EV_EXPANSION_FIXTURE}"}, Headers: map[string]string{"X-Fixture": "${EV_EXPANSION_FIXTURE}"}}
+	candidate := source
+	ExpandConfigEnv(&candidate)
+	if candidate.Args[0] != "expanded" || candidate.Env["fixture"] != "expanded" || candidate.Headers["X-Fixture"] != "expanded" {
+		t.Fatal("environment references were not expanded")
+	}
+	if source.Args[0] != "${EV_EXPANSION_FIXTURE}" || source.Env["fixture"] != "${EV_EXPANSION_FIXTURE}" || source.Headers["X-Fixture"] != "${EV_EXPANSION_FIXTURE}" {
+		t.Fatal("running client inputs were mutated")
+	}
+}

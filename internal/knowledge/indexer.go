@@ -16,11 +16,13 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
+	"golang.org/x/sync/semaphore"
 )
 
 // Indexer 使用 Eino Compose 索引链（Markdown/递归分块、Lambda  enrich、SQLite 索引）与嵌入写入。
 type Indexer struct {
-	indexMu     sync.Mutex // serializes writes and chain recompilation within this indexer
+	indexMu     *semaphore.Weighted // cancellable indexing serialization
+	indexOnce   sync.Once
 	db          *sql.DB
 	embedder    *Embedder
 	logger      *zap.Logger
@@ -116,8 +118,10 @@ func (idx *Indexer) RecompileIndexChain(ctx context.Context) error {
 	if idx == nil {
 		return fmt.Errorf("indexer is nil")
 	}
-	idx.indexMu.Lock()
-	defer idx.indexMu.Unlock()
+	if err := idx.acquireIndex(ctx); err != nil {
+		return err
+	}
+	defer idx.indexMu.Release(1)
 	if idx.db == nil || idx.embedder == nil {
 		return fmt.Errorf("indexer 未初始化")
 	}
@@ -146,8 +150,10 @@ func (idx *Indexer) IndexItem(ctx context.Context, itemID string) error {
 }
 
 func (idx *Indexer) indexItem(ctx context.Context, itemID string, skipComplete bool) error {
-	idx.indexMu.Lock()
-	defer idx.indexMu.Unlock()
+	if err := idx.acquireIndex(ctx); err != nil {
+		return err
+	}
+	defer idx.indexMu.Release(1)
 	if idx.indexChain == nil {
 		return fmt.Errorf("索引链未初始化")
 	}
@@ -337,9 +343,11 @@ func (idx *Indexer) runRebuildIndex(ctx context.Context) error {
 
 func (idx *Indexer) runIndexMissing(ctx context.Context) error {
 	idx.resetLastError()
-	idx.indexMu.Lock()
+	if err := idx.acquireIndex(ctx); err != nil {
+		return err
+	}
 	configHash, preferSource := idx.indexConfigHash(), idx.indexingCfg.PreferSourceFile
-	idx.indexMu.Unlock()
+	idx.indexMu.Release(1)
 
 	rows, err := idx.db.QueryContext(ctx, `
         SELECT i.id FROM knowledge_base_items i LEFT JOIN knowledge_index_state s ON s.item_id=i.id
@@ -474,4 +482,10 @@ func (idx *Indexer) GetRebuildStatus() (isRebuilding bool, totalItems int, curre
 	idx.rebuildMu.RLock()
 	defer idx.rebuildMu.RUnlock()
 	return idx.isRebuilding, idx.rebuildTotalItems, idx.rebuildCurrent, idx.rebuildFailed, idx.rebuildLastItemID, idx.rebuildLastChunks, idx.rebuildStartTime
+}
+
+// acquireIndex waits for exclusive indexing access, or returns caller cancellation.
+func (idx *Indexer) acquireIndex(ctx context.Context) error {
+	idx.indexOnce.Do(func() { idx.indexMu = semaphore.NewWeighted(1) })
+	return idx.indexMu.Acquire(ctx, 1)
 }
