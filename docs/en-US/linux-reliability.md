@@ -88,8 +88,8 @@ endpoint, chunking and sub-index changes require reindexing. With
 after that read are detected on the next resume, not atomically with SQLite.
 
 Legacy indexes have no completeness marker and are rebuilt once when you request
-resume; this can consume embedding quota. No automatic paid rebuild runs on
-upgrade. Failed items remain eligible for retry. Empty content gets a valid
+resume; this can consume embedding quota. This change does not force a full legacy rebuild on startup. Existing startup
+behavior still indexes new/changed items and initializes empty indexes. Failed items remain eligible for retry. Empty content gets a valid
 zero-chunk marker. This is an integrity check of indexing completion, not a
 cryptographic audit of every stored vector. Back up both knowledge and conversation
 databases/configuration while stopped before upgrading.

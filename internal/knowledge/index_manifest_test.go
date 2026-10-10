@@ -266,3 +266,46 @@ func TestIndexResumeReportsFailureAndDetectsFileAndChunkChanges(t *testing.T) {
 		t.Fatal("chunk config was not applied")
 	}
 }
+
+func TestKnowledgeEditRetainsVectorsUntilReplacementSucceeds(t *testing.T) {
+	db, a := manifestFixture(t)
+	base := t.TempDir()
+	source := filepath.Join(base, "category", "title.md")
+	if err := os.MkdirAll(filepath.Dir(source), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("body"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE knowledge_base_items ADD COLUMN created_at TEXT NOT NULL DEFAULT '2026-01-01 00:00:00'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE knowledge_base_items SET file_path=?`, source); err != nil {
+		t.Fatal(err)
+	}
+	a.FilePath = source
+	ctx := context.WithValue(context.Background(), indexAttemptKey{}, a)
+	if _, err := NewSQLiteIndexer(db, 1, "model").Store(ctx, manifestDocs(), indexer.WithEmbedding(&manifestEmbedder{})); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(db, base, zap.NewNop())
+	if _, err := manager.UpdateItem("item", "category", "title", "edited body"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.KnowledgeConfig{}
+	embed := &Embedder{config: cfg, eino: &manifestEmbedder{failAt: 1}, maxRetries: 1, logger: zap.NewNop()}
+	idx, err := NewIndexer(context.Background(), db, embed, zap.NewNop(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = idx.IndexItem(context.Background(), "item"); err == nil {
+		t.Fatal("expected provider failure after edit")
+	}
+	var rows int
+	if err = db.QueryRow(`SELECT count(*) FROM knowledge_embeddings WHERE item_id='item'`).Scan(&rows); err != nil || rows != 2 {
+		t.Fatalf("edit erased old vectors: %d %v", rows, err)
+	}
+	if err = db.QueryRow(`SELECT count(*) FROM knowledge_index_state WHERE item_id='item'`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatal("edited item retained stale completion marker")
+	}
+}

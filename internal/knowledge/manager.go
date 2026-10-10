@@ -681,11 +681,9 @@ func (m *Manager) UpdateItem(id, category, title, content string) (*KnowledgeIte
 		return nil, fmt.Errorf("更新知识项失败: %w", err)
 	}
 
-	// 删除旧的向量嵌入（需要重新索引）
-	_, err = m.db.Exec("DELETE FROM knowledge_embeddings WHERE item_id = ?", id)
-	if err != nil {
-		m.logger.Warn("删除旧向量嵌入失败", zap.Error(err))
-	}
+	// The source-update trigger invalidates the completion marker. Keep old
+	// vectors until the indexer publishes a complete replacement; provider
+	// failures must not erase a previously usable index.
 
 	return m.GetItem(id)
 }
