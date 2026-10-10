@@ -119,7 +119,7 @@ func ParseImport(raw string) ([]Node, error) {
 			if host != "" && !strings.EqualFold(strings.Trim(host, "[]"), u.Hostname()) || port != "" && port != u.Port() || get("类型", "type", "protocol") != "" && kind != strings.ToLower(u.Scheme) {
 				return nil, fmt.Errorf("conflicting endpoint columns at row %d", rowIndex+1)
 			}
-			user, pass := get("账号", "username", "user"), get("密码", "password")
+			user, pass := proxyTableCredentials(get("账号", "username", "user"), get("密码", "password"))
 			if user != "" || pass != "" {
 				if u.User != nil && u.User.String() != url.UserPassword(user, pass).String() {
 					return nil, fmt.Errorf("conflicting credentials at row %d", rowIndex+1)
@@ -162,4 +162,15 @@ func ParseImport(raw string) ([]Node, error) {
 		return nil, fmt.Errorf("a pool must have 1–200 unique nodes")
 	}
 	return out, nil
+}
+
+// proxyTableCredentials recognizes paired blank export markers only in table columns.
+// If either field contains a real value, preserve both fields (including a literal dash
+// password). URL userinfo is never normalized by this helper.
+func proxyTableCredentials(user, password string) (string, string) {
+	isBlank := func(value string) bool { return value == "" || value == "-" || value == "--" }
+	if isBlank(user) && isBlank(password) {
+		return "", ""
+	}
+	return user, password
 }

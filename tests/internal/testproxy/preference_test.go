@@ -84,3 +84,30 @@ func TestImportRejectsAmbiguousStatusAndAcceptsURLCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAnonymousTablePlaceholdersDoNotRequireEncryptionKey(t *testing.T) {
+	_, db, ctx := fixture(t)
+	service, err := testproxy.New(db, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fields := range []string{",", "-,-", "--,--", "-,--", ",--"} {
+		raw := "Host,Port,类型,账号,密码,状态\nlocalhost,1080,socks5," + fields + ",启用"
+		pool, err := service.Import(ctx, testproxy.Pool{Name: "anonymous"}, raw, false)
+		if err != nil {
+			t.Fatalf("anonymous placeholder import failed: %v", err)
+		}
+		if pool.Nodes[0].Address != "socks5://localhost:1080" || pool.Nodes[0].Secret != "" {
+			t.Fatal("anonymous credentials retained")
+		}
+	}
+	for _, raw := range []string{
+		"Host,Port,账号,密码\nlocalhost,1080,real-user,-",
+		"Host,Port,账号,密码\nlocalhost,1080,-,real-password",
+		"socks5://-:--@localhost:1080",
+	} {
+		if _, err := service.Import(ctx, testproxy.Pool{Name: "authenticated"}, raw, false); err == nil {
+			t.Fatal("real credentials discarded")
+		}
+	}
+}

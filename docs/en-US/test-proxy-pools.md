@@ -74,3 +74,5 @@ The `test_proxy_preferences(user_id,pool_id)` table uses the account primary key
 Imports reject duplicate headers and unknown status values, rather than silently enabling nodes. Markdown trailing empty columns, CSV, TSV and URL lists remain supported. Imported latency is not a fresh health check.
 
 Probes make one HEAD request to an explicitly configured controlled endpoint, without redirects or direct fallback. HTTP 407 is an authentication failure; cancellation and timeout have distinct messages. `reachable` means a response arrived; `usable` requires 2xx from the probe endpoint. Other target statuses, including 403 and 429, never trigger rotation. A successful check does not guarantee access to every site.
+
+When both table credential columns are empty, `-`, or `--`, import treats them as anonymous and does not require `TEST_PROXY_KEY`. If either column contains an actual value, both are preserved. Explicit URL credentials are never normalized as placeholders.
