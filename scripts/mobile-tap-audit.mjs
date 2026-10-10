@@ -1,3 +1,4 @@
+import { callPage } from './cdp-call.mjs';
 /*
  * CyberStrikeAI — mobile tap audit.
  *
@@ -119,6 +120,8 @@ const ev = async expr => {
   if (r.exceptionDetails) return { __err: (r.exceptionDetails.exception?.description || r.exceptionDetails.text).slice(0, 300) };
   return r.result?.value;
 };
+
+const pageCall = (fn, ...values) => callPage(send, sessionId, fn, values);
 
 /* 真手指只有 touch：Chromium 在移动模拟下会自己从 touchEnd 合成一次 click。
    再补一对 mouse 事件就是第二次 click —— 抽屉/面板会被「开了又关」，
@@ -301,11 +304,10 @@ const DETECT = `(function(){
 
 /* DETECT 默认扫"当前页 + 全局固定件"。遮罩展开时页面元素会被 scrim 判成 covered，
    所以扫抽屉/面板要限定作用域，否则全是假红。 */
-const detectFor = scope => DETECT.replace('/*SCOPE*/',
-  scope ? `if(!el.closest(${JSON.stringify(scope)})) return;` : '');
+const detectFor = scope => pageCall('function(scope) { return ' + DETECT.replace('/*SCOPE*/', 'if(scope && !el.closest(scope)) return;') + '; }', scope || '');
 
 async function openPage(hash) {
-  await ev(`location.hash=${JSON.stringify(hash)}`);
+  await pageCall(function(route) { location.hash=route; }, hash);
   await sleep(2600);
 }
 
@@ -317,7 +319,7 @@ await sleep(3500);
 /* The login card is a phone surface too — check it before authenticating. */
 const login = await ev(DETECT);
 if (!COOKIE) {
-  await ev(`(()=>{const u=document.getElementById('login-username'),p=document.getElementById('login-password');if(u&&p){u.value=${JSON.stringify(USER)};p.value=${JSON.stringify(PASS)};document.getElementById('login-form').requestSubmit();}})()`);
+  await pageCall(function(user, password) { const u=document.getElementById('login-username'),p=document.getElementById('login-password'); if(u&&p){u.value=user;p.value=password;document.getElementById('login-form').requestSubmit();} }, USER, PASS);
   await sleep(8000);
 } else {
   console.log('using the session cookie supplied via --cookie; no password was sent');
@@ -354,7 +356,7 @@ for (const o of OVERLAYS) {
   await openPage(o.route);
   await ev(`(()=>{try{${o.open}}catch(e){}})()`);
   await sleep(900);                       /* 等开合动画结束，动画中量到的是位移中的盒子 */
-  const r = await ev(detectFor(o.scope));
+  const r = await detectFor(o.scope);
   if (!r || r.__err) { console.log(o.name, 'DETECT ERROR', r && r.__err); continue; }
   report.pages[o.name] = r;
   log(r);
@@ -387,7 +389,7 @@ if (CHROME) {
   for (const t of TAPS) {
     if (t.pre) await ev(`(()=>{try{${t.pre}}catch(e){}})()`);
     await sleep(320);
-    const box = await ev(`(()=>{const e=document.querySelector(${JSON.stringify(t.sel)});if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,w:r.width,h:r.height,shown:getComputedStyle(e).display!=='none'}})()`);
+    const box = await pageCall(function(selector) { const e=document.querySelector(selector);if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,w:r.width,h:r.height,shown:getComputedStyle(e).display!=='none'}; }, t.sel);
     if (!box || !box.shown) { report.chromeTaps.push({ name: t.name, ok: false, why: 'absent' }); console.log(`tap ${t.name.padEnd(20)} ABSENT`); continue; }
     events.length = 0;
     await fingerTap(box.x, box.y);

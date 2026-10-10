@@ -2245,7 +2245,8 @@ func updateC2Config(doc *yaml.Node, cfg config.C2Config) {
 
 func mergeHitlToolWhitelistSlice(existing, add []string) []string {
 	seen := make(map[string]struct{})
-	out := make([]string, 0, len(existing)+len(add))
+	// Grow only for unique entries; do not add potentially large input lengths.
+	out := make([]string, 0)
 	for _, list := range [][]string{existing, add} {
 		for _, t := range list {
 			n := strings.ToLower(strings.TrimSpace(t))

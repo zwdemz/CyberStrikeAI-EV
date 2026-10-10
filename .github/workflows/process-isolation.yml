@@ -50,5 +50,6 @@ jobs:
       - if: runner.os == 'Linux'
         name: Test and build Linux application
         run: |
+          node --test tests/web/*.test.cjs tests/web/*.test.mjs web/static/js/*.test.cjs
           go test -p 2 ./... -count=1 -timeout 5m
           go build -mod=readonly -o /tmp/cyberstrike-ai ./cmd/server

@@ -1,3 +1,4 @@
+import { callPage } from './cdp-call.mjs';
 /*
  * CyberStrikeAI — mobile shell screenshots.
  *
@@ -71,6 +72,8 @@ const ev = async expr => {
   return r.result?.value;
 };
 
+const pageCall = (fn, ...values) => callPage(send, sessionId, fn, values);
+
 /* 主题要先落进本站点的 localStorage，about:blank 上写是写给另一个 origin。
    换主题用 Page.navigate 重新进，不要在 eval 里 location.reload()——awaitPromise
    会等一个永远不回来的执行上下文。 */
@@ -78,7 +81,7 @@ await send('Page.navigate', { url: BASE + '/' }, sessionId);
 await sleep(1500);
 const theme = argv.theme || (argv.dark === '1' ? 'dark' : '');
 if (theme) {
-  await ev(`localStorage.setItem('cyberstrike-theme', ${JSON.stringify(theme)})`);
+  await pageCall(function(value) { localStorage.setItem('cyberstrike-theme', value); }, theme);
   await send('Page.navigate', { url: BASE + '/' }, sessionId);
 }
 await sleep(3000);
@@ -110,11 +113,11 @@ const PASS = argv.pass || process.env.CSAI_AUDIT_PASS || '';
 const COOKIE = argv.cookie || process.env.CSAI_AUDIT_COOKIE || '';
 if (COOKIE) await send('Network.setCookie', { name: 'auth_token', value: COOKIE, domain: new URL(BASE).hostname, path: '/' }, sessionId);
 if (USER && PASS) {
-  await ev(`(()=>{const u=document.getElementById('login-username'),p=document.getElementById('login-password');if(u&&p){u.value=${JSON.stringify(USER)};p.value=${JSON.stringify(PASS)};document.getElementById('login-form').requestSubmit();}})()`);
+  await pageCall(function(user, password) { const u=document.getElementById('login-username'),p=document.getElementById('login-password'); if(u&&p){u.value=user;p.value=password;document.getElementById('login-form').requestSubmit();} }, USER, PASS);
   await sleep(7000);
   console.log('logged in:', JSON.stringify(await ev(`(()=>{const o=document.getElementById('login-overlay');return o?getComputedStyle(o).display:'none'})()`)));
 }
-if (argv.route) { await ev(`location.hash=${JSON.stringify(argv.route)}`); await sleep(3000); }
+if (argv.route) { await pageCall(function(route) { location.hash=route; }, argv.route); await sleep(3000); }
 
 /* --eval='...' 用来在同一个已登录/已注入的页面上量一把真实计算样式 */
 if (argv.eval) {
@@ -148,7 +151,7 @@ if (argv.why) {
     }
     console.log(`== ${argv.why} 上命中且声明了 [${want.join(', ')}] 的规则，按级联顺序（后=更优先）==`);
     rows.forEach((r, i) => console.log(`${String(i).padStart(2)} ${r.origin.padEnd(10)} ${r.decls.join(' | ')}\n     ${r.selector}`));
-    const cs = await ev(`(()=>{const e=document.querySelector(${JSON.stringify(argv.why)});const c=getComputedStyle(e);return JSON.stringify(${JSON.stringify(want)}.reduce((o,k)=>(o[k]=c[k],o),{}),null,1)})()`);
+    const cs = await pageCall(function(selector, properties) { const e=document.querySelector(selector);const c=getComputedStyle(e);return JSON.stringify(properties.reduce((o,k)=>(o[k]=c[k],o),{}),null,1); }, argv.why, want);
     console.log('最终计算值:', cs);
   }
 }
@@ -162,7 +165,7 @@ async function fingerTap(x, y) {
   await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }, sessionId);
 }
 if (argv.tap) {
-  const box = await ev(`(()=>{const e=document.querySelector(${JSON.stringify(argv.tap)});if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+  const box = await pageCall(function(selector) { const e=document.querySelector(selector);if(!e)return null;const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}; }, argv.tap);
   if (!box) console.log('tap 目标不存在:', argv.tap);
   else {
     await fingerTap(box.x, box.y);
