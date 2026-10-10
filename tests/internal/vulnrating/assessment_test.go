@@ -8,7 +8,7 @@ import (
 )
 
 func fixture() *vulnrating.Assessment {
-	return &vulnrating.Assessment{EvidenceStatus: "verified", ImpactLevel: "major", Scope: "single", AssetValue: "sensitive", Access: "ordinary", Interaction: "none", Rationale: "Controlled accounts demonstrate full account control", Preconditions: "Ordinary account only"}
+	return &vulnrating.Assessment{EvidenceStatus: "verified", EvidenceBasis: "runtime", BoundaryStatus: "violated", ObservedImpact: "Controlled account access changed", VerificationDetails: "Before/after comparison using two controlled identities", ScopeEvidence: "One controlled account", HighImpactEvidence: "Complete account control demonstrated in recorded test", ImpactLevel: "major", Scope: "single", AssetValue: "sensitive", Access: "ordinary", Interaction: "none", Rationale: "Controlled accounts demonstrate full account control", Preconditions: "Ordinary account only"}
 }
 func TestRatingScenarios(t *testing.T) {
 	for _, test := range []struct{ name, impact, scope, asset, access, interaction, status, want string }{
@@ -38,7 +38,7 @@ func TestRatingScenarios(t *testing.T) {
 			if err != nil || got != test.want {
 				t.Fatalf("%s %v", got, err)
 			}
-			if a.Version != "ev-impact-v1" || a.SuggestedSeverity != test.want {
+			if a.Version != "ev-impact-v2" || a.SuggestedSeverity != test.want {
 				t.Fatal("client-derived fields trusted")
 			}
 		})

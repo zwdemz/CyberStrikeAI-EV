@@ -11,20 +11,26 @@ import (
 // Assessment records reported facts and a reproducible EV rating. Verified denotes
 // the reporter's evidence claim, not independent confirmation by the application.
 type Assessment struct {
-	Version           string `json:"version"`
-	EvidenceStatus    string `json:"evidence_status"`
-	ImpactLevel       string `json:"impact_level"`
-	Scope             string `json:"scope"`
-	AssetValue        string `json:"asset_value"`
-	Access            string `json:"access"`
-	Interaction       string `json:"interaction"`
-	Rationale         string `json:"rationale"`
-	Preconditions     string `json:"preconditions"`
-	PotentialImpact   string `json:"potential_impact,omitempty"`
-	ProposedSeverity  string `json:"proposed_severity,omitempty"`
-	SuggestedSeverity string `json:"suggested_severity"`
-	Adjustment        string `json:"adjustment"`
-	OverrideReason    string `json:"override_reason,omitempty"`
+	Version             string `json:"version"`
+	EvidenceStatus      string `json:"evidence_status"`
+	EvidenceBasis       string `json:"evidence_basis,omitempty"`
+	BoundaryStatus      string `json:"boundary_status,omitempty"`
+	ObservedImpact      string `json:"observed_impact,omitempty"`
+	VerificationDetails string `json:"verification_details,omitempty"`
+	ScopeEvidence       string `json:"scope_evidence,omitempty"`
+	HighImpactEvidence  string `json:"high_impact_evidence,omitempty"`
+	ImpactLevel         string `json:"impact_level"`
+	Scope               string `json:"scope"`
+	AssetValue          string `json:"asset_value"`
+	Access              string `json:"access"`
+	Interaction         string `json:"interaction"`
+	Rationale           string `json:"rationale"`
+	Preconditions       string `json:"preconditions"`
+	PotentialImpact     string `json:"potential_impact,omitempty"`
+	ProposedSeverity    string `json:"proposed_severity,omitempty"`
+	SuggestedSeverity   string `json:"suggested_severity"`
+	Adjustment          string `json:"adjustment"`
+	OverrideReason      string `json:"override_reason,omitempty"`
 }
 
 // Value encodes an assessment for SQL storage; nil preserves legacy unassessed rows.
@@ -91,7 +97,10 @@ func Evaluate(assessment *Assessment, proposed, evidence string, manual bool) (s
 			return "", fmt.Errorf("invalid %s", field.name)
 		}
 	}
-	for _, value := range []string{assessment.Rationale, assessment.Preconditions, assessment.PotentialImpact, assessment.OverrideReason} {
+	if !allowed(assessment.EvidenceBasis, "", "unknown", "static", "runtime") || !allowed(assessment.BoundaryStatus, "", "unknown", "expected", "violated") {
+		return "", fmt.Errorf("invalid evidence_basis or boundary_status")
+	}
+	for _, value := range []string{assessment.Rationale, assessment.Preconditions, assessment.PotentialImpact, assessment.OverrideReason, assessment.ObservedImpact, assessment.VerificationDetails, assessment.ScopeEvidence, assessment.HighImpactEvidence} {
 		if len(value) > 8000 {
 			return "", fmt.Errorf("assessment text exceeds 8000 bytes")
 		}
@@ -99,7 +108,7 @@ func Evaluate(assessment *Assessment, proposed, evidence string, manual bool) (s
 	if assessment.OverrideReason != "" && !manual {
 		return "", fmt.Errorf("manual override is not available to agent tools")
 	}
-	assessment.Version = "ev-impact-v1"
+	assessment.Version = "ev-impact-v2"
 	assessment.ProposedSeverity = proposed
 	assessment.SuggestedSeverity = "pending"
 	assessment.Adjustment = "Evidence is incomplete; no final rating assigned."
@@ -111,6 +120,23 @@ func Evaluate(assessment *Assessment, proposed, evidence string, manual bool) (s
 	}
 	if strings.TrimSpace(evidence) == "" || strings.TrimSpace(assessment.Rationale) == "" || strings.TrimSpace(assessment.Preconditions) == "" || assessment.ImpactLevel == "unknown" || assessment.Scope == "unknown" || assessment.AssetValue == "unknown" || assessment.Access == "unknown" || assessment.Interaction == "unknown" {
 		return "", fmt.Errorf("verified assessment requires evidence, rationale, explicit preconditions and all dimensions")
+	}
+	// Evidence gates fail to pending, not low: old clients and static candidates
+	// remain writable without inventing runtime effects. Manual overrides cannot
+	// bypass missing proof. These fields are claims, not independent verification.
+	missingProof := assessment.EvidenceBasis != "runtime" || !allowed(assessment.BoundaryStatus, "expected", "violated") || strings.TrimSpace(assessment.ObservedImpact) == "" || strings.TrimSpace(assessment.VerificationDetails) == "" || strings.TrimSpace(assessment.ScopeEvidence) == ""
+	if assessment.BoundaryStatus == "expected" && (assessment.ImpactLevel != "none" || strings.TrimSpace(assessment.OverrideReason) != "" && proposed != "info") {
+		missingProof = true
+	}
+	if (assessment.ImpactLevel == "major" || assessment.ImpactLevel == "critical" || assessment.OverrideReason != "" && (proposed == "high" || proposed == "critical")) && strings.TrimSpace(assessment.HighImpactEvidence) == "" {
+		missingProof = true
+	}
+	if missingProof {
+		assessment.Adjustment = "Rating withheld: document runtime observations, authorization boundary, actual effect and proven scope; major/critical claims require specific high-impact evidence. Static or hypothetical impact remains pending."
+		if strings.TrimSpace(assessment.OverrideReason) != "" {
+			return "", fmt.Errorf("complete evidence gates before a manual rating override")
+		}
+		return "pending", nil
 	}
 	rating := map[string]string{"none": "info", "limited": "low", "moderate": "medium", "major": "high", "critical": "critical"}[assessment.ImpactLevel]
 	assessment.Adjustment = "Baseline follows the reported demonstrated impact."

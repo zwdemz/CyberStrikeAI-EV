@@ -219,7 +219,7 @@ See [tools/README_EN.md](tools/README_EN.md) for tool definitions, customization
 ### Quick Start (One-Command Deployment)
 
 **Prerequisites:**
-- Go 1.26.8+ ([Install](https://go.dev/dl/); required by `go.mod`)
+- Go 1.26.9+ ([Install](https://go.dev/dl/); required by `go.mod`)
 - Python 3.10+ ([Install](https://www.python.org/downloads/))
 
 **One-Command Deployment:**
