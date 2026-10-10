@@ -763,9 +763,9 @@ func (h *AgentHandler) finalizeRobotAgentError(ctx context.Context, assistantMes
 
 func (h *AgentHandler) finalizeRobotAgentSuccess(taskCtx context.Context, assistantMessageID, conversationID string, resultMA *multiagent.RunResult) (string, string, error) {
 	reasoningContent := multiagent.AggregatedReasoningFromTraceJSON(resultMA.LastAgentTraceInput)
-	decision := h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, resultMA.MCPExecutionIDs, true)
+	decision := h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, resultMA.MCPExecutionIDs, false)
 	if cancelled := h.cleanupPendingToolExecutionsAfterIteration(taskCtx, conversationID, decision, nil); len(cancelled) > 0 {
-		decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, resultMA.MCPExecutionIDs, true)
+		decision = h.decideAgentRunForDeliveryWithPolicy(conversationID, assistantMessageID, "robot", resultMA, resultMA.MCPExecutionIDs, false)
 	}
 	h.persistFinalizationDecision(conversationID, assistantMessageID, "robot", resultMA.MCPExecutionIDs, reasoningContent, decision)
 	responseText := decision.FinalText

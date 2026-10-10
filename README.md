@@ -9,7 +9,7 @@
 
 **A customized CyberStrikeAI distribution for authorized, focused security validation, SRC workflows, and evidence-based remediation verification.**
 
-CyberStrikeAI-EV is maintained in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV), based on [AIPentest/CyberStrikeAI v1.7.21](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.21), upstream commit `82b0af10f8519bf4baaa08958a8dbe38299a7685`. It retains the Go/Eino agent platform, MCP integration, knowledge retrieval, workflows, and audit trail, with EV-specific role restrictions, tool readiness handling, DNSLog integration, reliability improvements, and security fixes. This is an independently maintained fork; upstream and EV tags with the same version number do not identify identical source trees.
+CyberStrikeAI-EV is maintained in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV), based on [AIPentest/CyberStrikeAI v1.7.22](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.22), upstream commit `762f798afbe4ea957e00fa4aedf1d5ceb762bdb6`. It retains the Go/Eino agent platform, MCP integration, knowledge retrieval, workflows, and audit trail, with EV-specific role restrictions, tool readiness handling, DNSLog integration, reliability improvements, and security fixes. This is an independently maintained fork; upstream and EV tags with the same version number do not identify identical source trees.
 
 **Start here:** [Quick start](#quick-start-one-command-deployment) · [Documentation](docs/en-US/README.md) · [Security hardening](docs/en-US/security-hardening.md)
 
