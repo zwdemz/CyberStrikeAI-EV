@@ -218,7 +218,7 @@ CyberStrikeAI-EV 维护于 [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/C
 ### 快速上手（一条命令部署）
 
 **环境要求：**
-- Go 1.26.8+（[下载安装](https://go.dev/dl/)，以 `go.mod` 为准）
+- Go 1.26.9+（[下载安装](https://go.dev/dl/)，以 `go.mod` 为准）
 - Python 3.10+ ([下载安装](https://www.python.org/downloads/))
 
 **一条命令部署：**
