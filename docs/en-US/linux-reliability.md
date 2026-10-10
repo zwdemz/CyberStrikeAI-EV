@@ -109,3 +109,8 @@ This covers the pinned baseline and Linux amd64, not every historical migration.
 python3 tests/container/upgrade_rollback.py \
   --current cyberstrike-ai-ev:check --baseline cyberstrike-ai-ev:baseline
 ```
+
+The historical baseline has a Settings-save YAML-node panic. The fixture seeds
+its initial setting offline; the upgraded image must save through the real API.
+The current handler fixes the document-versus-mapping node error and preserves
+the tool guard rules when saving other settings.

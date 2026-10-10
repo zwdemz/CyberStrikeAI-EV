@@ -67,3 +67,7 @@ Linux 容器工作流构建当前镜像和固定的 EV v1.7.22 基线镜像。
 python3 tests/container/upgrade_rollback.py \
   --current cyberstrike-ai-ev:check --baseline cyberstrike-ai-ev:baseline
 ```
+
+历史基线存在设置保存时 YAML 节点引用错误，因此测试离线写入基线配置，升级后的镜像必须
+通过真实 API 保存设置。当前处理器已修复把文档节点误作映射节点导致的空指针异常，
+保存其他设置时会保留工具拦截规则。

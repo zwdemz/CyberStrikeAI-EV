@@ -1970,7 +1970,8 @@ func updateToolGuardConfig(root *yaml.Node, cfg *toolguard.Config) {
 	if err := node.Encode(cfg); err != nil {
 		return
 	}
-	_, value := ensureKeyValue(root, "tool_guard")
+	// The document wraps the mapping node; passing the document returns nil.
+	_, value := ensureKeyValue(root.Content[0], "tool_guard")
 	*value = node
 }
 

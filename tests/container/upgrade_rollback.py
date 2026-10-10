@@ -44,11 +44,21 @@ class Regression:
             self.volumes[key] = docker("volume", "create", self.prefix + "-" + key)
         # Initialize ownership from the current image, including directories that
         # did not exist in the baseline image (such as /app/tmp).
-        args = ["run", "--rm", "--network", "none", "--entrypoint", "sh"]
+        args = ["run", "--rm", "--network", "none", "--entrypoint", "python3"]
         for key, path in self.mounts.items():
             args += ["-v", self.volumes[key] + ":" + path]
-        docker(*args, self.current, "-c",
-               "umask 077; cp /usr/local/share/cyberstrike-config.yaml /app/runtime/config.yaml")
+        # The historical baseline has a Settings YAML-node panic. Seed its
+        # setting offline; only the fixed current image must save via the API.
+        seed = """from pathlib import Path
+import re
+source = Path('/usr/local/share/cyberstrike-config.yaml').read_text()
+source, count = re.subn(r'(?m)^  max_iterations:.*$', '  max_iterations: 37', source)
+assert count == 1
+target = Path('/app/runtime/config.yaml')
+target.write_text(source)
+target.chmod(0o600)
+"""
+        docker(*args, self.current, "-c", seed)
 
     def api(self, path, data=None, method=None):
         headers = {"Content-Type": "application/json"}
@@ -131,7 +141,6 @@ class Regression:
     def run(self):
         self.initialize()
         self.start(self.baseline)
-        self.api("/api/config", {"agent": {"max_iterations": 37}}, "PUT")
         conversation_id = self.api("/api/conversations", {"title": "container regression fixture"})["id"]
         for key, path in self.mounts.items():
             docker("exec", self.container, "sh", "-c", 'printf "%s" "$1" > "$2/.upgrade-fixture"', "fixture", key, path)
