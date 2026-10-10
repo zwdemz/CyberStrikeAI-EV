@@ -125,7 +125,7 @@ func Evaluate(assessment *Assessment, proposed, evidence string, manual bool) (s
 	// remain writable without inventing runtime effects. Manual overrides cannot
 	// bypass missing proof. These fields are claims, not independent verification.
 	missingProof := assessment.EvidenceBasis != "runtime" || !allowed(assessment.BoundaryStatus, "expected", "violated") || strings.TrimSpace(assessment.ObservedImpact) == "" || strings.TrimSpace(assessment.VerificationDetails) == "" || strings.TrimSpace(assessment.ScopeEvidence) == ""
-	if assessment.BoundaryStatus == "expected" && assessment.ImpactLevel != "none" {
+	if assessment.BoundaryStatus == "expected" && (assessment.ImpactLevel != "none" || strings.TrimSpace(assessment.OverrideReason) != "" && proposed != "info") {
 		missingProof = true
 	}
 	if (assessment.ImpactLevel == "major" || assessment.ImpactLevel == "critical" || assessment.OverrideReason != "" && (proposed == "high" || proposed == "critical")) && strings.TrimSpace(assessment.HighImpactEvidence) == "" {

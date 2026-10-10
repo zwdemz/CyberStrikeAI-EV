@@ -46,6 +46,13 @@ func TestExpectedPublicAccessAndLimitedImpact(t *testing.T) {
 	if got, err := vulnrating.Evaluate(a, "high", "public page matches documented policy", false); err != nil || got != "info" {
 		t.Fatal(got, err)
 	}
+	a.OverrideReason = "Raise expected public access"
+	a.HighImpactEvidence = "A claim cannot override an expected boundary"
+	if _, err := vulnrating.Evaluate(a, "high", "public access", true); err == nil {
+		t.Fatal("manual override contradicted expected access")
+	}
+	a.OverrideReason = ""
+	a.HighImpactEvidence = ""
 	a.BoundaryStatus = "violated"
 	a.ImpactLevel = "limited"
 	if got, err := vulnrating.Evaluate(a, "high", "limited disclosure", false); err != nil || got != "low" {
