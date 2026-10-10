@@ -310,6 +310,13 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 			continue
 		}
 
+		// Do not advertise missing executables: descriptions alone cannot prevent
+		// repeated model calls. Keep configuration enabled for recovery on reload.
+		if missing, ok := missingTools[toolConfig.Name]; ok {
+			e.logger.Warn("跳过不可用工具注册", zap.String("tool", missing.Name), zap.String("reason", missing.Reason))
+			continue
+		}
+
 		// 创建工具配置的副本，避免闭包问题
 		toolName := toolConfig.Name
 		toolConfigCopy := toolConfig
@@ -339,15 +346,6 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 			Description:      toolConfigCopy.Description,
 			ShortDescription: shortDesc,
 			InputSchema:      e.buildInputSchema(&toolConfigCopy),
-		}
-		if missing, ok := missingTools[toolName]; ok {
-			hint := fmt.Sprintf("当前不可用：依赖命令 %q %s。请勿重复调用；先由维护流程将依赖安装到项目 tools/runtime 并重新加载。仅在角色允许且替代工具可用时考虑 Python 等价处理。", missing.Command, missing.Reason)
-			tool.Description = hint + "\n\n" + tool.Description
-			if tool.ShortDescription == "" {
-				tool.ShortDescription = hint
-			} else {
-				tool.ShortDescription = hint + " " + tool.ShortDescription
-			}
 		}
 
 		handler := func(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {

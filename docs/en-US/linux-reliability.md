@@ -144,3 +144,17 @@ Linux regression checks:
 go test ./internal/handler ./internal/knowledge
 go test -race ./internal/knowledge
 ```
+
+## Avoiding unavailable tool calls
+
+Enabled local tools whose executables cannot be resolved are omitted from MCP
+registration, instead of attaching an unavailable warning to an advertised tool.
+Their configuration remains enabled. Install the dependency in the managed tool
+runtime or PATH, then apply/reload the configuration or restart to register it.
+No command is executed by the availability check. Disabled tools stay disabled;
+internal tools do not require an external executable. A dependency removed after
+registration is still checked at execution time.
+
+This reduces unnecessary tool schemas and calls, but does not validate Python
+imports, remote reachability, credentials, provider quota or target behavior.
+Monitor history is retained; old failures are not evidence of a new failure.
