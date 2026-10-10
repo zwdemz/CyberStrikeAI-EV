@@ -15,6 +15,7 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/dnslog"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/testproxy"
 	"cyberstrike-ai/internal/tooloutput"
 
 	"github.com/creack/pty"
@@ -129,6 +130,21 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		zap.Any("args", args),
 	)
 
+	if err := testproxy.CheckTool(ctx, toolName); err != nil {
+		return nil, err
+	}
+	var proxyLease *testproxy.Lease
+	if toolName == "http-framework-test" && testproxy.Current() != nil {
+		waitCtx, cancel := context.WithTimeout(ctx, testproxy.Current().QueueTimeout())
+		var err error
+		proxyLease, err = testproxy.Current().Acquire(waitCtx, fmt.Sprint(args["url"]))
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		defer proxyLease.Finish(false)
+	}
+
 	// 特殊处理：exec工具直接执行系统命令
 	if toolName == "exec" {
 		e.logger.Debug("执行exec工具")
@@ -194,6 +210,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	}
 	cmd := exec.CommandContext(ctx, command, cmdArgs...)
 	applyDefaultTerminalEnv(cmd)
+	if proxyLease != nil {
+		cmd.Env = append(cmd.Env, "CYBERSTRIKE_TEST_PROXY="+proxyLease.URL)
+	}
 	attachNonInteractiveStdin(cmd)
 	_ = prepareShellCmdSession(cmd)
 
@@ -209,7 +228,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); (ok && cb != nil) || mcp.MCPExecutionIDFromContext(ctx) != "" {
 		cb = e.wrapToolOutputCallback(ctx, cb)
 		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec), e.toolOutputMaxBytes, spill)
-		if err != nil && shouldRetryWithPTY(output) {
+		if err != nil && proxyLease == nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
 			)
@@ -221,7 +240,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	} else {
 		// 非流式：内存缓冲 + ctx 取消杀进程组；行为对齐原 CombinedOutput，避免双流管道 fan-in 死锁。
 		output, err = combinedOutputCancellableWithLimit(ctx, cmd, e.toolOutputMaxBytes, spill)
-		if err != nil && shouldRetryWithPTY(output) {
+		if err != nil && proxyLease == nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
 			)
@@ -230,6 +249,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 			_ = prepareShellCmdSession(cmd2)
 			output, err = runCommandWithPTY(ctx, cmd2, nil, e.toolOutputMaxBytes, spill)
 		}
+	}
+	if proxyLease != nil {
+		proxyLease.Finish(err != nil && getExitCodeValue(err) == 76)
+		output = "[test-proxy node=" + proxyLease.ID + "]\n" + output
 	}
 	if err != nil {
 		// 检查退出码是否在允许列表中

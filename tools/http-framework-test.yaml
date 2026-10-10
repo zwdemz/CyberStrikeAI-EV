@@ -1141,6 +1141,13 @@ args:
                 sys.exit(1)
         cert = additional_options.get("cert")
         explicit_proxy = (args.proxy or "").strip()
+        required_proxy = os.environ.get("CYBERSTRIKE_TEST_PROXY", "").strip()
+        if required_proxy:
+            if repeat != 1:
+                print("TEST_PROXY_REPEAT_BLOCKED: use one request per tool call")
+                sys.exit(2)
+            explicit_proxy = required_proxy
+            trust_env = False
         forward_proxy = resolve_forward_proxy(explicit_proxy, trust_env, encoded_url)
 
         transport_kwargs = {
@@ -1335,6 +1342,8 @@ args:
                     exit_code = 1
                     elapsed = time.perf_counter() - start
                     failure = classify_request_error(exc, response_started)
+                    if required_proxy and not response_started and isinstance(exc, (httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout)) and failure["error_code"] != "HTTP_TLS_ERROR":
+                        exit_code = 76
                     failure.update({
                         "request_elapsed_seconds": round(elapsed, 6),
                         "operation_elapsed_seconds": round(time.perf_counter() - operation_start, 6),

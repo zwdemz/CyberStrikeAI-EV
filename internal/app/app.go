@@ -34,6 +34,7 @@ import (
 	"cyberstrike-ai/internal/security"
 	"cyberstrike-ai/internal/skillpackage"
 	"cyberstrike-ai/internal/storage"
+	"cyberstrike-ai/internal/testproxy"
 	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/gin-gonic/gin"
@@ -52,6 +53,7 @@ type App struct {
 	agent              *agent.Agent
 	executor           *security.Executor
 	db                 *database.DB
+	proxyService       *testproxy.Service
 	knowledgeDB        *database.DB // 知识库数据库连接（如果使用独立数据库）
 	auth               *security.AuthManager
 	knowledgeManager   *knowledge.Manager        // 知识库管理器（用于动态初始化）
@@ -160,6 +162,21 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	hitlRetention := hitl.NewService(db, cfg, log.Logger)
 	hitlRetention.PurgeExpired()
 	hitl.StartRetentionLoop(hitlRetention, log.Logger)
+
+	if err := db.InitTestProxyStorage(); err != nil {
+		return nil, fmt.Errorf("initialize test proxy storage: %w", err)
+	}
+	proxyService, err := testproxy.New(db, os.Getenv("TEST_PROXY_KEY"))
+	if err != nil {
+		return nil, err
+	}
+	if err := proxyService.Configure(cfg.TestProxy.MaxConcurrent, cfg.TestProxy.MaxConcurrentPerTarget, cfg.TestProxy.QueueTimeoutSeconds); err != nil {
+		return nil, err
+	}
+	if err := proxyService.ConfigureProbeURLs(cfg.TestProxy.ProbeURLs); err != nil {
+		return nil, err
+	}
+	testproxy.Install(proxyService)
 
 	// 创建MCP服务器（带数据库持久化）
 	mcpServer := mcp.NewServerWithStorage(log.Logger, db)
@@ -536,6 +553,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		agent:              agent,
 		executor:           executor,
 		db:                 db,
+		proxyService:       proxyService,
 		knowledgeDB:        knowledgeDBConn,
 		auth:               authManager,
 		knowledgeManager:   knowledgeManager,
@@ -821,6 +839,7 @@ func (a *App) RunWithContext(ctx context.Context) error {
 
 // Shutdown 关闭应用
 func (a *App) Shutdown() {
+	defer testproxy.Uninstall(a.proxyService)
 	if a.agentHandler != nil {
 		a.agentHandler.ShutdownTasks()
 	}
@@ -980,6 +999,8 @@ func setupRoutes(
 ) {
 	// API路由
 	api := router.Group("/api")
+
+	handler.RegisterTestProxyRoutes(api, authManager, app.db, app.logger.Logger)
 
 	// 认证相关路由
 	authRoutes := api.Group("/auth")
