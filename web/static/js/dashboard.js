@@ -1189,12 +1189,12 @@ function stopDashboardAutoRefresh() {
 
 // 严重度配色及中文标签
 var SEVERITY_LABELS_FALLBACK = {
-    critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息'
+    critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息', pending: '待验证'
 };
 
 function severityShortLabel(id) {
     const key = 'dashboard.severity' + id.charAt(0).toUpperCase() + id.slice(1);
-    return t(key, null, SEVERITY_LABELS_FALLBACK[id] || id);
+    return dt(key, null, SEVERITY_LABELS_FALLBACK[id] || id);
 }
 
 // 友好的相对时间："5 分钟前" / "2 小时前" / "昨天" / "3 天前"

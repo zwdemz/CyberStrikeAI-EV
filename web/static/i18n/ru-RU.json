@@ -179,6 +179,7 @@
     "severityMedium": "Средняя",
     "severityLow": "Низкая",
     "severityInfo": "Инфо",
+    "severityPending": "Ожидает проверки",
     "totalVulns": "Всего уязвимостей",
     "riskLevel": "Уровень риска",
     "riskScore": "Взвешенный балл риска",
