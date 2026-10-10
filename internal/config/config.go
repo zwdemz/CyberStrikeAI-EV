@@ -458,6 +458,8 @@ func (c MultiAgentEinoMiddlewareConfig) ReductionMaxTokensForClearEffective() in
 
 // MultiAgentEinoSkillsConfig toggles Eino official skill progressive disclosure and host filesystem tools.
 type MultiAgentEinoSkillsConfig struct {
+	// CatalogProfile selects default discovery: empty/all preserves all skills; src advertises a compact catalog.
+	CatalogProfile string `yaml:"catalog_profile,omitempty" json:"catalog_profile,omitempty"`
 	// Disable skips skill middleware (and does not attach local FS tools for Deep).
 	Disable bool `yaml:"disable" json:"disable"`
 	// FilesystemTools registers read_file/glob/grep/write/edit/execute (eino-ext local backend). Nil/omitted = true.

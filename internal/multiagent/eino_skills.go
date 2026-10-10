@@ -11,6 +11,7 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/einomcp"
 	"cyberstrike-ai/internal/security"
+	"cyberstrike-ai/internal/skillcatalog"
 	"cyberstrike-ai/internal/tooloutput"
 
 	localbk "github.com/cloudwego/eino-ext/adk/backend/local"
@@ -85,7 +86,11 @@ func prepareEinoAgenticSkills(
 		return nil, nil, false, "", fmt.Errorf("eino agentic skill filesystem backend: %w", err)
 	}
 
-	sc := &skill.TypedConfig[*schema.AgenticMessage]{Backend: skillBE}
+	catalog, err := skillcatalog.New(skillBE, ma.EinoSkills.CatalogProfile)
+	if err != nil {
+		return nil, nil, false, "", err
+	}
+	sc := &skill.TypedConfig[*schema.AgenticMessage]{Backend: catalog}
 	if name := strings.TrimSpace(ma.EinoSkills.SkillToolName); name != "" {
 		sc.SkillToolName = &name
 	}
