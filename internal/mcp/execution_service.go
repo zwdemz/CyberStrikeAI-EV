@@ -61,6 +61,7 @@ type ExecutionSnapshot struct {
 }
 
 type executionEntry struct {
+	failureDone         func(string)
 	releaseLease        func()
 	remote              bool
 	runStarted          bool
@@ -77,8 +78,9 @@ type executionEntry struct {
 // ExecutionService keeps Eino-facing tool calls synchronous while moving the
 // untrusted blocking work into cancellable workers with explicit execution IDs.
 type ExecutionService struct {
-	storage MonitorStorage
-	logger  *zap.Logger
+	failureGuard failureCooldown
+	storage      MonitorStorage
+	logger       *zap.Logger
 
 	mu             sync.Mutex
 	entries        map[string]*executionEntry
@@ -237,6 +239,12 @@ func (s *ExecutionService) runWorker(ctx context.Context, entry *executionEntry,
 		s.finishEntry(ctx, entry, nil, ctx.Err(), onDone)
 		return
 	}
+	finishFailure, refusal := s.failureGuard.admit(entry.exec)
+	if refusal != nil {
+		s.finishEntry(ctx, entry, refusal, nil, onDone)
+		return
+	}
+	entry.failureDone = finishFailure
 	s.markEntryRunning(entry)
 	entry.runStarted = true
 
@@ -273,6 +281,10 @@ func (s *ExecutionService) finishEntry(ctx context.Context, entry *executionEntr
 	var blockedErr *toolGuardBlockError
 	if errors.As(err, &blockedErr) {
 		result, err = blockedErr.result, nil
+	}
+	var circuitErr *externalMCPCircuitError
+	if errors.As(err, &circuitErr) {
+		result, err = externalMCPCircuitResult(circuitErr), nil
 	}
 	cancellationUnconfirmed := entry.remote && entry.runStarted && ctx.Err() != nil && err != nil
 	if cancellationUnconfirmed && entry.confirmCancellation != nil {
@@ -350,6 +362,9 @@ func (s *ExecutionService) finishEntry(ctx context.Context, entry *executionEntr
 		if saveErr := s.storage.SaveToolExecution(finalExec); saveErr != nil {
 			s.logger.Warn("保存执行记录到数据库失败", zap.Error(saveErr), zap.String("executionId", id))
 		}
+	}
+	if entry.failureDone != nil {
+		entry.failureDone(finalExec.Status)
 	}
 	if onDone != nil {
 		onDone(finalExec)

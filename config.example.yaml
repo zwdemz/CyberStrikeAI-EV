@@ -167,6 +167,11 @@ shodan:
 # Agent 配置
 # 达到最大迭代次数时，AI 会自动总结测试结果
 agent:
+  # 相同 MCP 调用失败后冷却；不自动重试，重启生效。
+  tool_failure_cooldown:
+    threshold: 2 # 0=默认 2，负数关闭
+    window_seconds: 60
+    cooldown_seconds: 60
   max_iterations: 12000 # 全局最大迭代次数（单代理 / Deep / Supervisor / Plan-Execute 主执行器 / 子代理均沿用；agents/*.md 中 max_iterations>0 可单独覆盖）
   tool_timeout_minutes: 60 # 单次工具执行最大时长（分钟），超时自动终止；0 表示不限制（不推荐，易出现长时间挂起）
   tool_wait_timeout_seconds: 300 # 工具本轮最多等待（秒）；到时返回 execution_id，worker 继续后台执行，可用 wait_tool_execution 继续等待；0=等到完成

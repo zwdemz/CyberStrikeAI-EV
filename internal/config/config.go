@@ -1108,6 +1108,7 @@ type DatabaseConfig struct {
 }
 
 type AgentConfig struct {
+	ToolFailureCooldown ToolFailureCooldownConfig `yaml:"tool_failure_cooldown,omitempty" json:"tool_failure_cooldown,omitempty"`
 	MaxIterations                      int `yaml:"max_iterations" json:"max_iterations"`
 	ToolTimeoutMinutes                 int `yaml:"tool_timeout_minutes" json:"tool_timeout_minutes"`                                     // 单次工具执行最大时长（分钟），超时自动终止，防止长时间挂起；0 表示不限制（不推荐）
 	ToolWaitTimeoutSeconds             int `yaml:"tool_wait_timeout_seconds" json:"tool_wait_timeout_seconds"`                           // 工具本轮等待秒数；到时返回 execution_id，worker 继续后台执行；0 表示等到完成
