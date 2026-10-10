@@ -179,6 +179,7 @@
     "severityMedium": "Medium",
     "severityLow": "Low",
     "severityInfo": "Info",
+    "severityPending": "Pending",
     "totalVulns": "Total vulnerabilities",
     "riskLevel": "Risk level",
     "riskScore": "Weighted risk score",

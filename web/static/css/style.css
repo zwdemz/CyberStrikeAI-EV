@@ -25009,7 +25009,7 @@ tr.mcp-stats-tool-row[data-tool-name]:focus-visible {
 .dashboard-recent-vuln-item {
     display: grid;
     /* 时间列固定宽度：每行独立 grid 时若用 auto，「刚刚」与「N 分钟前」列宽不同 + 右对齐会看起来歪 */
-    grid-template-columns: 56px minmax(0, 1.6fr) minmax(0, 1fr) auto 9.5rem;
+    grid-template-columns: max-content minmax(0, 1.6fr) minmax(0, 1fr) auto 9.5rem;
     align-items: center;
     column-gap: 14px;
     padding: 12px 10px;
@@ -25049,6 +25049,7 @@ tr.mcp-stats-tool-row[data-tool-name]:focus-visible {
     font-weight: 700;
     line-height: 1.2;
     width: fit-content;
+    white-space: nowrap;
 }
 
 .dashboard-recent-vuln-sev.sev-critical { background: rgba(239, 68, 68, 0.12); color: #b91c1c; }
@@ -25056,6 +25057,7 @@ tr.mcp-stats-tool-row[data-tool-name]:focus-visible {
 .dashboard-recent-vuln-sev.sev-medium   { background: rgba(234, 179, 8, 0.15);  color: #a16207; }
 .dashboard-recent-vuln-sev.sev-low      { background: rgba(20, 184, 166, 0.12); color: #0f766e; }
 .dashboard-recent-vuln-sev.sev-info     { background: rgba(59, 130, 246, 0.12); color: #1d4ed8; }
+.dashboard-recent-vuln-sev.sev-pending  { background: rgba(148, 163, 184, 0.16); color: var(--text-secondary); }
 
 .dashboard-recent-vuln-title {
     font-weight: 600;
@@ -25142,14 +25144,14 @@ tr.mcp-stats-tool-row[data-tool-name]:focus-visible {
 
 @media (max-width: 720px) {
     .dashboard-recent-vuln-item {
-        grid-template-columns: 56px minmax(0, 1fr) auto 8.25rem;
+        grid-template-columns: max-content minmax(0, 1fr) auto 8.25rem;
     }
     .dashboard-recent-vuln-target { display: none; }
 }
 
 @media (max-width: 480px) {
     .dashboard-recent-vuln-item {
-        grid-template-columns: 56px minmax(0, 1fr) auto;
+        grid-template-columns: max-content minmax(0, 1fr) auto;
     }
     .dashboard-recent-vuln-time { display: none; }
 }
