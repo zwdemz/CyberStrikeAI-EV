@@ -2,6 +2,7 @@ package multiagent
 
 import (
 	"context"
+	"cyberstrike-ai/internal/testproxy"
 	"strings"
 
 	"cyberstrike-ai/internal/authctx"
@@ -34,7 +35,7 @@ func localToolRBACMiddleware() compose.ToolMiddleware {
 		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
 				if input != nil {
-					if err := rolepolicy.CheckTool(ctx, originalToolName(ctx, input.Name)); err != nil {
+					if err := checkProxyAndRoleTool(ctx, originalToolName(ctx, input.Name)); err != nil {
 						return &compose.ToolOutput{Result: err.Error()}, nil
 					}
 				}
@@ -47,7 +48,7 @@ func localToolRBACMiddleware() compose.ToolMiddleware {
 		Streamable: func(next compose.StreamableToolEndpoint) compose.StreamableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.StreamToolOutput, error) {
 				if input != nil {
-					if err := rolepolicy.CheckTool(ctx, originalToolName(ctx, input.Name)); err != nil {
+					if err := checkProxyAndRoleTool(ctx, originalToolName(ctx, input.Name)); err != nil {
 						return &compose.StreamToolOutput{Result: schema.StreamReaderFromArray([]string{err.Error()})}, nil
 					}
 				}
@@ -58,4 +59,11 @@ func localToolRBACMiddleware() compose.ToolMiddleware {
 			}
 		},
 	}
+}
+
+func checkProxyAndRoleTool(ctx context.Context, name string) error {
+	if err := testproxy.CheckTool(ctx, name); err != nil {
+		return err
+	}
+	return rolepolicy.CheckTool(ctx, name)
 }

@@ -46770,3 +46770,19 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
     .vuln-rating-details { padding: 14px; }
     .vuln-rating-details .vuln-rating-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Test proxy management follows the existing settings theme and responsive form layout. */
+#test-proxy-panel { color: var(--text-primary); }
+#test-proxy-panel .form-group { margin-bottom: 16px; }
+#test-proxy-panel hr { border: 0; border-top: 1px solid var(--border-color); margin: 24px 0; }
+.test-proxy-hint, #test-proxy-message { margin: 12px 0; line-height: 1.6; color: var(--text-secondary); }
+.test-proxy-limits { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.test-proxy-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+#test-proxy-panel input, #test-proxy-panel select, #test-proxy-panel textarea { width: 100%; padding: 10px 12px; color: var(--text-primary); background: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; }
+#test-proxy-panel textarea { resize: vertical; }
+#test-proxy-preview-result { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-secondary); color: var(--text-primary); border-radius: 8px; padding: 12px; }
+.test-proxy-pool { margin-top: 12px; padding: 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-secondary); }
+.test-proxy-pool ul { list-style: none; padding: 0; }
+.test-proxy-pool li { padding: 8px 0; overflow-wrap: anywhere; }
+.test-proxy-pool small { display: block; color: var(--text-secondary); }
+@media(max-width:720px) { .test-proxy-limits { grid-template-columns: minmax(0,1fr); } }

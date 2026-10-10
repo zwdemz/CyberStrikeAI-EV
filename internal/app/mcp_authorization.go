@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"cyberstrike-ai/internal/testproxy"
 	"fmt"
 	"strings"
 
@@ -14,6 +15,9 @@ import (
 
 func mcpToolAuthorizer(db *database.DB) func(context.Context, string, map[string]interface{}) error {
 	return func(ctx context.Context, toolName string, args map[string]interface{}) error {
+		if err := testproxy.CheckTool(ctx, toolName); err != nil {
+			return err
+		}
 		principal, ok := authctx.PrincipalFromContext(ctx)
 		if !ok {
 			return fmt.Errorf("missing authenticated principal")
@@ -199,6 +203,9 @@ func mcpToolAuthorizer(db *database.DB) func(context.Context, string, map[string
 
 func externalMCPToolAuthorizer() func(context.Context, string, map[string]interface{}) error {
 	return func(ctx context.Context, toolName string, _ map[string]interface{}) error {
+		if err := testproxy.CheckTool(ctx, toolName); err != nil {
+			return err
+		}
 		principal, ok := authctx.PrincipalFromContext(ctx)
 		if !ok {
 			return fmt.Errorf("missing authenticated principal")
