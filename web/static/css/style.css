@@ -35222,8 +35222,9 @@ body.app-modal-open {
 .vulnerability-related-facts {
     margin-top: 12px;
     padding: 10px 12px;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
     border-radius: 8px;
     font-size: 0.8125rem;
 }
@@ -35235,10 +35236,17 @@ body.app-modal-open {
     margin: 4px 0;
 }
 .vulnerability-related-facts a {
-    color: #2563eb;
+    color: var(--accent-color);
     cursor: pointer;
     text-decoration: underline;
 }
+.vulnerability-related-facts .related-facts-message {
+    margin: 6px 0 0;
+    color: var(--text-secondary);
+}
+.vulnerability-related-facts .related-facts-error { color: var(--error-color); }
+.vulnerability-related-facts a code { color: inherit; }
+.vulnerability-related-facts { overflow-wrap: anywhere; }
 .fact-detail-body {
     max-height: 50vh;
     overflow: auto;
