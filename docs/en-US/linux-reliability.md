@@ -72,3 +72,40 @@ Release publication can publish a versioned image to this repository's GHCR
 namespace after verifying its commit belongs to main. Manual workflow runs only
 validate the image. No image is published by a PR, and this does not deploy hosts.
 No floating latest tag or arm64 validation is provided by this workflow.
+
+## Knowledge index resume and recovery
+
+Indexing embeds all chunks before replacing an item's vectors and completion
+manifest in one SQLite transaction. Provider errors, cancellation, insert errors
+and database source changes retain the previous vectors. Previously indexed
+content may therefore remain searchable until a replacement succeeds.
+
+The additive `knowledge_index_state` table stores item ID, source/config hashes,
+chunk count, model and dimension. Source edits invalidate its marker. Resume
+checks missing/duplicate/out-of-range chunks and model/dimension metadata; model,
+endpoint, chunking and sub-index changes require reindexing. With
+`prefer_source_file`, resume rereads files to detect changed content. File edits
+after that read are detected on the next resume, not atomically with SQLite.
+
+Legacy indexes have no completeness marker and are rebuilt once when you request
+resume; this can consume embedding quota. No automatic paid rebuild runs on
+upgrade. Failed items remain eligible for retry. Empty content gets a valid
+zero-chunk marker. This is an integrity check of indexing completion, not a
+cryptographic audit of every stored vector. Back up both knowledge and conversation
+databases/configuration while stopped before upgrading.
+
+## Automated upgrade regression
+
+The Linux container workflow builds the current image and a pinned EV v1.7.22
+baseline. `tests/container/upgrade_rollback.py` verifies actual authenticated
+Settings saves and a stored conversation, upgrades with all seven volumes,
+recreates the new container, then restores offline volume snapshots and starts
+the baseline. It verifies UID 10001 and the restored setting/data at each stage.
+Tests use generated fixtures and do not invoke AI providers. Temporary containers
+and volumes are removed afterward; bootstrap credentials are never printed.
+This covers the pinned baseline and Linux amd64, not every historical migration.
+
+```sh
+python3 tests/container/upgrade_rollback.py \
+  --current cyberstrike-ai-ev:check --baseline cyberstrike-ai-ev:baseline
+```

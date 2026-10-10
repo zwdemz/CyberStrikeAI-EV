@@ -33,15 +33,40 @@ func (s *SQLiteIndexer) GetType() string {
 	return "SQLiteKnowledgeIndexer"
 }
 
-// Store embeds documents and inserts rows. Each doc must carry MetaData:
+// Store embeds all documents before atomically replacing one item's rows.
+// Embedding, validation, or transaction failures preserve the previous index. Each doc must carry MetaData:
 // kb_item_id, kb_category, kb_title, kb_chunk_index (int). Content is chunk text only.
 func (s *SQLiteIndexer) Store(ctx context.Context, docs []*schema.Document, opts ...indexer.Option) (ids []string, err error) {
 	options := indexer.GetCommonOptions(nil, opts...)
 	if options.Embedding == nil {
 		return nil, fmt.Errorf("sqlite indexer: embedding is required")
 	}
-	if len(docs) == 0 {
+	attempt, tracked := ctx.Value(indexAttemptKey{}).(indexAttempt)
+	itemID := attempt.ItemID
+	if len(docs) == 0 && !tracked {
 		return nil, nil
+	}
+	for i, d := range docs {
+		if d == nil {
+			return nil, fmt.Errorf("sqlite indexer: nil document at %d", i)
+		}
+		docItem, e := RequireMetaString(d.MetaData, metaKBItemID)
+		if e != nil {
+			return nil, e
+		}
+		if i == 0 && !tracked {
+			itemID = docItem
+		}
+		chunk, e := RequireMetaInt(d.MetaData, metaKBChunkIndex)
+		if e != nil {
+			return nil, e
+		}
+		if docItem != itemID || chunk != i {
+			return nil, fmt.Errorf("sqlite indexer: mixed item or non-contiguous chunk at %d", i)
+		}
+	}
+	if strings.TrimSpace(itemID) == "" {
+		return nil, fmt.Errorf("sqlite indexer: item is required")
 	}
 
 	ctx = callbacks.EnsureRunInfo(ctx, s.GetType(), components.ComponentOfIndexer)
@@ -91,6 +116,9 @@ func (s *SQLiteIndexer) Store(ctx context.Context, docs []*schema.Document, opts
 	embedDim := 0
 	if len(allVecs) > 0 {
 		embedDim = len(allVecs[0])
+		if embedDim == 0 {
+			return nil, fmt.Errorf("sqlite indexer: empty embedding")
+		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -98,18 +126,22 @@ func (s *SQLiteIndexer) Store(ctx context.Context, docs []*schema.Document, opts
 		return nil, fmt.Errorf("sqlite indexer: begin tx: %w", err)
 	}
 	defer tx.Rollback()
+	if tracked {
+		if err := verifyIndexSource(ctx, tx, attempt); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM knowledge_embeddings WHERE item_id=?", itemID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM knowledge_index_state WHERE item_id=?", itemID); err != nil {
+		return nil, err
+	}
 
 	ids = make([]string, 0, len(docs))
 	for i, d := range docs {
 		chunkID := uuid.New().String()
-		itemID, metaErr := RequireMetaString(d.MetaData, metaKBItemID)
-		if metaErr != nil {
-			return nil, fmt.Errorf("sqlite indexer: doc %d: %w", i, metaErr)
-		}
-		chunkIdx, metaErr := RequireMetaInt(d.MetaData, metaKBChunkIndex)
-		if metaErr != nil {
-			return nil, fmt.Errorf("sqlite indexer: doc %d: %w", i, metaErr)
-		}
+		chunkIdx := i // Item identity and contiguous indices were validated before embedding.
 		vec := allVecs[i]
 		if embedDim > 0 && len(vec) != embedDim {
 			return nil, fmt.Errorf("sqlite indexer: inconsistent embedding dim at doc %d: got %d want %d", i, len(vec), embedDim)
@@ -133,6 +165,11 @@ func (s *SQLiteIndexer) Store(ctx context.Context, docs []*schema.Document, opts
 		ids = append(ids, chunkID)
 	}
 
+	if tracked {
+		if err := saveIndexManifest(ctx, tx, attempt, len(docs), s.embeddingModel, embedDim); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("sqlite indexer: commit: %w", err)
 	}

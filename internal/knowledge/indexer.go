@@ -20,6 +20,7 @@ import (
 
 // Indexer 使用 Eino Compose 索引链（Markdown/递归分块、Lambda  enrich、SQLite 索引）与嵌入写入。
 type Indexer struct {
+	indexMu     sync.Mutex // serializes writes and chain recompilation within this indexer
 	db          *sql.DB
 	embedder    *Embedder
 	logger      *zap.Logger
@@ -61,14 +62,7 @@ func NewIndexer(ctx context.Context, db *sql.DB, embedder *Embedder, logger *zap
 	}
 	indexingCfg := &kcfg.Indexing
 
-	chunkSize := 512
-	overlap := 50
-	if indexingCfg.ChunkSize > 0 {
-		chunkSize = indexingCfg.ChunkSize
-	}
-	if indexingCfg.ChunkOverlap >= 0 {
-		overlap = indexingCfg.ChunkOverlap
-	}
+	chunkSize, overlap := knowledgeChunkSettings(indexingCfg)
 
 	embedModel := embedder.EmbeddingModelName()
 	splitter, err := newKnowledgeSplitter(chunkSize, overlap, embedModel)
@@ -103,16 +97,36 @@ func NewIndexer(ctx context.Context, db *sql.DB, embedder *Embedder, logger *zap
 	}, nil
 }
 
+// knowledgeChunkSettings applies the same defaults during creation and recompilation.
+func knowledgeChunkSettings(cfg *config.IndexingConfig) (size, overlap int) {
+	size, overlap = 512, 50
+	if cfg != nil {
+		if cfg.ChunkSize > 0 {
+			size = cfg.ChunkSize
+		}
+		if cfg.ChunkOverlap >= 0 {
+			overlap = cfg.ChunkOverlap
+		}
+	}
+	return
+}
+
 // RecompileIndexChain 在配置或嵌入模型变更后重建 Eino 索引链（无需重启进程）。
 func (idx *Indexer) RecompileIndexChain(ctx context.Context) error {
-	if idx == nil || idx.db == nil || idx.embedder == nil {
+	if idx == nil {
+		return fmt.Errorf("indexer is nil")
+	}
+	idx.indexMu.Lock()
+	defer idx.indexMu.Unlock()
+	if idx.db == nil || idx.embedder == nil {
 		return fmt.Errorf("indexer 未初始化")
 	}
 	if err := EnsureKnowledgeEmbeddingsSchema(idx.db); err != nil {
 		return err
 	}
+	chunkSize, overlap := knowledgeChunkSettings(idx.indexingCfg)
 	embedModel := idx.embedder.EmbeddingModelName()
-	splitter, err := newKnowledgeSplitter(idx.chunkSize, idx.overlap, embedModel)
+	splitter, err := newKnowledgeSplitter(chunkSize, overlap, embedModel)
 	if err != nil {
 		return fmt.Errorf("eino recursive splitter: %w", err)
 	}
@@ -120,12 +134,20 @@ func (idx *Indexer) RecompileIndexChain(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("knowledge index chain: %w", err)
 	}
+	idx.chunkSize, idx.overlap = chunkSize, overlap
 	idx.indexChain = chain
 	return nil
 }
 
-// IndexItem 索引单个知识项：先清空旧向量，再走 Compose 链（分块、嵌入、写入）。
+// IndexItem generates a complete replacement before atomically publishing vectors.
+// Failed embedding or concurrent source updates preserve the previous index.
 func (idx *Indexer) IndexItem(ctx context.Context, itemID string) error {
+	return idx.indexItem(ctx, itemID, false)
+}
+
+func (idx *Indexer) indexItem(ctx context.Context, itemID string, skipComplete bool) error {
+	idx.indexMu.Lock()
+	defer idx.indexMu.Unlock()
 	if idx.indexChain == nil {
 		return fmt.Errorf("索引链未初始化")
 	}
@@ -134,13 +156,9 @@ func (idx *Indexer) IndexItem(ctx context.Context, itemID string) error {
 	}
 
 	var content, category, title, filePath string
-	err := idx.db.QueryRow("SELECT content, category, title, file_path FROM knowledge_base_items WHERE id = ?", itemID).Scan(&content, &category, &title, &filePath)
+	err := idx.db.QueryRowContext(ctx, "SELECT content, category, title, file_path FROM knowledge_base_items WHERE id = ?", itemID).Scan(&content, &category, &title, &filePath)
 	if err != nil {
 		return fmt.Errorf("获取知识项失败：%w", err)
-	}
-
-	if _, err := idx.db.Exec("DELETE FROM knowledge_embeddings WHERE item_id = ?", itemID); err != nil {
-		return fmt.Errorf("删除旧向量失败：%w", err)
 	}
 
 	body := strings.TrimSpace(content)
@@ -167,6 +185,19 @@ func (idx *Indexer) IndexItem(ctx context.Context, itemID string) error {
 				zap.Error(lerr))
 		}
 	}
+
+	attempt := indexAttempt{ItemID: itemID, Content: content, Category: category, Title: title, FilePath: filePath,
+		SourceHash: indexDigest([]string{content, category, title, filePath, body}), ConfigHash: idx.indexConfigHash()}
+	if skipComplete {
+		complete, err := idx.indexStateComplete(ctx, attempt)
+		if err != nil {
+			return err
+		}
+		if complete {
+			return nil
+		}
+	}
+	ctx = context.WithValue(ctx, indexAttemptKey{}, attempt)
 
 	root := &schema.Document{
 		ID:      itemID,
@@ -255,7 +286,8 @@ func (idx *Indexer) setIndexRunTotal(total int) {
 	idx.rebuildMu.Unlock()
 }
 
-// IndexMissing 为尚无向量的知识项构建索引（默认推荐路径，适合冷启动与中断续跑）。
+// IndexMissing repairs missing, incomplete, legacy, or outdated indexes.
+// Unchanged complete items are skipped; failed replacements retain old vectors.
 func (idx *Indexer) IndexMissing(ctx context.Context) error {
 	if err := idx.beginIndexRun(); err != nil {
 		return err
@@ -305,14 +337,15 @@ func (idx *Indexer) runRebuildIndex(ctx context.Context) error {
 
 func (idx *Indexer) runIndexMissing(ctx context.Context) error {
 	idx.resetLastError()
+	idx.indexMu.Lock()
+	configHash, preferSource := idx.indexConfigHash(), idx.indexingCfg.PreferSourceFile
+	idx.indexMu.Unlock()
 
 	rows, err := idx.db.QueryContext(ctx, `
-		SELECT i.id
-		FROM knowledge_base_items i
-		LEFT JOIN knowledge_embeddings e ON e.item_id = i.id
-		WHERE e.item_id IS NULL
-		ORDER BY i.updated_at ASC, i.id ASC
-	`)
+        SELECT i.id FROM knowledge_base_items i LEFT JOIN knowledge_index_state s ON s.item_id=i.id
+        WHERE s.item_id IS NULL OR s.config_hash != ? OR (? AND i.file_path != '')
+        OR NOT (`+indexRowsCompletePredicate+`)
+        ORDER BY i.updated_at ASC, i.id ASC`, configHash, preferSource)
 	if err != nil {
 		return fmt.Errorf("查询未索引知识项失败：%w", err)
 	}
@@ -326,7 +359,7 @@ func (idx *Indexer) runIndexMissing(ctx context.Context) error {
 	idx.setIndexRunTotal(len(itemIDs))
 	idx.logger.Info("开始补齐缺失索引", zap.Int("totalItems", len(itemIDs)))
 
-	return idx.indexItemIDs(ctx, itemIDs, "索引构建完成")
+	return idx.indexItemIDs(ctx, itemIDs, "索引构建完成", true)
 }
 
 func scanKnowledgeItemIDs(rows *sql.Rows) ([]string, error) {
@@ -344,7 +377,7 @@ func scanKnowledgeItemIDs(rows *sql.Rows) ([]string, error) {
 	return itemIDs, nil
 }
 
-func (idx *Indexer) indexItemIDs(ctx context.Context, itemIDs []string, doneMessage string) error {
+func (idx *Indexer) indexItemIDs(ctx context.Context, itemIDs []string, doneMessage string, skipComplete ...bool) error {
 	failedCount := 0
 	consecutiveFailures := 0
 	maxConsecutiveFailures := 5
@@ -352,9 +385,15 @@ func (idx *Indexer) indexItemIDs(ctx context.Context, itemIDs []string, doneMess
 	var firstFailureError error
 
 	for i, itemID := range itemIDs {
-		if err := idx.IndexItem(ctx, itemID); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := idx.indexItem(ctx, itemID, len(skipComplete) > 0 && skipComplete[0]); err != nil {
 			failedCount++
 			consecutiveFailures++
+			idx.rebuildMu.Lock()
+			idx.rebuildCurrent, idx.rebuildFailed = i+1, failedCount
+			idx.rebuildMu.Unlock()
 
 			if consecutiveFailures == 1 {
 				firstFailureItemID = itemID
@@ -417,6 +456,9 @@ func (idx *Indexer) indexItemIDs(ctx context.Context, itemIDs []string, doneMess
 	}
 
 	idx.logger.Info(doneMessage, zap.Int("totalItems", len(itemIDs)), zap.Int("failedCount", failedCount))
+	if failedCount > 0 {
+		return fmt.Errorf("knowledge indexing failed for %d of %d items; retry incomplete items", failedCount, len(itemIDs))
+	}
 	return nil
 }
 
