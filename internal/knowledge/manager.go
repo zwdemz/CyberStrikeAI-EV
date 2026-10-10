@@ -130,6 +130,29 @@ func (m *Manager) ScanKnowledgeBase() ([]string, error) {
 		return nil, err
 	}
 
+	// Unchanged files can still lack vectors after an interrupted or failed run.
+	rows, err := m.db.Query(`SELECT k.id FROM knowledge_base_items k WHERE NOT EXISTS (SELECT 1 FROM knowledge_embeddings e WHERE e.item_id = k.id) ORDER BY k.id`)
+	if err != nil {
+		return nil, fmt.Errorf("查询缺失索引失败: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]bool, len(itemsToIndex))
+	for _, id := range itemsToIndex {
+		seen[id] = true
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if !seen[id] {
+			itemsToIndex = append(itemsToIndex, id)
+			seen[id] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return itemsToIndex, nil
 }
 
