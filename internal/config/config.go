@@ -19,6 +19,7 @@ import (
 )
 
 type Config struct {
+	APIClient   APIClientConfig       `yaml:"api_client,omitempty" json:"api_client,omitempty"`
 	Version     string                `yaml:"version,omitempty" json:"version,omitempty"` // 前端显示的版本号，如 v1.3.3
 	Server      ServerConfig          `yaml:"server"`
 	Log         LogConfig             `yaml:"log"`
@@ -1107,6 +1108,7 @@ type DatabaseConfig struct {
 }
 
 type AgentConfig struct {
+	ToolFailureCooldown ToolFailureCooldownConfig `yaml:"tool_failure_cooldown,omitempty" json:"tool_failure_cooldown,omitempty"`
 	MaxIterations                      int `yaml:"max_iterations" json:"max_iterations"`
 	ToolTimeoutMinutes                 int `yaml:"tool_timeout_minutes" json:"tool_timeout_minutes"`                                     // 单次工具执行最大时长（分钟），超时自动终止，防止长时间挂起；0 表示不限制（不推荐）
 	ToolWaitTimeoutSeconds             int `yaml:"tool_wait_timeout_seconds" json:"tool_wait_timeout_seconds"`                           // 工具本轮等待秒数；到时返回 execution_id，worker 继续后台执行；0 表示等到完成
@@ -1643,6 +1645,9 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	if err := cfg.APIClient.Validate(); err != nil {
+		return nil, err
 	}
 	if err := cfg.Hitl.ValidateAuditTemperature(); err != nil {
 		return nil, err

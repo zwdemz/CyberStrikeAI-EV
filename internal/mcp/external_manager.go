@@ -47,6 +47,8 @@ type externalMCPServerRuntime struct {
 	semaphore           chan struct{}
 	consecutiveFailures int
 	circuitOpenUntil    time.Time
+	circuitGeneration   uint64
+	probeInFlight       bool
 }
 
 // ExternalMCPManager 外部MCP管理器
@@ -704,7 +706,6 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 	}
 	var mcpName, actualToolName string
 	var client ExternalMCPClient
-	var blockedByGuard bool
 	handle, err := m.executionService.Submit(ctx, ExecutionRequest{
 		ConfirmCancellation: func(confirmCtx context.Context) error {
 			if confirmer, ok := client.(ExternalCancellationConfirmer); ok {
@@ -730,7 +731,6 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 				return nil, fmt.Errorf("external tool authorization policy is not configured")
 			}
 			if blocked := m.checkToolGuard(toolName, args); blocked != nil {
-				blockedByGuard = true
 				return nil, &toolGuardBlockError{result: blocked}
 			}
 
@@ -774,20 +774,27 @@ func (m *ExternalMCPManager) CallTool(ctx context.Context, toolName string, args
 		Run: func(runCtx context.Context) (*ToolResult, error) {
 			// Rules may have changed while this execution waited for a slot.
 			if blocked := m.checkToolGuard(toolName, args); blocked != nil {
-				blockedByGuard = true
 				return blocked, nil
 			}
-			result, callErr := client.CallTool(runCtx, actualToolName, args)
+			// Recheck after waiting: another call may have opened the circuit.
+			finish, admitErr := m.admitExternalMCPCall(mcpName)
+			if admitErr != nil {
+				return externalMCPCircuitResult(admitErr), nil
+			}
+			// Count only actual provider calls; queued cancellation and circuit
+			// refusals must not extend the cooldown or reset its failure count.
+			var result *ToolResult
+			var callErr error
+			defer func() {
+				finish(callErr != nil || result == nil || result.IsError, errors.Is(runCtx.Err(), context.Canceled) || errors.Is(callErr, context.Canceled))
+			}()
+			result, callErr = client.CallTool(runCtx, actualToolName, args)
 			if callErr != nil {
 				m.handleConnectionDead(mcpName, client, callErr)
 			}
 			return result, callErr
 		},
 		OnDone: func(exec *ToolExecution) {
-			failed := exec != nil && executionStatusCountsAsFailed(exec.Status)
-			if mcpName != "" && !blockedByGuard && (exec == nil || exec.Status != ToolExecutionStatusBlocked) {
-				m.recordExternalMCPResult(mcpName, failed)
-			}
 			if exec != nil {
 				m.updateStats(toolName, exec.Status)
 			}
@@ -846,31 +853,6 @@ elapsed: %s
 	return &ToolResult{Content: []Content{{Type: "text", Text: msg}}, IsError: true}
 }
 
-func (m *ExternalMCPManager) checkExternalMCPCircuit(mcpName string) error {
-	if m == nil {
-		return nil
-	}
-	name := strings.TrimSpace(mcpName)
-	if name == "" {
-		return nil
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.resilience.CircuitFailureThreshold < 0 {
-		return nil
-	}
-	rt := m.externalMCPRuntimeLocked(name)
-	if rt == nil || rt.circuitOpenUntil.IsZero() {
-		return nil
-	}
-	now := time.Now()
-	if now.Before(rt.circuitOpenUntil) {
-		return fmt.Errorf("外部MCP服务 %s 已临时熔断，预计 %s 后重试", name, time.Until(rt.circuitOpenUntil).Round(time.Second))
-	}
-	rt.circuitOpenUntil = time.Time{}
-	return nil
-}
-
 func (m *ExternalMCPManager) acquireExternalMCPCallSlot(ctx context.Context, mcpName string) (func(), error) {
 	if m == nil {
 		return func() {}, nil
@@ -921,35 +903,6 @@ func contextErr(ctx context.Context) error {
 		return context.Canceled
 	}
 	return ctx.Err()
-}
-
-func (m *ExternalMCPManager) recordExternalMCPResult(mcpName string, failed bool) {
-	if m == nil || strings.TrimSpace(mcpName) == "" {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	rt := m.externalMCPRuntimeLocked(mcpName)
-	if rt == nil {
-		return
-	}
-	if !failed {
-		rt.consecutiveFailures = 0
-		rt.circuitOpenUntil = time.Time{}
-		return
-	}
-	if m.resilience.CircuitFailureThreshold < 0 {
-		return
-	}
-	rt.consecutiveFailures++
-	if rt.consecutiveFailures >= m.resilience.CircuitFailureThreshold {
-		rt.circuitOpenUntil = time.Now().Add(m.resilience.CircuitCooldown)
-		m.logger.Warn("外部MCP服务触发熔断",
-			zap.String("name", mcpName),
-			zap.Int("consecutiveFailures", rt.consecutiveFailures),
-			zap.Duration("cooldown", m.resilience.CircuitCooldown),
-		)
-	}
 }
 
 func (m *ExternalMCPManager) externalMCPRuntimeLocked(mcpName string) *externalMCPServerRuntime {

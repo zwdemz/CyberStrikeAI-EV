@@ -231,8 +231,103 @@ func TestExternalMCPManager_CircuitBreakerOpensAfterFailures(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected first call to fail with client error, got %v", err)
 	}
-	_, _, err = manager.CallTool(context.Background(), "lab::fail_tool", nil)
-	if err == nil || !strings.Contains(err.Error(), "熔断") {
-		t.Fatalf("expected circuit breaker rejection, got %v", err)
+	result, id, err := manager.CallTool(context.Background(), "lab::fail_tool", nil)
+	if err != nil || result == nil || !result.Blocked || !strings.Contains(ToolResultPlainText(result), "mcp_circuit_open") {
+		t.Fatalf("expected soft circuit admission refusal, got %#v, %v", result, err)
+	}
+	snapshot, err := manager.executionService.Get(id)
+	if err != nil || snapshot.Execution.Status != ToolExecutionStatusBlocked {
+		t.Fatalf("circuit refusal recorded as provider failure: %#v, %v", snapshot, err)
+	}
+}
+
+func TestExternalCircuitIgnoresStaleResultsAndDoesNotExtend(t *testing.T) {
+	manager := NewExternalMCPManager(zap.NewNop())
+	t.Cleanup(manager.StopAll)
+	manager.ConfigureResilience(ExternalMCPResilienceConfig{CircuitFailureThreshold: 1, CircuitCooldown: time.Minute})
+	failing, err := manager.admitExternalMCPCall("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := manager.admitExternalMCPCall("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing(true, false)
+	until := manager.serverRuntimes["lab"].circuitOpenUntil
+	stale(false, false)
+	for i := 0; i < 10; i++ {
+		if err := manager.checkExternalMCPCircuit("lab"); err == nil {
+			t.Fatal("open circuit accepted call")
+		}
+	}
+	if manager.serverRuntimes["lab"].circuitOpenUntil != until {
+		t.Fatal("stale success or rejection changed cooldown")
+	}
+}
+
+func TestExternalCircuitAllowsOneRecoveryProbe(t *testing.T) {
+	manager := NewExternalMCPManager(zap.NewNop())
+	t.Cleanup(manager.StopAll)
+	manager.ConfigureResilience(ExternalMCPResilienceConfig{CircuitFailureThreshold: 1, CircuitCooldown: time.Minute})
+	finish, _ := manager.admitExternalMCPCall("lab")
+	finish(true, false)
+	manager.serverRuntimes["lab"].circuitOpenUntil = time.Now().Add(-time.Second)
+	probe, err := manager.admitExternalMCPCall("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.admitExternalMCPCall("lab"); err == nil {
+		t.Fatal("second recovery probe admitted")
+	}
+	probe(true, false)
+	if err := manager.checkExternalMCPCircuit("lab"); err == nil {
+		t.Fatal("failed probe did not reopen circuit")
+	}
+	manager.serverRuntimes["lab"].circuitOpenUntil = time.Now().Add(-time.Second)
+	probe, err = manager.admitExternalMCPCall("lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe(false, true)
+	probe, err = manager.admitExternalMCPCall("lab")
+	if err != nil {
+		t.Fatalf("cancelled probe wedged circuit: %v", err)
+	}
+	probe(false, false)
+	if err := manager.checkExternalMCPCircuit("lab"); err != nil {
+		t.Fatalf("successful probe did not recover: %v", err)
+	}
+}
+
+func TestExternalCircuitQueuedCallsRecheckAfterSlot(t *testing.T) {
+	manager := NewExternalMCPManager(zap.NewNop())
+	t.Cleanup(manager.StopAll)
+	manager.ConfigureResilience(ExternalMCPResilienceConfig{MaxConcurrentPerServer: 1, MaxConcurrentTotal: 4, CircuitFailureThreshold: 1, CircuitCooldown: time.Minute})
+	client := newBlockingExternalMCPClient("provider unavailable")
+	client.result.IsError = true
+	manager.mu.Lock()
+	manager.clients["lab"] = client
+	manager.toolWaitTimeout = 10 * time.Millisecond
+	manager.mu.Unlock()
+	first := make(chan struct{})
+	go func() { defer close(first); _, _, _ = manager.CallTool(context.Background(), "lab::slow_tool", nil) }()
+	<-client.started
+	_, id, err := manager.CallTool(context.Background(), "lab::slow_tool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := manager.executionService.Get(id)
+	if err != nil || snapshot.Execution.Status != ToolExecutionStatusQueued {
+		t.Fatalf("expected queued call: %#v %v", snapshot, err)
+	}
+	close(client.release)
+	<-first
+	snapshot, err = manager.executionService.Wait(context.Background(), id, time.Second)
+	if err != nil || snapshot.Execution.Status != ToolExecutionStatusBlocked {
+		t.Fatalf("queued call escaped circuit: %#v %v", snapshot, err)
+	}
+	if client.count.Load() != 1 {
+		t.Fatalf("provider called %d times, want 1", client.count.Load())
 	}
 }

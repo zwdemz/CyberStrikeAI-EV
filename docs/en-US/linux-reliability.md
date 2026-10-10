@@ -158,3 +158,23 @@ registration is still checked at execution time.
 This reduces unnecessary tool schemas and calls, but does not validate Python
 imports, remote reachability, credentials, provider quota or target behavior.
 Monitor history is retained; old failures are not evidence of a new failure.
+
+## MCP repeated-failure protection
+
+```yaml
+agent:
+  tool_failure_cooldown:
+    threshold: 2
+    window_seconds: 60
+    cooldown_seconds: 60
+  external_mcp_circuit_failure_threshold: 3
+  external_mcp_circuit_cooldown_seconds: 60
+```
+
+Restart after editing. Identical owner, conversation, tool and JSON arguments receive a `tool_failure_cooldown` refusal after the configured failures within the window. Success clears the counter; cancellation, policy refusal and background waiting do not count as failures. A negative threshold disables this layer; zero values select the defaults above. State stores argument digests, is bounded to 4096 active failure keys, and resets on process restart.
+
+External MCP also has a server circuit: queued work checks again after acquiring a slot, refusals do not extend cooldown, and late results cannot close a newer circuit. After cooldown, only one incoming call probes recovery. Success restores service; failure reopens the circuit. No operation is automatically retried.
+
+Admission refusals use the existing `blocked` status with a distinct reason code and a soft tool result, allowing independent steps to continue. Monitoring retains refusals instead of reporting them as successful calls. Already-running calls are not forcibly revoked, so the threshold is not an absolute total-failure cap. If all remaining steps depend on an unavailable service, report the blocker rather than claiming completion.
+
+Protection covers local/external MCP calls managed by the application's `ExecutionService`; per-call protection requires a conversation ID. Standalone Eino filesystem executors, model API failures, and extra inference rounds caused by repeatedly selecting a blocked tool are outside this guarantee. Confirm earlier write outcomes before recovery; do not bypass cooldown through another executor.
