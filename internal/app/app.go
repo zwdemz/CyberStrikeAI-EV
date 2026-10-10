@@ -173,6 +173,9 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	if err := proxyService.Configure(cfg.TestProxy.MaxConcurrent, cfg.TestProxy.MaxConcurrentPerTarget, cfg.TestProxy.QueueTimeoutSeconds); err != nil {
 		return nil, err
 	}
+	if err := proxyService.ConfigureProbeURLs(cfg.TestProxy.ProbeURLs); err != nil {
+		return nil, err
+	}
 	testproxy.Install(proxyService)
 
 	// 创建MCP服务器（带数据库持久化）

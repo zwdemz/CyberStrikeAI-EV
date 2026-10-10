@@ -73,6 +73,15 @@ func TestProbeUsesProxyAndPreservesTargetStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = s.Probe(ctx, p.ID, p.Nodes[0].ID, "http://fixture.invalid/"); err == nil {
+		t.Fatal("probe enabled without configured URL")
+	}
+	if err = s.ConfigureProbeURLs([]string{"http://fixture.invalid/"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Probe(ctx, p.ID, p.Nodes[0].ID, "http://fixture.invalid/other"); err == nil {
+		t.Fatal("probe URL prefix accepted")
+	}
 	result, err := s.Probe(ctx, p.ID, p.Nodes[0].ID, "http://fixture.invalid/")
 	if err != nil || !called.Load() || result["http_status"] != 429 {
 		t.Fatalf("probe: %v %v", result, err)

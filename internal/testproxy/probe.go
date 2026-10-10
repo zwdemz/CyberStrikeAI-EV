@@ -8,13 +8,35 @@ import (
 	"time"
 )
 
-// Probe makes one bounded HEAD request through a selected proxy to an operator-supplied
-// controlled URL. It never follows redirects, returns response bodies or falls back to direct access.
+// ConfigureProbeURLs validates the explicit startup allowlist. Empty disables probes.
+// URLs are exact matches; no suffix, redirect or arbitrary URL fallback is allowed.
+func (s *Service) ConfigureProbeURLs(addresses []string) error {
+	if len(addresses) > 16 {
+		return errors.New("at most 16 probe URLs are allowed")
+	}
+	for _, address := range addresses {
+		u, err := url.Parse(address)
+		if err != nil || len(address) > 2048 || u.Hostname() == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return errors.New("probe_urls must contain controlled HTTP(S) URLs without credentials or fragments")
+		}
+	}
+	s.probeURLs = append([]string(nil), addresses...)
+	return nil
+}
+
+// Probe makes one bounded HEAD request through a selected proxy to a URL in the startup
+// allowlist. It never follows redirects, returns bodies or falls back to direct access.
 // A target HTTP error proves reachability and does not count as a broken proxy.
 func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map[string]interface{}, error) {
-	u, err := url.Parse(target)
-	if err != nil || u.Hostname() == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, errors.New("a controlled HTTP(S) probe URL is required")
+	controlledURL := ""
+	for _, configured := range s.probeURLs {
+		if configured == target {
+			controlledURL = configured
+			break
+		}
+	}
+	if controlledURL == "" {
+		return nil, errors.New("probe URL not allowed; configure test_proxy.probe_urls and restart first")
 	}
 	pools, err := s.pools(ctx)
 	if err != nil {
@@ -86,7 +108,7 @@ func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map
 	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 5 * time.Second, MaxResponseHeaderBytes: 32 * 1024}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, target, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, controlledURL, nil)
 	if err != nil {
 		return nil, errors.New("invalid probe URL")
 	}

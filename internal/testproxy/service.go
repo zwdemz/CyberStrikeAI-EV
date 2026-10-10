@@ -56,6 +56,7 @@ type Service struct {
 	targetLimit int
 	waitSeconds int
 	targets     map[string]int
+	probeURLs   []string
 }
 
 var installed atomic.Pointer[Service]

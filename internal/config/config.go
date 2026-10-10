@@ -20,9 +20,10 @@ import (
 
 // TestProxyConfig controls only opted-in target testing, never model-provider clients.
 type TestProxyConfig struct {
-	MaxConcurrent          int `yaml:"max_concurrent" json:"max_concurrent"`
-	MaxConcurrentPerTarget int `yaml:"max_concurrent_per_target" json:"max_concurrent_per_target"`
-	QueueTimeoutSeconds    int `yaml:"queue_timeout_seconds" json:"queue_timeout_seconds"`
+	ProbeURLs              []string `yaml:"probe_urls,omitempty" json:"probe_urls,omitempty"`
+	MaxConcurrent          int      `yaml:"max_concurrent" json:"max_concurrent"`
+	MaxConcurrentPerTarget int      `yaml:"max_concurrent_per_target" json:"max_concurrent_per_target"`
+	QueueTimeoutSeconds    int      `yaml:"queue_timeout_seconds" json:"queue_timeout_seconds"`
 }
 
 type Config struct {
