@@ -58,7 +58,7 @@ See the [Chinese guide](../zh-CN/test-proxy-pools.md) for a table import example
 
 ## UI fixtures
 
-Synthetic data only. Browser regression: `NODE_PATH=/path/to/node_modules node tests/web/test-proxy-ui.test.cjs` (Playwright/Chromium required). Set `TEST_PROXY_SCREENSHOTS` to save captures.
+Synthetic data only. Browser regression: `NODE_PATH=/path/to/node_modules node tests/browser/test-proxy.cjs` (Playwright/Chromium required). Set `TEST_PROXY_SCREENSHOTS` to save captures.
 
 ![Light theme](../../images/test-proxy/light.png)
 

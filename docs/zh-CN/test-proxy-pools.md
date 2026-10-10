@@ -76,7 +76,7 @@ go build -p 2 -o cyberstrike-ai ./cmd/server
 
 ## 界面验证
 
-截图仅使用合成数据。浏览器回归命令： `NODE_PATH=/path/to/node_modules node tests/web/test-proxy-ui.test.cjs` （需安装 Playwright/Chromium）。设置 `TEST_PROXY_SCREENSHOTS` 指定截图目录。
+截图仅使用合成数据。浏览器回归命令： `NODE_PATH=/path/to/node_modules node tests/browser/test-proxy.cjs` （需安装 Playwright/Chromium）。设置 `TEST_PROXY_SCREENSHOTS` 指定截图目录。
 
 ![Light theme](../../images/test-proxy/light.png)
 
