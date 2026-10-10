@@ -30,3 +30,5 @@
 
 - [Developer Guide](developer-guide.md) · [Plugin Development](plugin-development.md) · [Frontend i18n](frontend-i18n.md)
 - [Testing](testing.md) · [Contributing](contributing-guide.md) · [Release Process](release-process.md)
+
+- [Linux reliability and containers](linux-reliability.md)

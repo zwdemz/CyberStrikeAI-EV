@@ -5,8 +5,8 @@ import (
 	"cyberstrike-ai/internal/agent"
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/mcp"
+	"errors"
 	"go.uber.org/zap"
-	"strings"
 	"testing"
 	"time"
 )
@@ -58,6 +58,7 @@ func TestRunToolNodeAppliesTimeoutToActualMCPExecution(t *testing.T) {
 	logger := zap.NewNop()
 	server := mcp.NewServer(logger)
 	observedDeadline := make(chan time.Time, 1)
+	observedCancellation := make(chan error, 1)
 	server.RegisterTool(mcp.Tool{Name: "test-only-slow-tool", InputSchema: map[string]interface{}{"type": "object"}}, func(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {
 		deadline, ok := ctx.Deadline()
 		if !ok {
@@ -65,6 +66,7 @@ func TestRunToolNodeAppliesTimeoutToActualMCPExecution(t *testing.T) {
 		}
 		observedDeadline <- deadline
 		<-ctx.Done()
+		observedCancellation <- ctx.Err()
 		return nil, ctx.Err()
 	})
 	ag := agent.NewAgent(&config.OpenAIConfig{APIKey: "test-only-key", Model: "test-only-model"}, &config.AgentConfig{}, server, nil, logger, 1)
@@ -73,8 +75,18 @@ func TestRunToolNodeAppliesTimeoutToActualMCPExecution(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	output, proceed, status, errText := runToolNode(parent, RunArgs{Agent: ag, ConversationID: "test-only-conversation"}, node, newWorkflowLocalState(nil, "test-only-run"))
-	if proceed || status != "failed" || !strings.Contains(errText, "deadline exceeded") {
+	if proceed || status != "failed" || errText == "" {
 		t.Fatalf("timeout became success: %v %s %s %#v", proceed, status, errText, output)
+	}
+	// The MCP hard-timeout result and the caller deadline can win the race.
+	// Assert the actual handler cancellation instead of one path's error wording.
+	select {
+	case cause := <-observedCancellation:
+		if !errors.Is(cause, context.DeadlineExceeded) {
+			t.Fatalf("unexpected tool cancellation: %v", cause)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("actual MCP handler did not stop at its deadline")
 	}
 	if time.Since(start) >= 3*time.Second {
 		t.Fatal("configured timeout not applied")

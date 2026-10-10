@@ -35,6 +35,7 @@ type MonitorStorage interface {
 
 // Server MCP服务器
 type Server struct {
+	trustedProxies        []string // guarded by mu
 	tools                 map[string]ToolHandler
 	toolDefs              map[string]Tool // 工具定义
 	executions            map[string]*ToolExecution
@@ -353,13 +354,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	defer s.removeSSEClient(client.id)
 
 	// 官方规范：首个事件为 endpoint，data 为消息端点 URL（客户端将向该 URL POST 请求）
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if r.URL.Scheme != "" {
-		scheme = r.URL.Scheme
-	}
+	scheme := s.endpointScheme(r)
 	endpointURL := fmt.Sprintf("%s://%s%s?sessionid=%s", scheme, r.Host, r.URL.Path, sessionID)
 	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURL)
 	flusher.Flush()

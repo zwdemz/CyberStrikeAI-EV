@@ -64,7 +64,7 @@ func newEinoToolCallingChatModelFactory(
 			if err != nil {
 				return nil, err
 			}
-			return newAgenticToolCallingChatModelAdapter(nativeModel), nil
+			return newAgenticToolCallingChatModelAdapter(newAgenticStreamBlockIndexRepairModel(nativeModel)), nil
 		}
 		httpClient := openai.NewEinoHTTPClient(&oa, baseHTTPClient)
 		openai.AttachSummarizationDiagTransport(httpClient, logger)
@@ -102,7 +102,11 @@ func newEinoAgenticChatModelFactory(
 			return nil, fmt.Errorf("eino agentic model: provider %q is not supported", strings.TrimSpace(oa.Provider))
 		}
 		if isEinoAgenticClaudeProvider(oa.Provider) {
-			return newEinoClaudeAgenticChatModel(ctx, oa, mode, baseHTTPClient, reasoningClient)
+			base, err := newEinoClaudeAgenticChatModel(ctx, oa, mode, baseHTTPClient, reasoningClient)
+			if err != nil {
+				return nil, err
+			}
+			return newAgenticStreamBlockIndexRepairModel(base), nil
 		}
 		httpClient := openai.NewEinoHTTPClient(&oa, baseHTTPClient)
 		openai.AttachSummarizationDiagTransport(httpClient, logger)
@@ -118,7 +122,11 @@ func newEinoAgenticChatModelFactory(
 		if mode == einoModelModePlanner {
 			modelCfg.ExtraFields = reasoning.AgenticOpenAIPlannerExtraFields(&oa)
 		}
-		return agenticopenai.NewChatModel(ctx, modelCfg)
+		base, err := agenticopenai.NewChatModel(ctx, modelCfg)
+		if err != nil {
+			return nil, err
+		}
+		return newAgenticStreamBlockIndexRepairModel(base), nil
 	}
 }
 
