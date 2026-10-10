@@ -114,3 +114,33 @@ The historical baseline has a Settings-save YAML-node panic. The fixture seeds
 its initial setting offline; the upgraded image must save through the real API.
 The current handler fixes the document-versus-mapping node error and preserves
 the tool guard rules when saving other settings.
+
+## Settings persistence and cancellation
+
+Settings updates are staged separately and validated before saving. The main
+configuration and its backup use private (`0600`) temporary files, file sync and
+atomic rename. Runtime settings, approval defaults and MCP side effects are only
+published after a successful save. A backup failure rejects the update. Symlink
+configuration destinations are rejected; use regular writable files. Container
+installations should mount the runtime directory, not only a single config file,
+so sibling temporary files and rename are supported.
+
+Tool YAML changes are prepared before writing. If a subsequent write fails,
+already replaced files are rolled back and rollback failures are logged. This is
+not a crash-atomic transaction across several files: retain deployment backups
+for power-loss recovery. Atomic rename prevents readers from seeing a partially
+written individual file; it does not guarantee persistence across every hardware
+or filesystem failure.
+
+Knowledge indexing responds to cancellation while waiting for the index slot,
+RPM quota, fixed delay or retry backoff. Every retry consumes the configured
+throttle budget. Cancellation stops queued work before a new embedding request;
+a request already sent remains subject to the provider's cancellation behavior.
+These changes do not force reindexing or alter existing embeddings.
+
+Linux regression checks:
+
+```sh
+go test ./internal/handler ./internal/knowledge
+go test -race ./internal/knowledge
+```
