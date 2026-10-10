@@ -158,6 +158,7 @@
     "noTokenUsageYet": "No usage yet",
     "clickToViewTasks": "Click to view tasks",
     "clickToViewChat": "Click to view conversations",
+    "clickToViewTokens": "View token usage statistics",
     "clickToViewVuln": "Click to view vulnerabilities",
     "clickToViewMCP": "Click to view MCP monitor",
     "accessOverviewTitle": "Access overview",

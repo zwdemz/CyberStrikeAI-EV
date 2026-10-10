@@ -158,6 +158,7 @@
     "noTokenUsageYet": "Расхода пока нет",
     "clickToViewTasks": "Открыть задачи",
     "clickToViewChat": "Открыть диалоги",
+    "clickToViewTokens": "Статистика токенов",
     "clickToViewVuln": "Открыть уязвимости",
     "clickToViewMCP": "Открыть монитор MCP",
     "accessOverviewTitle": "Обзор доступа",

@@ -158,6 +158,7 @@
     "noTokenUsageYet": "暂无用量",
     "clickToViewTasks": "点击查看任务管理",
     "clickToViewChat": "点击查看对话",
+    "clickToViewTokens": "点击查看 Token 统计",
     "clickToViewVuln": "点击查看漏洞管理",
     "clickToViewMCP": "点击查看 MCP 监控",
     "accessOverviewTitle": "接入概览",

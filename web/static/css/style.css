@@ -46772,6 +46772,20 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
 }
 
 /* Test proxy management follows the existing settings theme and responsive form layout. */
+.dashboard-token-dialog { width: min(900px, calc(100vw - 32px)); max-height: 85vh; margin: auto; padding: 24px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-primary); color: var(--text-primary); box-shadow: var(--shadow-lg); overflow: auto; }
+.dashboard-token-dialog::backdrop { background: rgba(15, 23, 42, .55); }
+.dashboard-token-dialog header, .dashboard-token-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.dashboard-token-controls { justify-content: flex-start; flex-wrap: wrap; }
+.dashboard-token-controls select { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--input-bg); color: var(--text-primary); }
+.dashboard-token-note, .dashboard-token-dialog [role="status"] { color: var(--text-secondary); line-height: 1.6; margin: 12px 0; }
+.dashboard-token-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.dashboard-token-metrics div { background: var(--bg-secondary); border-radius: 8px; padding: 16px; }
+.dashboard-token-metrics dt { color: var(--text-secondary); }
+.dashboard-token-metrics dd { margin: 8px 0 0; font-size: 24px; font-weight: 600; overflow-wrap: anywhere; }
+.dashboard-token-table { overflow-x: auto; margin: 12px 0 24px; }
+.dashboard-token-table table { border-collapse: collapse; width: 100%; }
+.dashboard-token-table th, .dashboard-token-table td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border-color); overflow-wrap: anywhere; max-width: 280px; }
+@media(max-width:600px) { .dashboard-token-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dashboard-token-dialog { padding: 16px; } }
 #test-proxy-panel { color: var(--text-primary); }
 #test-proxy-panel .form-group { margin-bottom: 16px; }
 #test-proxy-panel hr { border: 0; border-top: 1px solid var(--border-color); margin: 24px 0; }
@@ -46786,3 +46800,5 @@ html[data-theme="dark"] { --tool-blocked-color: #f4bc62; }
 .test-proxy-pool li { padding: 8px 0; overflow-wrap: anywhere; }
 .test-proxy-pool small { display: block; color: var(--text-secondary); }
 @media(max-width:720px) { .test-proxy-limits { grid-template-columns: minmax(0,1fr); } }
+
+.dashboard-token-dialog button { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 14px; cursor: pointer; }
