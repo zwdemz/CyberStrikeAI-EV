@@ -4930,6 +4930,16 @@
     }
   },
   "vulnerabilityRating": {
+    "evidence_basis": "证据来源类型",
+    "boundary_status": "权限或安全边界核对",
+    "observed_impact": "已观察的实际影响",
+    "verification_details": "验证依据与前后对照",
+    "scope_evidence": "已证明影响范围",
+    "high_impact_evidence": "重大影响的专项证据",
+    "static": "仅静态分析",
+    "runtime": "已记录运行证据",
+    "expected": "符合预期访问",
+    "violated": "已证明边界被突破",
   "title": "证据与定级",
   "pending": "待定级",
   "legacy": "历史记录：尚未经过新模型评估",

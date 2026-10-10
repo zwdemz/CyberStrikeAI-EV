@@ -4942,6 +4942,16 @@
     }
   },
   "vulnerabilityRating": {
+    "evidence_basis": "Evidence basis",
+    "boundary_status": "Authorization or security boundary",
+    "observed_impact": "Observed impact",
+    "verification_details": "Verification references and controls",
+    "scope_evidence": "Evidence of affected scope",
+    "high_impact_evidence": "Specific evidence of major impact",
+    "static": "Static analysis only",
+    "runtime": "Recorded runtime evidence",
+    "expected": "Expected access",
+    "violated": "Demonstrated boundary violation",
   "title": "Evidence-based assessment",
   "pending": "Pending assessment",
   "legacy": "Legacy record: not assessed by the current model",
