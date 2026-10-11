@@ -607,3 +607,12 @@ project:
   fact_index_path_max_runes: 10000
   fact_summary_max_runes: 24000
   default_inject_deprecated: false
+
+# Proxy pool connectivity checks. Restart after changes; checks run only on request.
+# Omitted or empty probe_urls defaults to https://www.baidu.com.
+test_proxy:
+  probe_urls:
+    - https://www.baidu.com
+  max_concurrent: 16
+  max_concurrent_per_target: 2
+  queue_timeout_seconds: 30

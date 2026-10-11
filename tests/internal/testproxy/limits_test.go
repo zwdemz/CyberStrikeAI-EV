@@ -104,3 +104,28 @@ func TestProbeURLsAreCopied(t *testing.T) {
 		t.Fatal("probe configuration mutated")
 	}
 }
+
+func TestDefaultProbeURLCanBeOverridden(t *testing.T) {
+	s, _, _ := fixture(t)
+	for _, input := range [][]string{nil, {}} {
+		if err := s.ConfigureProbeURLs(input); err != nil {
+			t.Fatal(err)
+		}
+		urls := s.ProbeURLs()
+		if len(urls) != 1 || urls[0] != "https://www.baidu.com" {
+			t.Fatalf("wrong default: %v", urls)
+		}
+	}
+	if err := s.ConfigureProbeURLs([]string{"https://custom.example.invalid/health"}); err != nil {
+		t.Fatal(err)
+	}
+	if urls := s.ProbeURLs(); len(urls) != 1 || urls[0] != "https://custom.example.invalid/health" {
+		t.Fatal("override ignored")
+	}
+	if err := s.ConfigureProbeURLs([]string{"socks5://localhost:1080"}); err == nil {
+		t.Fatal("invalid probe protocol accepted")
+	}
+	if s.ProbeURLs()[0] != "https://custom.example.invalid/health" {
+		t.Fatal("invalid update replaced previous configuration")
+	}
+}
