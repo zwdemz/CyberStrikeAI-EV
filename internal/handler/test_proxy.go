@@ -32,7 +32,7 @@ func RegisterTestProxyRoutes(api *gin.RouterGroup, auth *security.AuthManager, d
 			c.JSON(500, gin.H{"error": "Could not read proxy pools"})
 			return
 		}
-		c.JSON(200, gin.H{"pools": pools, "health": s.Status()})
+		c.JSON(200, gin.H{"pools": pools, "health": s.Status(), "probe_urls": s.ProbeURLs()})
 	})
 
 	// Account identity comes exclusively from authentication middleware, never request JSON.

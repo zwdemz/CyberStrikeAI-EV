@@ -1,6 +1,6 @@
-# Test proxy pools
+# Proxy pools
 
-Manage pools in **Settings → Test proxy pools**, then save the current account preference (no project required). The UI follows the existing light/dark theme. Model API and knowledge indexing traffic retain their existing network settings.
+Manage pools in **Settings → Proxy pools**, then save the current account preference (no project required). The UI follows the existing light/dark theme. Model API and knowledge indexing traffic retain their existing network settings.
 
 Paste Markdown tables, CSV, TSV, or one HTTP/HTTPS/SOCKS5 URL per line. Explicit ports are required. Validate the sanitized preview before importing. Supported columns include `Host`, `Port`, `类型`, `账号`, `密码`, `地区`, `状态`, `DB_id`, and `ProxyAddr`. Conflicting columns and duplicate endpoints reject the entire import. Limits: 200 nodes per import, 256 KiB text, 50 pools. Imports create immutable pools; replace account preferences and legacy bindings before deleting an old pool.
 
@@ -76,3 +76,5 @@ Imports reject duplicate headers and unknown status values, rather than silently
 Probes make one HEAD request to an explicitly configured controlled endpoint, without redirects or direct fallback. HTTP 407 is an authentication failure; cancellation and timeout have distinct messages. `reachable` means a response arrived; `usable` requires 2xx from the probe endpoint. Other target statuses, including 403 and 429, never trigger rotation. A successful check does not guarantee access to every site.
 
 When both table credential columns are empty, `-`, or `--`, import treats them as anonymous and does not require `TEST_PROXY_KEY`. If either column contains an actual value, both are preserved. Explicit URL credentials are never normalized as placeholders.
+
+The UI separates account egress, node checks and imports. Probe endpoints come from server configuration; checks are disabled when none are configured. Each row shows its current-page result, HTTP status, latency or failure reason, and time. Refresh retains results; changing endpoints or reloading the page clears them.

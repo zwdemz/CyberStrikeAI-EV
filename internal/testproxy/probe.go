@@ -131,3 +131,7 @@ func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map
 	failed = false
 	return map[string]interface{}{"node_id": nodeID, "http_status": response.StatusCode, "latency_ms": time.Since(start).Milliseconds(), "reachable": true, "usable": response.StatusCode >= 200 && response.StatusCode < 300}, nil
 }
+
+// ProbeURLs returns a copy of the configured controlled endpoints for the admin UI.
+// Configuration validation rejects credentials and fragments; callers must require config access.
+func (s *Service) ProbeURLs() []string { return append([]string{}, s.probeURLs...) }
