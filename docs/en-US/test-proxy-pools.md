@@ -17,7 +17,8 @@ test_proxy:
   max_concurrent: 16
   max_concurrent_per_target: 2
   queue_timeout_seconds: 30
-  probe_urls: []
+  probe_urls:
+    - https://www.baidu.com
 ```
 
 Ranges: 1–128, 1–16, 1–120 respectively; zero uses defaults. Pool defaults are 4 concurrent requests, 1 per node, 3 consecutive proxy connection failures before a 60-second cooldown. Pool API ranges: concurrency 1–16, per-node 1–4, threshold 1–10, cooldown 10–3600 seconds. Queue waits are cancellable. Counters and circuit state are process-local and reset after restart; replicas do not share limits.
@@ -37,7 +38,7 @@ All routes require authentication and `config:write`. Project binding routes add
 | PUT | `/api/test-proxy-pools/binding/:id` | `{pool_id}`; empty unbinds → `{ok:true}` |
 | POST | `/api/test-proxy-pools/probe` | `{pool_id,node_id,url}` → `{reachable,node_id,http_status,latency_ms}` |
 
-Responses: 200 success; 400 invalid request/probe failure; 401 unauthenticated; 403 forbidden; 409 bound/busy pool; 500 storage failure; 503 unavailable service. Manual probes are disabled until exact controlled URLs are listed in `test_proxy.probe_urls` and the service is restarted. Requests must exactly match an entry; there is no prefix or wildcard matching. Probes issue one bounded HEAD to that configured URL, with no redirects or body retrieval. Receiving an HTTP response proves reachability, not application health. Lack of cooldown does not mean verified connectivity.
+Responses: 200 success; 400 invalid request/probe failure; 401 unauthenticated; 403 forbidden; 409 bound/busy pool; 500 storage failure; 503 unavailable service. Manual probes default to `https://www.baidu.com` when `test_proxy.probe_urls` is omitted or empty. Configure a different HTTP/HTTPS list and restart to override it. Probes run only when explicitly requested. Requests must exactly match an entry; there is no prefix or wildcard matching. Probes issue one bounded HEAD to that configured URL, with no redirects or body retrieval. Receiving an HTTP response proves reachability, not application health. Lack of cooldown does not mean verified connectivity.
 
 The main SQLite database adds `test_proxy_pools(id PRIMARY KEY,document)` and `test_proxy_bindings(project_id PRIMARY KEY,pool_id)`. Bindings reference projects and pools; project deletion cascades bindings. Pool documents hold metadata and encrypted credentials.
 
@@ -77,4 +78,4 @@ Probes make one HEAD request to an explicitly configured controlled endpoint, wi
 
 When both table credential columns are empty, `-`, or `--`, import treats them as anonymous and does not require `TEST_PROXY_KEY`. If either column contains an actual value, both are preserved. Explicit URL credentials are never normalized as placeholders.
 
-The UI separates account egress, node checks and imports. Probe endpoints come from server configuration; checks are disabled when none are configured. Each row shows its current-page result, HTTP status, latency or failure reason, and time. Refresh retains results; changing endpoints or reloading the page clears them.
+The UI separates account egress, node checks and imports. Probe endpoints come from server configuration; omitted or empty configuration uses the Baidu default. Each row shows its current-page result, HTTP status, latency or failure reason, and time. Refresh retains results; changing endpoints or reloading the page clears them.

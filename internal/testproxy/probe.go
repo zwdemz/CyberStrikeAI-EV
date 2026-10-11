@@ -9,9 +9,12 @@ import (
 	"time"
 )
 
-// ConfigureProbeURLs validates the explicit startup allowlist. Empty disables probes.
+// ConfigureProbeURLs validates the startup allowlist; omitted or empty lists use Baidu.
 // URLs are exact matches; no suffix, redirect or arbitrary URL fallback is allowed.
 func (s *Service) ConfigureProbeURLs(addresses []string) error {
+	if len(addresses) == 0 {
+		addresses = []string{"https://www.baidu.com"}
+	}
 	if len(addresses) > 16 {
 		return errors.New("at most 16 probe URLs are allowed")
 	}
