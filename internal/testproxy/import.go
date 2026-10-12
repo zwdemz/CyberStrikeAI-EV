@@ -14,12 +14,15 @@ import (
 
 // Node is a proxy endpoint. Secret contains encrypted credentials and is never returned by the API.
 type Node struct {
-	ID       string `json:"id"`
-	Address  string `json:"address"`
-	Region   string `json:"region,omitempty"`
-	SourceID string `json:"source_id,omitempty"`
-	Enabled  bool   `json:"enabled"`
-	Secret   string `json:"secret,omitempty"`
+	ID            string `json:"id"`
+	Address       string `json:"address"`
+	Region        string `json:"region,omitempty"`
+	SourceID      string `json:"source_id,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	Secret        string `json:"secret,omitempty"`
+	ProbeFailures int    `json:"probe_failures,omitempty"`
+	ProbeURL      string `json:"probe_url,omitempty"`
+	RemovedAt     string `json:"removed_at,omitempty"`
 }
 
 // ParseImport accepts Markdown, CSV, TSV, or one URL per line. Invalid/conflicting rows reject the entire import.
