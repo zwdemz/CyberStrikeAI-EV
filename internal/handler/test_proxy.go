@@ -11,7 +11,7 @@ import (
 
 // RegisterTestProxyRoutes exposes administrator-only pool management. Project bindings also require
 // project write access. Bodies are bounded and credentials are never logged or returned.
-func RegisterTestProxyRoutes(api *gin.RouterGroup, auth *security.AuthManager, db *database.DB, log *zap.Logger) {
+func RegisterTestProxyRoutes(api *gin.RouterGroup, auth *security.AuthManager, db *database.DB, log *zap.Logger, capabilities func() []testproxy.ToolCapability) {
 	group := api.Group("/test-proxy-pools", security.AuthMiddleware(auth), security.RequirePermission("config:write"))
 	group.Use(func(c *gin.Context) {
 		if testproxy.Current() == nil {
@@ -32,7 +32,11 @@ func RegisterTestProxyRoutes(api *gin.RouterGroup, auth *security.AuthManager, d
 			c.JSON(500, gin.H{"error": "Could not read proxy pools"})
 			return
 		}
-		c.JSON(200, gin.H{"pools": pools, "health": s.Status(), "probe_urls": s.ProbeURLs(), "tool_capabilities": testproxy.ToolCapabilities()})
+		toolCapabilities := testproxy.ToolCapabilities()
+		if capabilities != nil {
+			toolCapabilities = capabilities()
+		}
+		c.JSON(200, gin.H{"pools": pools, "health": s.Status(), "probe_urls": s.ProbeURLs(), "tool_capabilities": toolCapabilities})
 	})
 
 	// Account identity comes exclusively from authentication middleware, never request JSON.

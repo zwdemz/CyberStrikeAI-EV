@@ -1,13 +1,19 @@
 package testproxy
 
-import "sort"
+import (
+	"sort"
+	"strings"
+
+	"cyberstrike-ai/internal/config"
+)
 
 // ToolCapability describes verified routing support, not installation or permissions.
 // Unknown tools remain blocked; callers cannot enable adapters through this metadata.
 type ToolCapability struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Reason string `json:"reason"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Runtime string `json:"runtime,omitempty"`
 }
 
 var localProxyTools = map[string]bool{
@@ -81,4 +87,43 @@ func ToolCapabilities() []ToolCapability {
 		out = append(out, ToolCapabilityFor(name))
 	}
 	return out
+}
+
+// ToolCapabilitiesWithRuntime adds read-only command checks to the routing catalogue.
+// tools and registered must be configuration snapshots. No commands or network calls
+// are executed. A found executable does not prove dependencies, role access or proxy support.
+// Resolution errors are represented as unavailable without exposing filesystem paths.
+func ToolCapabilitiesWithRuntime(tools []config.ToolConfig, registered []string) []ToolCapability {
+	configured := make(map[string]config.ToolConfig, len(tools))
+	for _, tool := range tools {
+		configured[tool.Name] = tool
+	}
+	available := make(map[string]bool, len(registered))
+	for _, name := range registered {
+		available[name] = true
+	}
+	capabilities := ToolCapabilities()
+	for index := range capabilities {
+		capability := &capabilities[index]
+		capability.Runtime = "not_configured"
+		if tool, exists := configured[capability.Name]; exists {
+			if !tool.Enabled {
+				capability.Runtime = "disabled"
+			} else if strings.HasPrefix(strings.TrimSpace(tool.Command), "internal:") {
+				capability.Runtime = "session_dependent"
+				if available[capability.Name] {
+					capability.Runtime = "registered"
+				}
+			} else if _, err := config.ResolveToolCommand(tool); err != nil {
+				capability.Runtime = "command_missing"
+			} else {
+				capability.Runtime = "command_found"
+			}
+		} else if available[capability.Name] {
+			capability.Runtime = "registered"
+		} else if capability.Status == "local" || capability.Name == "external-mcp" {
+			capability.Runtime = "session_dependent"
+		}
+	}
+	return capabilities
 }
