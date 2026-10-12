@@ -68,7 +68,7 @@ func Overview(items []*database.Vulnerability) string {
 }
 
 // Finding renders one finding using a consistent relative heading hierarchy.
-// Missing fields remain omitted; stored evidence and severity are never recalculated.
+// Required template fields show explicit missing values; no system name or evidence is inferred.
 func Finding(v *database.Vulnerability, heading string) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "%s %s\n\n", heading, Inline(v.Title))
@@ -78,29 +78,36 @@ func Finding(v *database.Vulnerability, heading string) string {
 			fmt.Fprintf(&out, "| %s | %s |\n", Inline(name), Inline(value))
 		}
 	}
-	row("漏洞 ID", v.ID)
-	row("当前等级", label(severities, v.Severity))
-	row("处理状态", label(statuses, v.Status))
-	row("漏洞类型", v.Type)
-	row("目标", v.Target)
-	row("对话 ID", v.ConversationID)
-	row("对话标签", v.ConversationTag)
-	row("任务 ID", v.TaskID)
-	row("任务队列 ID", v.TaskQueueID)
-	row("任务标签", v.TaskTag)
-	if !v.CreatedAt.IsZero() {
-		row("创建时间", v.CreatedAt.Format("2006-01-02 15:04:05 -07:00"))
+	valueOrMissing := func(value string) string {
+		if strings.TrimSpace(value) == "" {
+			return "未填写"
+		}
+		return value
 	}
-	if !v.UpdatedAt.IsZero() {
-		row("更新时间", v.UpdatedAt.Format("2006-01-02 15:04:05 -07:00"))
-	}
+	row("漏洞名称", valueOrMissing(v.Title))
+	row("漏洞等级", valueOrMissing(label(severities, v.Severity)))
+	row("漏洞类型", valueOrMissing(v.Type))
+	row("系统名称", "未填写")
+	row("漏洞所在详细 IP 或 URI", valueOrMissing(v.Target))
 	out.WriteString("\n")
-	section := func(name, text string) {
+	writeSection := func(level, name, text string) {
 		if strings.TrimSpace(text) != "" {
-			fmt.Fprintf(&out, "%s# %s\n\n%s\n\n", heading, name, text)
+			fmt.Fprintf(&out, "%s %s\n\n%s\n\n", level, name, strings.TrimRight(text, "\n"))
 		}
 	}
-	section("漏洞概述", v.Description)
+	section := func(name, text string) { writeSection(heading+"#", name, text) }
+	detail := func(name, text string) { writeSection(heading+"##", name, text) }
+	section("漏洞详情（详细描述与截图）", valueOrMissing(v.Description))
+	detail("前置条件", v.Preconditions)
+	detail("复现步骤", valueOrMissing(v.ReproSteps))
+	if v.Evidence != "" {
+		detail("请求、响应与原始证据", Fence(v.Evidence))
+	} else {
+		detail("证据与截图", "未附证据或截图。")
+	}
+	section("漏洞危害", valueOrMissing(v.Impact))
+	section("修复建议（详细描述）", valueOrMissing(v.Recommendation))
+	section("复测记录与方法", v.RetestNotes)
 	if v.Assessment == nil {
 		section("证据与定级", "历史记录，尚未按当前模型评估。")
 	} else {
@@ -123,14 +130,22 @@ func Finding(v *database.Vulnerability, heading string) string {
 		}
 		section("证据与定级", table.String())
 	}
-	section("前置条件", v.Preconditions)
-	section("复现步骤", v.ReproSteps)
-	if v.Evidence != "" {
-		section("证据 / POC", Fence(v.Evidence))
+	section("记录与追溯信息", "以下为平台记录，仅用于追溯。")
+	out.WriteString("| 记录项目 | 内容 |\n| --- | --- |\n")
+	row("漏洞 ID", v.ID)
+	row("处理状态", label(statuses, v.Status))
+	row("对话 ID", v.ConversationID)
+	row("对话标签", v.ConversationTag)
+	row("任务 ID", v.TaskID)
+	row("任务队列 ID", v.TaskQueueID)
+	row("任务标签", v.TaskTag)
+	if !v.CreatedAt.IsZero() {
+		row("创建时间", v.CreatedAt.Format("2006-01-02 15:04:05 -07:00"))
 	}
-	section("记录的影响", v.Impact)
-	section("修复建议", v.Recommendation)
-	section("复测记录与方法", v.RetestNotes)
+	if !v.UpdatedAt.IsZero() {
+		row("更新时间", v.UpdatedAt.Format("2006-01-02 15:04:05 -07:00"))
+	}
+	out.WriteString("\n")
 	out.WriteString("---\n\n")
 	return out.String()
 }

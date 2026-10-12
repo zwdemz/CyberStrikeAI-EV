@@ -35,3 +35,20 @@ func TestOverviewAndLegacy(t *testing.T) {
 		t.Fatal(legacy)
 	}
 }
+func TestTemplateSectionOrderAndNoInventedSystem(t *testing.T) {
+	report := vulnreport.Finding(&database.Vulnerability{Title: "Example", Severity: "low", ConversationTag: "Not a system name", Description: "Description", Impact: "Limited", Recommendation: "Fix"}, "##")
+	previous := -1
+	for _, heading := range []string{"漏洞名称", "漏洞等级", "漏洞类型", "系统名称", "漏洞所在详细 IP 或 URI", "### 漏洞详情", "### 漏洞危害", "### 修复建议", "### 证据与定级", "### 记录与追溯信息"} {
+		position := strings.Index(report, heading)
+		if position <= previous {
+			t.Fatalf("section order %s: %s", heading, report)
+		}
+		previous = position
+	}
+	if !strings.Contains(report, "| 系统名称 | 未填写 |") || !strings.Contains(report, "| 漏洞等级 | 低危 |") {
+		t.Fatal(report)
+	}
+	if strings.Contains(report, "中危（实际危害小）") {
+		t.Fatal("sample rating copied")
+	}
+}
