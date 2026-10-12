@@ -85,7 +85,20 @@ if(output)fs.mkdirSync(output,{recursive:true});
   else await page.waitForFunction(()=>!document.querySelector('[data-probe-pool="first"][data-probe-node="0"]'));
  }
  if(await page.locator('#test-proxy-total').innerText()!=='8'||!(await page.locator('#test-proxy-cleanup-status').innerText()).includes('已清理'))throw Error('cleanup UI missing');
+ await page.evaluate(()=>{
+  const original=window.apiFetch;
+  window.capabilitiesFixture=[{name:'http-framework-test',status:'supported'},{name:'query_assets',status:'local'},{name:'nuclei',status:'unverified'},{name:'exec',status:'unsupported'},{name:'<img src=x onerror=alert(1)>',status:'future'}];
+  window.apiFetch=async(path,opt={})=>{const response=await original(path,opt);if(path==='/api/test-proxy-pools'){const data=await response.json();return {ok:true,json:async()=>({...data,tool_capabilities:window.capabilitiesFixture})};}return response;};
+ });
+ await page.locator('#test-proxy-refresh').click();
+ await page.waitForFunction(()=>document.getElementById('test-proxy-capabilities').textContent.includes('http-framework-test'));
+ await page.locator('#test-proxy-capabilities').evaluate(e=>e.closest('details').open=true);
+ const compatibility=page.locator('#test-proxy-capabilities');
+ for(const status of ['已支持','内部操作','待验证（已阻止）','不支持（已阻止）'])if(!(await compatibility.innerText()).includes(status))throw Error('missing capability '+status);
+ if(await compatibility.locator('img').count())throw Error('capability markup injection');
+ if(await compatibility.locator('.proxy-badge.pass').count()!==1)throw Error('unknown capability promoted');
  for(const theme of ['light','dark']){await page.evaluate(t=>document.documentElement.dataset.theme=t,theme);if(output)await page.screenshot({path:path.join(output,'proxy-'+theme+'.png'),fullPage:true});}
+ await page.evaluate(()=>window.capabilitiesFixture=undefined);await page.locator('#test-proxy-refresh').click();await page.waitForFunction(()=>document.getElementById('test-proxy-capabilities').textContent.includes('服务端未提供'));
  await page.setViewportSize({width:1280,height:720});if(await page.evaluate(()=>document.documentElement.scrollWidth>1280))throw Error('horizontal overflow');
  if(errors.length)throw Error(errors.join('\n'));console.log('PASS: themed UI, import, preferences, bounded batch, partial failure, cancellation, endpoint changes, 1280px overflow');await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});
