@@ -40,6 +40,17 @@ func (db *DB) SaveTestProxyPool(ctx context.Context, id string, document []byte)
 	return err
 }
 
+// CompareAndSwapTestProxyPool atomically updates an existing document only if its
+// previous bytes still match. False means a concurrent update/deletion; errors leave it unchanged.
+func (db *DB) CompareAndSwapTestProxyPool(ctx context.Context, id string, previous, document []byte) (bool, error) {
+	result, err := db.ExecContext(ctx, `UPDATE test_proxy_pools SET document=? WHERE id=? AND document=?`, document, id, previous)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count == 1, err
+}
+
 // TestProxyPools returns stored documents; credentials must be decrypted only by the service.
 func (db *DB) TestProxyPools(ctx context.Context) ([][]byte, error) {
 	rows, err := db.QueryContext(ctx, `SELECT document FROM test_proxy_pools ORDER BY id`)

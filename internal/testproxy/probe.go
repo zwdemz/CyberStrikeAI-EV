@@ -2,6 +2,7 @@ package testproxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -31,7 +32,7 @@ func (s *Service) ConfigureProbeURLs(addresses []string) error {
 // Probe makes one bounded HEAD request through a selected proxy to a URL in the startup
 // allowlist. It never follows redirects, returns bodies or falls back to direct access.
 // A target HTTP error proves reachability and does not count as a broken proxy.
-func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map[string]interface{}, error) {
+func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (result map[string]interface{}, probeErr error) {
 	controlledURL := ""
 	for _, configured := range s.probeURLs {
 		if configured == target {
@@ -52,7 +53,7 @@ func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map
 		if p.ID == poolID {
 			pool = p
 			for i := range p.Nodes {
-				if p.Nodes[i].ID == nodeID && p.Nodes[i].Enabled {
+				if p.Nodes[i].ID == nodeID && p.Nodes[i].Enabled && p.Nodes[i].RemovedAt == "" {
 					n := p.Nodes[i]
 					node = &n
 				}
@@ -86,19 +87,36 @@ func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map
 			poolActive += v.active
 		}
 	}
-	if s.active >= s.globalLimit || poolActive >= pool.MaxConcurrent || state.active >= pool.PerNode {
+	if state.removed || s.active >= s.globalLimit || poolActive >= pool.MaxConcurrent || state.active > 0 {
 		s.mu.Unlock()
 		return nil, errors.New("proxy busy; retry after current request")
 	}
 	s.active++
 	state.active++
+	state.probing = true
 	s.mu.Unlock()
-	failed := true
+	failed, counted := true, false
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.active--
 		state.active--
+		state.probing = false
+		if !counted || ctx.Err() != nil {
+			return
+		}
+		// Persist under the admission lock: a leased node cannot be removed. A CAS
+		// protects other document writers; failed storage never reports removal.
+		count, removed, saveErr := s.recordProbe(ctx, poolID, nodeID, controlledURL, failed)
+		if result == nil {
+			result = map[string]interface{}{"node_id": nodeID}
+		}
+		if saveErr != nil {
+			probeErr = errors.New("could not persist proxy check; cleanup not confirmed")
+			return
+		}
+		result["probe_failures"], result["removed"] = count, removed
+		state.removed = removed
 		if failed {
 			state.failures++
 			if state.failures >= pool.FailureThreshold {
@@ -118,6 +136,7 @@ func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map
 	}
 	start := time.Now()
 	response, err := client.Do(req)
+	counted = true
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, errors.New("proxy probe canceled")
@@ -138,3 +157,60 @@ func (s *Service) Probe(ctx context.Context, poolID, nodeID, target string) (map
 // ProbeURLs returns a copy of the configured controlled endpoints for the admin UI.
 // Configuration validation rejects credentials and fragments; callers must require config access.
 func (s *Service) ProbeURLs() []string { return append([]string{}, s.probeURLs...) }
+
+// recordProbe persists completed connectivity checks. Caller holds s.mu after
+// releasing the probe slot. Three failures archive the node and erase its secret;
+// its enabled tombstone preserves sticky routing order, preventing automatic rotation.
+// A changed endpoint starts a new streak. Target HTTP responses reset the streak.
+func (s *Service) recordProbe(ctx context.Context, poolID, nodeID, endpoint string, failed bool) (int, bool, error) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	for attempt := 0; attempt < 3; attempt++ {
+		documents, err := s.store.TestProxyPools(writeCtx)
+		if err != nil {
+			return 0, false, err
+		}
+		for _, document := range documents {
+			var pool Pool
+			if err := json.Unmarshal(document, &pool); err != nil {
+				return 0, false, err
+			}
+			if pool.ID != poolID {
+				continue
+			}
+			for index := range pool.Nodes {
+				node := &pool.Nodes[index]
+				if node.ID != nodeID {
+					continue
+				}
+				if node.RemovedAt != "" {
+					return node.ProbeFailures, true, nil
+				}
+				if node.ProbeURL != endpoint || !failed {
+					node.ProbeFailures = 0
+				}
+				node.ProbeURL = endpoint
+				if failed {
+					node.ProbeFailures++
+				}
+				if node.ProbeFailures >= 3 {
+					node.RemovedAt = time.Now().UTC().Format(time.RFC3339Nano)
+					node.Secret = ""
+				}
+				updated, err := json.Marshal(pool)
+				if err != nil {
+					return 0, false, err
+				}
+				ok, err := s.store.CompareAndSwapTestProxyPool(writeCtx, poolID, document, updated)
+				if err != nil {
+					return 0, false, err
+				}
+				if ok {
+					return node.ProbeFailures, node.RemovedAt != "", nil
+				}
+				break
+			}
+		}
+	}
+	return 0, false, errors.New("proxy pool changed while recording check")
+}

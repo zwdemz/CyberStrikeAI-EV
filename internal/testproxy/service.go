@@ -24,6 +24,7 @@ import (
 // Store isolates persistence. Implementations must parameterize queries and enforce project foreign keys.
 type Store interface {
 	SaveTestProxyPool(context.Context, string, []byte) error
+	CompareAndSwapTestProxyPool(context.Context, string, []byte, []byte) (bool, error)
 	SaveTestProxyPreference(context.Context, string, string) error
 	TestProxyPreference(context.Context, string) (string, bool, error)
 	TestProxyPools(context.Context) ([][]byte, error)
@@ -46,6 +47,8 @@ type Pool struct {
 type nodeState struct {
 	active, failures int
 	until            time.Time
+	removed          bool
+	probing          bool
 }
 
 // Service owns process-wide admission and health state; persisted bindings survive restarts.
@@ -159,7 +162,7 @@ func (s *Service) Import(ctx context.Context, p Pool, raw string, preview bool) 
 	if preview {
 		return p, nil
 	}
-	// Each import creates an immutable pool, preventing in-flight credentials or routing from changing.
+	// Each import creates a new pool; cleanup keeps routing tombstones to preserve sticky selection.
 	id := make([]byte, 16)
 	if _, err = rand.Read(id); err != nil {
 		return Pool{}, err
@@ -217,9 +220,15 @@ func (s *Service) pools(ctx context.Context) ([]Pool, error) {
 func (s *Service) List(ctx context.Context) ([]Pool, error) {
 	pools, err := s.pools(ctx)
 	for i := range pools {
-		for j := range pools[i].Nodes {
-			pools[i].Nodes[j].Secret = ""
+		visible := make([]Node, 0, len(pools[i].Nodes))
+		for _, node := range pools[i].Nodes {
+			if node.RemovedAt != "" {
+				continue
+			}
+			node.Secret = ""
+			visible = append(visible, node)
 		}
+		pools[i].Nodes = visible
 	}
 	return pools, err
 }
@@ -245,7 +254,7 @@ func (s *Service) validatePool(ctx context.Context, poolID string) error {
 		for _, p := range pools {
 			if p.ID == poolID {
 				for _, n := range p.Nodes {
-					found = found || n.Enabled
+					found = found || (n.Enabled && n.RemovedAt == "")
 				}
 			}
 		}
@@ -378,6 +387,9 @@ func (s *Service) Acquire(ctx context.Context, targetURLs ...string) (*Lease, er
 	}
 	h := sha256.Sum256([]byte(id + ":" + key))
 	n := nodes[int(binary.BigEndian.Uint32(h[:4]))%len(nodes)]
+	if n.RemovedAt != "" {
+		return nil, errors.New("TEST_PROXY_NODE_REMOVED: selected proxy was removed after failed checks; select another pool explicitly")
+	}
 	stateKey := id + ":" + n.ID
 	u, err := url.Parse(n.Address)
 	if err != nil {
@@ -414,6 +426,10 @@ func (s *Service) Acquire(ctx context.Context, targetURLs ...string) (*Lease, er
 			st = &nodeState{}
 			s.states[stateKey] = st
 		}
+		if st.removed {
+			s.mu.Unlock()
+			return nil, errors.New("TEST_PROXY_NODE_REMOVED: selected proxy was removed after failed checks")
+		}
 		if time.Now().Before(st.until) {
 			s.mu.Unlock()
 			return nil, errors.New("TEST_PROXY_CIRCUIT_OPEN: sticky proxy cooling down; no direct fallback")
@@ -424,7 +440,7 @@ func (s *Service) Acquire(ctx context.Context, targetURLs ...string) (*Lease, er
 				poolActive += v.active
 			}
 		}
-		if s.active < s.globalLimit && poolActive < p.MaxConcurrent && st.active < p.PerNode && (st.failures < p.FailureThreshold || st.active == 0) && (targetKey == "" || s.targets[targetKey] < s.targetLimit) {
+		if !st.probing && s.active < s.globalLimit && poolActive < p.MaxConcurrent && st.active < p.PerNode && (st.failures < p.FailureThreshold || st.active == 0) && (targetKey == "" || s.targets[targetKey] < s.targetLimit) {
 			s.active++
 			if targetKey != "" {
 				s.targets[targetKey]++

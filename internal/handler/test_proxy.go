@@ -98,8 +98,11 @@ func RegisterTestProxyRoutes(api *gin.RouterGroup, auth *security.AuthManager, d
 			return
 		}
 		result, err := testproxy.Current().Probe(c.Request.Context(), req.PoolID, req.NodeID, req.URL)
+		if result != nil && result["removed"] == true {
+			log.Info("Proxy node removed after three failed checks", zap.String("pool_id", req.PoolID), zap.String("node_id", req.NodeID))
+		}
 		if err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+			c.JSON(400, gin.H{"error": err.Error(), "probe": result})
 			return
 		}
 		c.JSON(200, result)

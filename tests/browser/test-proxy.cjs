@@ -71,6 +71,20 @@ if(output)fs.mkdirSync(output,{recursive:true});
  await page.evaluate(()=>{batchDelay=20;batchCalls=[];});await page.locator('#test-proxy-batch').click();
  await page.waitForFunction(()=>document.getElementById('test-proxy-batch-progress').textContent.includes('批量检测完成'));
  await page.locator('#test-proxy-import-section').evaluate(e=>e.open=false);
+ await page.evaluate(()=>{
+  const original=window.apiFetch;let failures=0;
+  window.apiFetch=async(path,opt={})=>{
+   if(!path.endsWith('/probe'))return original(path,opt);
+   const req=JSON.parse(opt.body);failures++;
+   return {ok:false,json:async()=>({error:'fixture connection failure',probe:{probe_failures:failures,removed:failures===3,node_id:req.node_id}})};
+  };
+ });
+ for(let attempt=1;attempt<=3;attempt++){
+  await page.locator('[data-probe-pool="first"][data-probe-node="0"]').click();
+  if(attempt<3)await page.waitForFunction(count=>document.querySelector('[data-probe-pool="first"][data-probe-node="0"]').closest('tr').textContent.includes(count+'/3'),attempt);
+  else await page.waitForFunction(()=>!document.querySelector('[data-probe-pool="first"][data-probe-node="0"]'));
+ }
+ if(await page.locator('#test-proxy-total').innerText()!=='8'||!(await page.locator('#test-proxy-cleanup-status').innerText()).includes('已清理'))throw Error('cleanup UI missing');
  for(const theme of ['light','dark']){await page.evaluate(t=>document.documentElement.dataset.theme=t,theme);if(output)await page.screenshot({path:path.join(output,'proxy-'+theme+'.png'),fullPage:true});}
  await page.setViewportSize({width:1280,height:720});if(await page.evaluate(()=>document.documentElement.scrollWidth>1280))throw Error('horizontal overflow');
  if(errors.length)throw Error(errors.join('\n'));console.log('PASS: themed UI, import, preferences, bounded batch, partial failure, cancellation, endpoint changes, 1280px overflow');await browser.close();

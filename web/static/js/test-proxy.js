@@ -6,6 +6,8 @@
     };
     Object.assign(labels.zh,{batch:'批量检测已启用节点',stopBatch:'停止批量检测',queued:'等待检测',canceled:'已取消',batchDone:'批量检测完成',batchStopped:'批量检测已停止',progress:'已完成',batchHint:'最多同时检测 2 个节点，同一池串行；每个节点仅检测一次，失败后继续。'});
     Object.assign(labels.en,{batch:'Check all enabled nodes',stopBatch:'Stop batch',queued:'Queued',canceled:'Canceled',batchDone:'Batch complete',batchStopped:'Batch stopped',progress:'Completed',batchHint:'Up to 2 checks at once, one per pool. Each node is checked once; failures do not stop the batch.'});
+    Object.assign(labels.zh,{cleanupHint:'连续 3 次连接失败自动清理节点，计数重启后保留。收到目标响应会清零；取消和繁忙不计数。',probeFailures:'连续检测失败',removed:'已清理不通节点'});
+    Object.assign(labels.en,{cleanupHint:'Three consecutive connection failures remove a node; counts survive restarts. Target responses reset the streak. Cancellation and busy requests do not count.',probeFailures:'Consecutive failed checks',removed:'Unreachable node removed'});
     let validated = '', pools = [], health = {}, probeURLs = [], batch = null;
     const results = new Map(), pending = new Map();
     const t = key => labels[(document.documentElement.lang || 'zh').startsWith('zh') ? 'zh' : 'en'][key];
@@ -15,7 +17,7 @@
     async function request(path, options) {
         const response = await apiFetch('/api/test-proxy-pools' + path, options);
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || t('fail'));
+        if (!response.ok) { const error=new Error(data.error || t('fail'));error.probe=data.probe;throw error; }
         return data;
     }
     function payload() { return {name:el('name').value.trim(),text:el('text').value,max_concurrent:Number(el('concurrency').value),per_node:Number(el('per-node').value)}; }
@@ -41,11 +43,16 @@
         el('nodes').innerHTML=pools.length?pools.map(p=>`<section class="test-proxy-pool"><header><div><h4>${escape(p.name)}</h4><small>${p.nodes.length} ${escape(t('total'))}</small></div><button type="button" class="btn-secondary" data-delete-pool="${escape(p.id)}">${escape(t('remove'))}</button></header><div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>${['address','region','status','result','actions'].map(k=>`<th scope="col">${escape(t(k))}</th>`).join('')}</tr></thead><tbody>${p.nodes.map(n=>{
             const key=p.id+':'+n.id,state=health[key]||{},result=results.get(key),busy=pending.has(key);
             const label=!n.enabled?t('disabled'):state.circuit_open?t('cooldown'):t('enabled');
-            return `<tr><td><code>${escape(n.address)}</code></td><td>${escape(n.region||'—')}</td><td><span class="proxy-badge">${escape(label)}</span><small>${escape(t('active'))} ${Number(state.active||0)} · ${escape(t('failures'))} ${Number(state.failures||0)}</small></td><td aria-live="polite"><span class="proxy-badge ${busy?'checking':result?.state||''}">${escape(busy?t('checking'):result?t(result.state):t('untested'))}</span>${result?`<small>${escape(result.detail)}</small><time>${escape(result.time)}</time>`:''}</td><td><button type="button" class="btn-secondary" data-probe-pool="${escape(p.id)}" data-probe-node="${escape(n.id)}" ${(!n.enabled||!probeURLs.length)?'disabled':''}>${escape(t(busy?'cancel':'probe'))}</button></td></tr>`;
+            return `<tr><td><code>${escape(n.address)}</code></td><td>${escape(n.region||'—')}</td><td><span class="proxy-badge">${escape(label)}</span><small>${escape(t('active'))} ${Number(state.active||0)} · ${escape(t('failures'))} ${Number(state.failures||0)}</small><small>${escape(t('probeFailures'))} ${Number(n.probe_url===el('probe-url').value?n.probe_failures||0:0)}/3</small></td><td aria-live="polite"><span class="proxy-badge ${busy?'checking':result?.state||''}">${escape(busy?t('checking'):result?t(result.state):t('untested'))}</span>${result?`<small>${escape(result.detail)}</small><time>${escape(result.time)}</time>`:''}</td><td><button type="button" class="btn-secondary" data-probe-pool="${escape(p.id)}" data-probe-node="${escape(n.id)}" ${(!n.enabled||!probeURLs.length)?'disabled':''}>${escape(t(busy?'cancel':'probe'))}</button></td></tr>`;
         }).join('')}</tbody></table></div></section>`).join(''):`<div class="proxy-empty">${escape(t('empty'))}</div>`;
         el('nodes').querySelectorAll('[data-delete-pool]').forEach(button=>button.onclick=()=>{if(window.confirm(t('removeConfirm')))run(async()=>{await request('/'+encodeURIComponent(button.dataset.deletePool),{method:'DELETE'});await refresh();show(t('saved'));});});
         el('nodes').querySelectorAll('[data-probe-node]').forEach(button=>{button.disabled=button.disabled||!!batch;button.onclick=()=>probeNode(button.dataset.probePool,button.dataset.probeNode);});
         el('nodes').querySelectorAll('[data-delete-pool]').forEach(button=>button.disabled=!!batch||pending.size>0);
+    }
+    function setProbeFailures(poolID,nodeID,count) {
+        if(count===undefined)return;
+        const node=pools.find(pool=>pool.id===poolID)?.nodes.find(node=>node.id===nodeID);
+        if(node){node.probe_failures=count;node.probe_url=el('probe-url').value;}
     }
     // One explicit check per node, with cancellation; no retry, redirect or routing change.
     async function probeNode(poolID,nodeID,job=null) {
@@ -57,7 +64,14 @@
         try{
             const result=await request('/probe',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({pool_id:poolID,node_id:nodeID,url})});
             if(!controller.signal.aborted&&el('probe-url').value===url)results.set(key,{state:result.usable?'pass':'response',detail:`HTTP ${result.http_status} · ${result.latency_ms} ms`,time:new Date().toLocaleTimeString()});
-        }catch(error){if(el('probe-url').value===url)results.set(key,{state:controller.signal.aborted?'canceled':'failed',detail:controller.signal.aborted?'':error.message||t('fail'),time:new Date().toLocaleTimeString()});}
+            setProbeFailures(poolID,nodeID,result.probe_failures);
+        }catch(error){
+            if(error.probe?.removed){for(const pool of pools)if(pool.id===poolID)pool.nodes=pool.nodes.filter(node=>node.id!==nodeID);results.delete(key);el('cleanup-status').textContent=`${t('removed')} · ${new Date().toLocaleTimeString()}`;}
+            else {
+                setProbeFailures(poolID,nodeID,error.probe?.probe_failures);
+                if(el('probe-url').value===url)results.set(key,{state:controller.signal.aborted?'canceled':'failed',detail:controller.signal.aborted?'':error.message||t('fail'),time:new Date().toLocaleTimeString()});
+            }
+        }
         finally{pending.delete(key);renderNodes();}
     }
     // Stop scheduling immediately and abort in-flight requests. The batch owns its
@@ -120,6 +134,8 @@
         batchControls.innerHTML=`<button type="button" class="btn-primary" id="test-proxy-batch" disabled>${escape(t('batch'))}</button><button type="button" class="btn-secondary" id="test-proxy-stop-batch" hidden>${escape(t('stopBatch'))}</button><span id="test-proxy-batch-progress" role="status" aria-live="polite"></span>`;
         el('nodes').before(batchControls);
         const batchHint=document.createElement('p');batchHint.className='test-proxy-hint';batchHint.textContent=t('batchHint');batchControls.before(batchHint);
+        const cleanupHint=document.createElement('p');cleanupHint.className='test-proxy-hint';cleanupHint.textContent=t('cleanupHint');batchControls.before(cleanupHint);
+        const cleanupStatus=document.createElement('p');cleanupStatus.id='test-proxy-cleanup-status';cleanupStatus.setAttribute('role','status');batchControls.after(cleanupStatus);
         el('batch').onclick=()=>run(probeBatch);
         el('stop-batch').onclick=()=>{stopBatch();renderNodes();};
         ['text','name','concurrency','per-node'].forEach(id=>el(id).addEventListener('input',()=>{validated='';el('save').disabled=true;}));
