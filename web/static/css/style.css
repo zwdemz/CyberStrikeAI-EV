@@ -7901,10 +7901,9 @@ html[data-theme="dark"] .login-card .login-submit:disabled {
     max-width: 100%;
 }
 
-/* 长过程详情：跳过视口外时间线条目的布局/绘制，减轻大段工具输出时的主线程压力 */
+/* Keep actual tool-detail heights so scrolling does not resize offscreen entries. */
 .progress-timeline .timeline-item {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 72px;
+    content-visibility: visible;
 }
 
 .timeline-live-pruned-marker {
@@ -45774,8 +45773,7 @@ html[data-theme="dark"] .chat-composer-surface > .chat-session-settings-popover 
     border-radius: 0 !important;
     background: transparent !important;
     box-shadow: none !important;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 38px;
+    content-visibility: visible;
 }
 
 .message.assistant-turn-with-process .timeline-item::before,

@@ -1,7 +1,7 @@
 name: Proxy UI
 on:
   pull_request:
-    paths: ['web/static/js/test-proxy.js', 'web/static/css/style.css', 'web/static/js/settings.js', 'web/templates/index.html', 'tests/browser/test-proxy.cjs', '.github/workflows/proxy-ui.yml']
+    paths: ['web/static/js/test-proxy.js', 'web/static/css/style.css', 'web/static/js/settings.js', 'web/templates/index.html', 'tests/browser/test-proxy.cjs', 'tests/browser/chat-reading.cjs', 'web/static/css/chat-history.css', '.github/workflows/proxy-ui.yml']
 permissions:
   contents: read
 jobs:
@@ -26,6 +26,7 @@ jobs:
         run: |
           node --test tests/web/*.test.cjs tests/web/*.test.mjs web/static/js/*.test.cjs
           node tests/browser/test-proxy.cjs
+          node tests/browser/chat-reading.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
