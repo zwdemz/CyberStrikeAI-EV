@@ -79,3 +79,5 @@ Probes make one HEAD request to an explicitly configured controlled endpoint, wi
 When both table credential columns are empty, `-`, or `--`, import treats them as anonymous and does not require `TEST_PROXY_KEY`. If either column contains an actual value, both are preserved. Explicit URL credentials are never normalized as placeholders.
 
 The UI separates account egress, node checks and imports. Probe endpoints come from server configuration; omitted or empty configuration uses the Baidu default. Each row shows its current-page result, HTTP status, latency or failure reason, and time. Refresh retains results; changing endpoints or reloading the page clears them.
+
+Use “Check all enabled nodes” to check enabled nodes across all pools. At most two checks run concurrently, with one per pool; disabled nodes are skipped and each node is requested once. Individual failures do not stop the remaining checks. Stop cancels in-flight requests and discards queued work. Changing endpoints also cancels the batch and clears results. Progress and per-node results last only for this page; canceled in-flight checks count as processed.

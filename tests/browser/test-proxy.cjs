@@ -35,8 +35,43 @@ if(output)fs.mkdirSync(output,{recursive:true});
  if(!(await page.locator('#test-proxy-nodes').innerText()).includes('407'))throw Error('missing failure reason');
  await page.evaluate(()=>probeMode='pass');await page.locator('[data-probe-node]').click();await page.waitForFunction(()=>document.querySelector('.proxy-badge.pass'));
  if(await page.evaluate(()=>probeCalls)!==4)throw Error('unexpected retries');
+ // Batch fixtures exercise actual UI scheduling and AbortSignals without public traffic.
+ await page.evaluate(()=>{
+  stored=['first','second','third'].map(id=>({id,name:id,nodes:[0,1,2].map(n=>({id:String(n),address:'socks5://proxy.example.invalid:1080',enabled:n!==2}))}));
+  const original=window.apiFetch;
+  window.batchCalls=[];window.batchActive=0;window.batchPeak=0;window.batchDelay=40;window.batchPoolActive={};window.batchPoolPeak=0;
+  window.apiFetch=async(path,opt={})=>{
+   if(!path.endsWith('/probe'))return original(path,opt);
+   const req=JSON.parse(opt.body);batchCalls.push(req);batchActive++;batchPeak=Math.max(batchPeak,batchActive);
+   batchPoolActive[req.pool_id]=(batchPoolActive[req.pool_id]||0)+1;batchPoolPeak=Math.max(batchPoolPeak,batchPoolActive[req.pool_id]);
+   try{
+    await new Promise((resolve,reject)=>{const timer=setTimeout(resolve,batchDelay);opt.signal.addEventListener('abort',()=>{clearTimeout(timer);reject(new DOMException('Aborted','AbortError'));},{once:true});});
+    return {ok:req.node_id!=='0',json:async()=>req.node_id==='0'?{error:'fixture timeout'}:{usable:true,http_status:204,latency_ms:40}};
+   }finally{batchActive--;batchPoolActive[req.pool_id]--;}
+  };
+ });
+ await page.locator('#test-proxy-refresh').click();await page.waitForFunction(()=>document.getElementById('test-proxy-total').textContent==='9');
+ await page.locator('#test-proxy-batch').click();
+ await page.waitForFunction(()=>document.getElementById('test-proxy-batch-progress').textContent.includes('批量检测完成'));
+ const batchResult=await page.evaluate(()=>({calls:batchCalls.length,peak:batchPeak,poolPeak:batchPoolPeak,unique:new Set(batchCalls.map(r=>r.pool_id+':'+r.node_id)).size,disabled:batchCalls.some(r=>r.node_id==='2')}));
+ if(batchResult.calls!==6||batchResult.unique!==6||batchResult.peak!==2||batchResult.poolPeak!==1||batchResult.disabled)throw Error('bad batch scheduling: '+JSON.stringify(batchResult));
+ if(await page.locator('.proxy-badge.pass').count()!==3||await page.locator('.proxy-badge.failed').count()!==3)throw Error('batch results lost');
+ await page.evaluate(()=>{batchCalls=[];batchDelay=10000;});
+ await page.locator('#test-proxy-batch').click();await page.waitForFunction(()=>batchActive===2);
+ if(!(await page.locator('#test-proxy-batch').isDisabled()))throw Error('duplicate batch allowed');
+ await page.locator('#test-proxy-stop-batch').click();
+ await page.waitForFunction(()=>batchActive===0&&document.getElementById('test-proxy-batch-progress').textContent.includes('批量检测已停止'));
+ if(await page.evaluate(()=>batchCalls.length)!==2)throw Error('queued probes started after cancellation');
+ if(await page.locator('.proxy-badge.canceled').count()!==6)throw Error('canceled results missing');
+ await page.evaluate(()=>{batchCalls=[];probeURLs.push('https://other.example.invalid/health');});
+ await page.locator('#test-proxy-refresh').click();await page.locator('#test-proxy-batch').click();await page.waitForFunction(()=>batchActive===2);
+ await page.locator('#test-proxy-probe-url').selectOption('https://other.example.invalid/health',{force:true});
+ await page.waitForFunction(()=>batchActive===0&&!document.getElementById('test-proxy-batch').disabled);
+ if(await page.evaluate(()=>batchCalls.length)!==2||await page.locator('.proxy-badge.canceled').count())throw Error('endpoint change retained stale work');
+ await page.evaluate(()=>{batchDelay=20;batchCalls=[];});await page.locator('#test-proxy-batch').click();
+ await page.waitForFunction(()=>document.getElementById('test-proxy-batch-progress').textContent.includes('批量检测完成'));
  await page.locator('#test-proxy-import-section').evaluate(e=>e.open=false);
  for(const theme of ['light','dark']){await page.evaluate(t=>document.documentElement.dataset.theme=t,theme);if(output)await page.screenshot({path:path.join(output,'proxy-'+theme+'.png'),fullPage:true});}
  await page.setViewportSize({width:1280,height:720});if(await page.evaluate(()=>document.documentElement.scrollWidth>1280))throw Error('horizontal overflow');
- if(errors.length)throw Error(errors.join('\n'));console.log('PASS: themed UI, preview/import, account preference, custom selects, 1280px overflow');await browser.close();
+ if(errors.length)throw Error(errors.join('\n'));console.log('PASS: themed UI, import, preferences, bounded batch, partial failure, cancellation, endpoint changes, 1280px overflow');await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});
