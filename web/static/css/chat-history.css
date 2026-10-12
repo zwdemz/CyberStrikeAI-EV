@@ -1,7 +1,6 @@
-/* Offscreen history stays available for copy/search without repeated layout. */
+/* Keep real message heights while reading; history pagination bounds initial DOM size. */
 #chat-messages > .message {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 180px;
+    content-visibility: visible;
 }
 
 .chat-history-status,
