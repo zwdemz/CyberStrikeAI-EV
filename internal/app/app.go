@@ -1000,7 +1000,7 @@ func setupRoutes(
 	// API路由
 	api := router.Group("/api")
 
-	handler.RegisterTestProxyRoutes(api, authManager, app.db, app.logger.Logger)
+	handler.RegisterTestProxyRoutes(api, authManager, app.db, app.logger.Logger, configHandler.ProxyToolCapabilities)
 
 	// 认证相关路由
 	authRoutes := api.Group("/auth")

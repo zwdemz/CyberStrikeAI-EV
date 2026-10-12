@@ -87,7 +87,7 @@ if(output)fs.mkdirSync(output,{recursive:true});
  if(await page.locator('#test-proxy-total').innerText()!=='8'||!(await page.locator('#test-proxy-cleanup-status').innerText()).includes('已清理'))throw Error('cleanup UI missing');
  await page.evaluate(()=>{
   const original=window.apiFetch;
-  window.capabilitiesFixture=[{name:'http-framework-test',status:'supported'},{name:'query_assets',status:'local'},{name:'nuclei',status:'unverified'},{name:'exec',status:'unsupported'},{name:'<img src=x onerror=alert(1)>',status:'future'}];
+  window.capabilitiesFixture=[{name:'http-framework-test',status:'supported',runtime:'command_found'},{name:'query_assets',status:'local',runtime:'registered'},{name:'nuclei',status:'unverified',runtime:'command_missing'},{name:'exec',status:'unsupported',runtime:'disabled'},{name:'<img src=x onerror=alert(1)>',status:'future'}];
   window.apiFetch=async(path,opt={})=>{const response=await original(path,opt);if(path==='/api/test-proxy-pools'){const data=await response.json();return {ok:true,json:async()=>({...data,tool_capabilities:window.capabilitiesFixture})};}return response;};
  });
  await page.locator('#test-proxy-refresh').click();
@@ -95,6 +95,7 @@ if(output)fs.mkdirSync(output,{recursive:true});
  await page.locator('#test-proxy-capabilities').evaluate(e=>e.closest('details').open=true);
  const compatibility=page.locator('#test-proxy-capabilities');
  for(const status of ['已支持','内部操作','待验证（已阻止）','不支持（已阻止）'])if(!(await compatibility.innerText()).includes(status))throw Error('missing capability '+status);
+ for(const state of ['已找到可执行入口','已注册内部工具','入口缺失或不可执行','已停用','未核验'])if(!(await compatibility.innerText()).includes(state))throw Error('missing runtime '+state);
  if(await compatibility.locator('img').count())throw Error('capability markup injection');
  if(await compatibility.locator('.proxy-badge.pass').count()!==1)throw Error('unknown capability promoted');
  for(const theme of ['light','dark']){await page.evaluate(t=>document.documentElement.dataset.theme=t,theme);if(output)await page.screenshot({path:path.join(output,'proxy-'+theme+'.png'),fullPage:true});}
