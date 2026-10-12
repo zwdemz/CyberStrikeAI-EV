@@ -8,6 +8,18 @@
     Object.assign(labels.en,{batch:'Check all enabled nodes',stopBatch:'Stop batch',queued:'Queued',canceled:'Canceled',batchDone:'Batch complete',batchStopped:'Batch stopped',progress:'Completed',batchHint:'Up to 2 checks at once, one per pool. Each node is checked once; failures do not stop the batch.'});
     Object.assign(labels.zh,{cleanupHint:'连续 3 次连接失败自动清理节点，计数重启后保留。收到目标响应会清零；取消和繁忙不计数。',probeFailures:'连续检测失败',removed:'已清理不通节点'});
     Object.assign(labels.en,{cleanupHint:'Three consecutive connection failures remove a node; counts survive restarts. Target responses reset the streak. Cancellation and busy requests do not count.',probeFailures:'Consecutive failed checks',removed:'Unreachable node removed'});
+    Object.assign(labels.zh,{capabilities:'工具代理支持状态',capabilityHint:'这是接入能力清单，不代表工具已安装或已启用。出口在同一会话内固定；目标拒绝不会触发自动轮换。',tool:'工具',supported:'已支持',local:'内部操作',unverified:'待验证（已阻止）',unsupported:'不支持（已阻止）',capabilityUnknown:'服务端未提供支持状态，请更新服务后刷新。',reason:'适用范围',supportedReason:'固定会话代理；故障不直连、不自动换节点。',localReason:'内部数据或工作区操作，不需要代理。',unverifiedReason:'工具模式、内部并发及出站流量尚未完成隔离验证。',unsupportedReason:'没有已验证的代理适配器，不能通过通用执行工具绕过。'});
+    Object.assign(labels.en,{capabilities:'Tool proxy compatibility',capabilityHint:'Routing capabilities, not installed or enabled tools. Egress is fixed per conversation; target rejections never rotate proxies.',tool:'Tool',supported:'Supported',local:'Internal operation',unverified:'Unverified (blocked)',unsupported:'Unsupported (blocked)',capabilityUnknown:'Server capability metadata unavailable. Update the service and refresh.',reason:'Scope',supportedReason:'Fixed session proxy; no direct fallback or automatic rotation.',localReason:'Internal data or workspace operation; no proxy required.',unverifiedReason:'Tool modes, internal concurrency and outbound traffic need isolated verification.',unsupportedReason:'No verified adapter; generic execution cannot bypass this policy.'});
+    /** Render server-owned support policy; absent or unknown states are never promoted to supported. */
+    function renderCapabilities(items) {
+        const target=el('capabilities');
+        if(!Array.isArray(items)||!items.length){target.textContent=t('capabilityUnknown');return;}
+        const statuses=['supported','local','unverified','unsupported'];
+        target.innerHTML=`<div class="proxy-table-wrap"><table class="proxy-table"><thead><tr><th>${escape(t('tool'))}</th><th>${escape(t('reason'))}</th><th>${escape(t('status'))}</th></tr></thead><tbody>${items.map(item=>{
+            const status=statuses.includes(item.status)?item.status:'unsupported';
+            return `<tr><td><code>${escape(item.name)}</code><small>${escape(t(status+'Reason'))}</small></td><td>${escape(t(status+'Reason'))}</td><td><span class="proxy-badge ${status==='supported'?'pass':status==='local'?'':'response'}">${escape(t(status))}</span></td></tr>`;
+        }).join('')}</tbody></table></div>`;
+    }
     let validated = '', pools = [], health = {}, probeURLs = [], batch = null;
     const results = new Map(), pending = new Map();
     const t = key => labels[(document.documentElement.lang || 'zh').startsWith('zh') ? 'zh' : 'en'][key];
@@ -108,7 +120,7 @@
         }
     }
     async function refresh() {
-        const data=await request('');pools=data.pools||[];health=data.health?.nodes||{};probeURLs=data.probe_urls||[];
+        const data=await request('');pools=data.pools||[];health=data.health?.nodes||{};probeURLs=data.probe_urls||[];renderCapabilities(data.tool_capabilities);
         const selected=el('pool').value,url=el('probe-url').value;
         el('pool').innerHTML=`<option value="">${escape(t('direct'))}</option>`+pools.map(p=>`<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('');el('pool').value=selected;
         el('probe-url').innerHTML=probeURLs.map(u=>`<option value="${escape(u)}">${escape(u)}</option>`).join('');
@@ -127,6 +139,7 @@
         panel.innerHTML=`<div id="test-proxy-panel"><div class="proxy-page-heading"><div><h3>${escape(t('title'))}</h3><p>${escape(t('subtitle'))}</p></div><button class="btn-secondary" type="button" id="test-proxy-refresh">${escape(t('refresh'))}</button></div><p id="test-proxy-message" role="status" aria-live="polite"></p>
         <div class="proxy-summary">${['total','enabled','verified'].map(k=>`<div><span>${escape(t(k))}</span><strong id="test-proxy-${k}">0</strong></div>`).join('')}</div>
         <section class="proxy-section"><h4>${escape(t('account'))}</h4><p class="test-proxy-hint">${escape(t('accountHint'))}</p><div class="proxy-account-row"><div class="form-group"><label for="test-proxy-pool">${escape(t('pool'))}</label><select id="test-proxy-pool"></select></div><button type="button" class="btn-primary" id="test-proxy-bind" disabled>${escape(t('bind'))}</button><button type="button" class="btn-secondary" id="test-proxy-load">${escape(t('load'))}</button></div><p class="test-proxy-hint">${escape(t('scope'))}</p></section>
+        <details class="proxy-section"><summary>${escape(t('capabilities'))}</summary><p class="test-proxy-hint">${escape(t('capabilityHint'))}</p><div id="test-proxy-capabilities" aria-live="polite">${escape(t('capabilityUnknown'))}</div></details>
         <section class="proxy-section"><h4>${escape(t('nodes'))}</h4><p class="test-proxy-hint">${escape(t('nodeHint'))}</p><div class="form-group"><label for="test-proxy-probe-url">${escape(t('probeURL'))}</label><select id="test-proxy-probe-url"></select></div><p class="proxy-warning" id="test-proxy-probe-warning">${escape(t('noProbe'))}</p><p class="test-proxy-hint">${escape(t('resultHint'))}</p><div id="test-proxy-nodes"></div></section>
         <details class="proxy-section" id="test-proxy-import-section" open><summary>${escape(t('importTitle'))}</summary><p class="test-proxy-hint">${escape(t('importHint'))}</p><div class="form-group"><label for="test-proxy-name">${escape(t('name'))}</label><input id="test-proxy-name" maxlength="100" autocomplete="off"></div><div class="form-group"><label for="test-proxy-text">${escape(t('text'))}</label><textarea id="test-proxy-text" rows="4" spellcheck="false" autocomplete="off" placeholder="socks5://proxy.example.invalid:1080"></textarea></div><details class="proxy-advanced"><summary>${escape(t('limits'))}</summary><div class="test-proxy-limits"><div class="form-group"><label for="test-proxy-concurrency">${escape(t('concurrency'))}</label><input type="number" id="test-proxy-concurrency" min="1" max="16" value="4"></div><div class="form-group"><label for="test-proxy-per-node">${escape(t('perNode'))}</label><input type="number" id="test-proxy-per-node" min="1" max="4" value="1"></div></div></details><div class="test-proxy-actions"><button type="button" class="btn-secondary" id="test-proxy-preview">${escape(t('preview'))}</button><button type="button" class="btn-primary" id="test-proxy-save" disabled>${escape(t('save'))}</button></div><pre id="test-proxy-preview-result" hidden></pre></details></div>`;
         parent.appendChild(panel);

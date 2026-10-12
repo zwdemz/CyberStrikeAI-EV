@@ -324,14 +324,11 @@ func CheckTool(ctx context.Context, name string) error {
 	if id == "" {
 		return nil
 	}
-	switch name {
-	case "http-framework-test", "read_file", "ls", "list_dir", "glob", "grep", "write_todos", "task", "transfer_to_agent", "exit", "tool_search", "TaskCreate", "TaskGet", "TaskUpdate", "TaskList",
-		"list_knowledge_risk_types", "search_knowledge_base", "record_vulnerability", "list_vulnerabilities", "get_vulnerability", "create_asset", "get_asset", "query_assets", "update_asset", "delete_asset", "complete_asset_scan",
-		"upsert_project_fact", "get_project_fact", "list_project_facts", "search_project_facts", "deprecate_project_fact", "restore_project_fact", "get_tool_execution", "wait_tool_execution", "cancel_tool_execution", "query_execution_result":
+	capability := ToolCapabilityFor(name)
+	if capability.Status == "supported" || capability.Status == "local" {
 		return nil
-	default:
-		return errors.New("TEST_PROXY_UNSUPPORTED_TOOL: this project requires a test proxy; use http-framework-test; direct fallback is blocked")
 	}
+	return errors.New("TEST_PROXY_UNSUPPORTED_TOOL: " + capability.Reason + "; do not retry this tool or fall back to direct execution")
 }
 
 // Lease reserves a sticky node. Finish must be called once; only proxy/connection failures trip its circuit.
