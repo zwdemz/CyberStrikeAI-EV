@@ -32,3 +32,4 @@
 - [Testing](testing.md) · [Contributing](contributing-guide.md) · [Release Process](release-process.md)
 
 - [Linux reliability and containers](linux-reliability.md)
+- [Native Windows service (stage one)](windows-native.md)
