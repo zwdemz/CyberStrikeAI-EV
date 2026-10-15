@@ -1,6 +1,6 @@
 # Repository workflow
 
-- Linux is the runtime and deployment target. Do not add Windows compatibility work or Windows-specific validation for new changes.
+- Preserve Linux runtime and deployment support. Windows native compatibility is being introduced in stages: core service first, execution and terminal support next, then tool packaging. Validate each supported platform and document unsupported capabilities explicitly.
 - Publish changes only to this EV repository; do not open pull requests or push branches to the upstream repository.
 
 - Develop features, fixes, and documentation directly on `dev`. Fast-forward from the latest `origin/dev` before starting; do not create `codex/*` or other work branches for this repository.

@@ -52,14 +52,14 @@ func main() {
 	}
 	localConfig, err := config.EnsureLocalConfig(cp)
 	if err != nil {
-		fmt.Printf("Failed to load config: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
 	}
 
 	cfg, err := config.Load(cp)
 	if err != nil {
-		fmt.Printf("Failed to load config: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
 	}
 	if localConfig.Created {
 		termout.PrintConfigCreated()
@@ -113,8 +113,8 @@ func main() {
 
 	// MCP 启用且 auth_header_value 为空时，自动生成随机密钥并写回配置
 	if err := config.EnsureMCPAuth(cp, cfg); err != nil {
-		fmt.Printf("Failed to configure MCP authentication: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Failed to configure MCP authentication: %v\n", err)
+		os.Exit(1)
 	}
 	if cfg.MCP.Enabled {
 		config.PrintMCPConfigJSON(cfg.MCP)

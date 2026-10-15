@@ -1,0 +1,48 @@
+name: Native service
+on:
+  pull_request:
+    paths: ['cmd/**', 'internal/**', 'tests/native/**', 'scripts/build-windows.ps1', 'run.ps1', 'go.mod', 'go.sum', 'config.example.yaml', '.github/workflows/native-service.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install PyYAML==6.0.2
+      - name: Build Windows service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: Build Linux service
+        if: runner.os == 'Linux'
+        run: go build -mod=readonly -o bin/cyberstrike-ai ./cmd/server
+      - name: Test core persistence and configuration
+        run: go test -p 2 ./internal/config ./internal/database ./internal/knowledge ./internal/processguard -count=1 -timeout 5m
+      - name: Verify Windows lifecycle
+        if: runner.os == 'Windows'
+        run: |
+          python tests/native/service_smoke.py --binary bin/cyberstrike-ai.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/native/service_smoke.py --binary bin/cyberstrike-ai.exe --https
+      - name: Verify Linux lifecycle
+        if: runner.os == 'Linux'
+        run: |
+          python tests/native/service_smoke.py --binary bin/cyberstrike-ai
+          python tests/native/service_smoke.py --binary bin/cyberstrike-ai --https
