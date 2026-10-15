@@ -38,7 +38,7 @@ jobs:
       - name: Test native Windows execution and terminal
         if: runner.os == 'Windows'
         run: |
-          go test -p 1 ./tests/internal/security ./tests/internal/handler ./tests/internal/terminalpty -run 'TestWindows|TestNativeConsole' -count=1 -timeout 2m
+          go test -p 1 ./tests/internal/security ./tests/internal/handler ./tests/internal/terminalpty -run 'TestWindows|TestNativeConsole|TestTerminalPermissionBoundary' -count=1 -timeout 2m
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test ./internal/multiagent -run TestEinoStreamingShellWrap -count=1 -timeout 2m
       - name: Preserve Linux execution behavior
