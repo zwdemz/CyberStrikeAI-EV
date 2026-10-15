@@ -44,6 +44,10 @@ type jobGroup struct {
 }
 
 func newPlatformGroup(id string, o Options) (Group, error) {
+	return newPlatformGroupWithParent(id, o, 0)
+}
+
+func newPlatformGroupWithParent(id string, o Options, parentHandle windows.Handle) (Group, error) {
 	if err := configurePlatform(&o); err != nil {
 		return nil, err
 	}
@@ -55,6 +59,10 @@ func newPlatformGroup(id string, o Options) (Group, error) {
 		g.broken = true
 		if !g.closed && g.job != 0 {
 			_ = windows.TerminateJobObject(g.job, 1)
+		}
+	}, func(cmd *exec.Cmd) {
+		if parentHandle != 0 {
+			cmd.SysProcAttr.ParentProcess = syscall.Handle(parentHandle)
 		}
 	})
 	if err != nil {
@@ -88,6 +96,29 @@ func newPlatformGroup(id string, o Options) (Group, error) {
 	return g, nil
 }
 func (g *jobGroup) Name() string { return "windows_job" }
+
+// NewCommandGroup creates an independently cancellable command Job inside parent.
+// A nil parent creates a standalone Job. A closed or non-Windows parent fails.
+// Inheriting the task Job at process creation preserves aggregate resource limits;
+// the guardian then joins its own nested Job before accepting command launches.
+func NewCommandGroup(id string, parent Group) (Group, error) {
+	if parent == nil {
+		return New(id)
+	}
+	p, ok := parent.(*jobGroup)
+	if !ok {
+		return nil, fmt.Errorf("invalid parent Job")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.broken {
+		return nil, fmt.Errorf("job is closed")
+	}
+	configured.RLock()
+	options := configured.opts
+	configured.RUnlock()
+	return newPlatformGroupWithParent(id, options, p.parent)
+}
 func (g *jobGroup) Prepare(cmd *exec.Cmd) (*Launch, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

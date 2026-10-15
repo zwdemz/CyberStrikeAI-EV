@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"cyberstrike-ai/internal/security"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -81,7 +82,7 @@ func (h *TerminalHandler) RunCommand(c *gin.Context) {
 	shell := req.Shell
 	if shell == "" {
 		if runtime.GOOS == "windows" {
-			shell = "cmd"
+			shell = "powershell.exe"
 		} else {
 			shell = "sh"
 		}
@@ -90,11 +91,8 @@ func (h *TerminalHandler) RunCommand(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), terminalTimeout)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", cmdStr)
-	} else {
-		cmd = exec.CommandContext(ctx, shell, "-c", cmdStr)
+	cmd := security.NewShellCommand(ctx, shell, cmdStr, "")
+	if runtime.GOOS != "windows" {
 		// 无 TTY 时设置 COLUMNS/TERM，使 ping 等工具的 usage 排版与真实终端一致
 		cmd.Env = append(os.Environ(), "COLUMNS=256", "LINES=40", "TERM=xterm-256color")
 	}
@@ -119,7 +117,7 @@ func (h *TerminalHandler) RunCommand(c *gin.Context) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := runTerminalCommand(ctx, cmd)
 	stdoutBytes := stdout.Bytes()
 	stderrBytes := stderr.Bytes()
 
@@ -205,7 +203,7 @@ func (h *TerminalHandler) RunCommandStream(c *gin.Context) {
 	shell := req.Shell
 	if shell == "" {
 		if runtime.GOOS == "windows" {
-			shell = "cmd"
+			shell = "powershell.exe"
 		} else {
 			shell = "sh"
 		}
@@ -213,11 +211,8 @@ func (h *TerminalHandler) RunCommandStream(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), terminalTimeout)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", cmdStr)
-	} else {
-		cmd = exec.CommandContext(ctx, shell, "-c", cmdStr)
+	cmd := security.NewShellCommand(ctx, shell, cmdStr, "")
+	if runtime.GOOS != "windows" {
 		cmd.Env = append(os.Environ(), "COLUMNS=256", "LINES=40", "TERM=xterm-256color")
 	}
 	if req.Cwd != "" {

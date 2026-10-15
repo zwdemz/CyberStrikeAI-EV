@@ -1,4 +1,4 @@
-# Windows 原生运行（第一阶段）
+# Windows 原生运行（第二阶段）
 
 第一阶段覆盖主服务构建、启动、登录、设置保存、项目、会话、资产、漏洞和知识库持久化。Linux 的启动方式和容器部署保持不变。
 
@@ -43,8 +43,22 @@ go test -p 2 ./internal/config ./internal/database ./internal/knowledge ./intern
 
 ## 尚未覆盖的能力
 
-- 第二阶段：统一 Windows 命令执行、流式输出、子进程取消及交互终端。
 - 第三阶段：工具安装、平台支持状态、Windows 发布包和升级自动化。
 - 不宣称全部安全工具支持 Windows；依赖 Linux Shell 的工具不能直接使用。
 - 本阶段的会话记录验证不等同于完整 Agent 工具执行验证；真实模型服务兼容性需另行测试。
 - Windows 存储容量查询尚未适配，不能把“不可用”解释为磁盘空间充足。
+
+## 第二阶段：命令与交互终端
+
+Windows 未指定 shell 时默认 PowerShell，Linux 仍默认 sh；支持显式 cmd.exe 或已安装的 pwsh.exe。命令须符合所选 shell 的语法，不自动翻译 POSIX 脚本。普通 PowerShell 命令采用非交互 UTF-8 输出；cmd 和外部程序可能保留自己的代码页。后台任务使用受管理的后台入口，不将末尾的 & 当作 POSIX 后台标记。
+
+每条 Windows 命令由独立 Job Object 管理，取消时清理子进程且不影响同任务其他命令。命令 Job 嵌套在任务 Job 下，保留任务总资源限制；守护进程也计入进程数。隔离失败不会降级为无隔离执行。
+
+交互终端采用 ConPTY（Windows 10 1809+），支持输入、窗口缩放和断线回收，保留现有认证和同源检查。ConPTY 不可用时明确报错，可改用普通命令执行。SSE 按块发送无换行长输出，展示上限为 256 KiB，超过后继续排空管道。
+
+```powershell
+go test -p 1 ./tests/internal/security ./tests/internal/handler ./tests/internal/terminalpty -run 'TestWindows|TestNativeConsole' -count=1 -timeout 2m
+go test ./internal/multiagent -run TestEinoStreamingShellWrap -count=1 -timeout 2m
+```
+
+测试覆盖中文/引号、显式 cmd、Eino 执行、子进程清理、同任务命令独立取消、长输出、请求取消、终端输入/缩放和 WebSocket 断线回收。工具安装、支持状态和发布包仍属于第三阶段，不代表全部工具配方已兼容 Windows。

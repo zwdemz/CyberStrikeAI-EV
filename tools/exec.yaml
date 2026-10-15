@@ -10,7 +10,7 @@ description: |
 
   **主要功能：**
   - 执行任意Shell命令
-  - 支持bash、sh等shell
+  - 支持 Linux sh/bash 与 Windows PowerShell/cmd
   - 可以指定工作目录
   - 返回命令执行结果
 
@@ -57,16 +57,16 @@ parameters:
   - name: "shell"
     type: "string"
     description: |
-      使用的Shell类型，默认为sh。
+      使用的Shell类型；留空时 Linux 使用 sh，Windows 使用 PowerShell。
 
       **可选值：**
-      - sh: 标准Shell（默认）
+      - sh: Linux 标准Shell
       - bash: Bash Shell
       - zsh: Z Shell
       - 其他系统可用的shell
 
       **示例值：**
-      - "sh" (默认)
+      - "sh" (Linux)
       - "bash"
       - "zsh"
 
@@ -74,7 +74,7 @@ parameters:
       - 确保指定的shell在系统中可用
       - 不同shell的命令语法可能略有差异
     required: false
-    default: "sh"
+    default: ""
   - name: "workdir"
     type: "string"
     description: |

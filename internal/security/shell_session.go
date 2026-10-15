@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"cyberstrike-ai/internal/processguard"
 	"os/exec"
 	"sync"
 	"time"
@@ -10,15 +11,16 @@ import (
 // ShellSession caches the process group while its command is alive. Signals
 // and Wait completion synchronize to avoid signalling already-released sessions.
 type ShellSession struct {
-	Cmd      *exec.Cmd
-	rootPID  int
-	scope    *ProcessScope
-	done     chan struct{}
-	waitOnce sync.Once
-	waitErr  error
-	signalMu sync.Mutex
-	finished bool
-	waited   bool
+	ownedGuard processguard.Group
+	Cmd        *exec.Cmd
+	rootPID    int
+	scope      *ProcessScope
+	done       chan struct{}
+	waitOnce   sync.Once
+	waitErr    error
+	signalMu   sync.Mutex
+	finished   bool
+	waited     bool
 }
 
 func StartShellSession(cmd *exec.Cmd) (*ShellSession, error) {
@@ -37,7 +39,11 @@ func (s *ShellSession) Wait() error {
 		s.waitErr = s.Cmd.Wait()
 		s.signalMu.Lock()
 		s.waited = true
-		terminateProcessGroup(s.rootPID, s.Cmd)
+		if s.ownedGuard != nil {
+			_ = s.closeOwnedGuard()
+		} else {
+			terminateProcessGroup(s.rootPID, s.Cmd)
+		}
 		s.signalMu.Unlock()
 		// Usually the group disappears immediately. Retain ownership if the
 		// kernel cannot confirm exit; task cleanup will retry and report it.
@@ -58,6 +64,10 @@ func (s *ShellSession) signal(force bool) {
 	if s.finished {
 		return
 	}
+	if s.ownedGuard != nil {
+		_ = s.closeOwnedGuard()
+		return
+	}
 	if force {
 		terminateProcessGroup(s.rootPID, s.Cmd)
 	} else {
@@ -66,6 +76,14 @@ func (s *ShellSession) signal(force bool) {
 }
 
 func (s *ShellSession) Terminate() { s.signal(true) }
+
+// closeOwnedGuard confirms Job cleanup with a bounded wait; failures remain
+// retryable through tryComplete and never release task ownership early.
+func (s *ShellSession) closeOwnedGuard() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return s.ownedGuard.Close(ctx)
+}
 
 func TerminateShellSession(session *ShellSession) {
 	if session != nil {
@@ -82,6 +100,9 @@ func (s *ShellSession) tryComplete() bool {
 		return true
 	}
 	if !s.waited || processGroupExists(s.rootPID) {
+		return false
+	}
+	if s.ownedGuard != nil && s.closeOwnedGuard() != nil {
 		return false
 	}
 	s.finished = true

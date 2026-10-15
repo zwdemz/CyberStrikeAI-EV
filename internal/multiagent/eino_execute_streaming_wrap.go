@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,9 @@ import (
 // eino-ext local 对流式 stdout 使用 bufio 按「行」推送；python3 写管道时默认块缓冲，print 长期留在用户态缓冲，
 // 管道里收不到换行，表现为长时间无输出直至超时或退出。若命令里已出现 PYTHONUNBUFFERED 则不再覆盖。
 func prependPythonUnbufferedEnv(shellCommand string) string {
+	if runtime.GOOS == "windows" {
+		return shellCommand
+	}
 	if strings.TrimSpace(shellCommand) == "" {
 		return shellCommand
 	}
