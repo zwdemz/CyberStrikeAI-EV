@@ -285,13 +285,14 @@ type GetConfigResponse struct {
 
 // ToolConfigInfo 工具配置信息
 type ToolConfigInfo struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Enabled     bool                   `json:"enabled"`
-	IsExternal  bool                   `json:"is_external,omitempty"`  // 是否为外部MCP工具
-	ExternalMCP string                 `json:"external_mcp,omitempty"` // 外部MCP名称（如果是外部工具）
-	RoleEnabled *bool                  `json:"role_enabled,omitempty"` // 该工具在当前角色中是否启用（nil表示未指定角色或使用所有工具）
-	InputSchema map[string]interface{} `json:"input_schema,omitempty"` // 工具参数 JSON Schema（用于前端展示详情）
+	Runtime     *config.ToolRuntimeStatus `json:"runtime,omitempty"`
+	Name        string                    `json:"name"`
+	Description string                    `json:"description"`
+	Enabled     bool                      `json:"enabled"`
+	IsExternal  bool                      `json:"is_external,omitempty"`  // 是否为外部MCP工具
+	ExternalMCP string                    `json:"external_mcp,omitempty"` // 外部MCP名称（如果是外部工具）
+	RoleEnabled *bool                     `json:"role_enabled,omitempty"` // 该工具在当前角色中是否启用（nil表示未指定角色或使用所有工具）
+	InputSchema map[string]interface{}    `json:"input_schema,omitempty"` // 工具参数 JSON Schema（用于前端展示详情）
 }
 
 // GetConfig 获取当前配置
@@ -305,8 +306,10 @@ func (h *ConfigHandler) GetConfig(c *gin.Context) {
 	tools := make([]ToolConfigInfo, 0, len(h.config.Security.Tools))
 
 	for _, tool := range h.config.Security.Tools {
+		runtimeStatus := config.InspectToolRuntime(tool)
 		configToolMap[tool.Name] = true
 		info := ToolConfigInfo{
+			Runtime:     &runtimeStatus,
 			Name:        tool.Name,
 			Description: h.pickToolDescription(tool.ShortDescription, tool.Description),
 			Enabled:     tool.Enabled,
@@ -502,8 +505,10 @@ func (h *ConfigHandler) GetTools(c *gin.Context) {
 	configToolMap := make(map[string]bool)
 	allTools := make([]ToolConfigInfo, 0, len(securityTools))
 	for _, tool := range securityTools {
+		runtimeStatus := config.InspectToolRuntime(tool)
 		configToolMap[tool.Name] = true
 		toolInfo := ToolConfigInfo{
+			Runtime:     &runtimeStatus,
 			Name:        tool.Name,
 			Description: pickDesc(tool.ShortDescription, tool.Description),
 			Enabled:     tool.Enabled,

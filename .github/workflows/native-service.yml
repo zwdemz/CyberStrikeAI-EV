@@ -1,7 +1,7 @@
 name: Native service
 on:
   pull_request:
-    paths: ['cmd/**', 'internal/**', 'tests/native/**', 'tests/internal/**', 'tools/exec.yaml', 'scripts/build-windows.ps1', 'run.ps1', 'go.mod', 'go.sum', 'config.example.yaml', '.github/workflows/native-service.yml']
+    paths: ['cmd/**', 'internal/**', 'tests/native/**', 'tests/internal/**', 'tools/exec.yaml', 'scripts/**', 'run.ps1', 'go.mod', 'go.sum', 'config.example.yaml', '.github/workflows/native-service.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -33,6 +33,10 @@ jobs:
       - name: Build Linux service
         if: runner.os == 'Linux'
         run: go build -mod=readonly -o bin/cyberstrike-ai ./cmd/server
+      - name: Test offline bundle validation and upgrade
+        run: python -m unittest discover -s tests/native -p test_windows_bundle.py -v
+      - name: Test tool platform declarations
+        run: go test ./tests/internal/config ./tests/internal/handler ./tests/internal/security -run 'TestToolPlatform|TestToolRuntime|TestUnsupportedPlatform' -count=1 -timeout 2m
       - name: Test core persistence and configuration
         run: go test -p 2 ./internal/config ./internal/database ./internal/knowledge ./internal/processguard -count=1 -timeout 5m
       - name: Test native Windows execution and terminal
@@ -55,3 +59,27 @@ jobs:
         run: |
           python tests/native/service_smoke.py --binary bin/cyberstrike-ai
           python tests/native/service_smoke.py --binary bin/cyberstrike-ai --https
+      - name: Package and verify native Windows distribution
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'CyberStrikeAI-EV-windows-amd64.zip'
+          $installation = Join-Path $env:RUNNER_TEMP 'native package installation'
+          python scripts/windows_bundle.py build --binary bin/cyberstrike-ai.exe --output $package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $sha = (Get-Content "$package.sha256").Split(' ')[0]
+          python scripts/windows_bundle.py verify --package $package --sha256 $sha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/windows_bundle.py apply --package $package --sha256 $sha --target $installation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/native/service_smoke.py --binary "$installation/bin/cyberstrike-ai.exe" --repository $installation --https
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: windows-native-distribution
+          path: |
+            ${{ runner.temp }}/CyberStrikeAI-EV-windows-amd64.zip
+            ${{ runner.temp }}/CyberStrikeAI-EV-windows-amd64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

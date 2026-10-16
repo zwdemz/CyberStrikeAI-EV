@@ -1,3 +1,4 @@
+platforms: [linux, windows, darwin]
 name: "exec"
 command: "sh"
 args: ["-c"]

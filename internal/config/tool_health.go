@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,10 @@ func CheckToolAvailability(tools []ToolConfig) []ToolAvailability {
 	missing := make([]ToolAvailability, 0)
 	for _, tool := range tools {
 		if !tool.Enabled {
+			continue
+		}
+		if !ToolSupportsPlatform(tool, runtime.GOOS) {
+			missing = append(missing, ToolAvailability{Name: tool.Name, Command: tool.Command, Reason: "当前操作系统不在工具的平台支持列表中"})
 			continue
 		}
 		command := strings.TrimSpace(tool.Command)
@@ -51,6 +56,9 @@ func CheckToolAvailability(tools []ToolConfig) []ToolAvailability {
 // managed runtime/bin before system PATH. Embedded command arguments are rejected
 // naturally by LookPath, while executable paths containing spaces remain valid.
 func ResolveToolCommand(tool ToolConfig) (string, error) {
+	if !ToolSupportsPlatform(tool, runtime.GOOS) {
+		return "", fmt.Errorf("tool does not support %s", runtime.GOOS)
+	}
 	command := strings.TrimSpace(tool.Command)
 	// The exec recipe is dispatched to the native executor, not its legacy sh
 	// command field. Report the actual Windows default without changing tools.
@@ -77,4 +85,51 @@ func ResolveToolCommand(tool ToolConfig) (string, error) {
 		}
 	}
 	return exec.LookPath(command)
+}
+
+// ToolSupportsPlatform checks an optional GOOS allowlist without executing tools.
+// Missing declarations preserve legacy behavior, but do not certify compatibility.
+func ToolSupportsPlatform(tool ToolConfig, platform string) bool {
+	if len(tool.Platforms) == 0 {
+		return true
+	}
+	for _, declared := range tool.Platforms {
+		if declared == platform {
+			return true
+		}
+	}
+	return false
+}
+
+// ToolRuntimeStatus reports configuration, compatibility declaration and command
+// availability separately. It does not probe external services or run executables.
+// No paths are exposed in this API DTO; a resolved executable is not a health test.
+type ToolRuntimeStatus struct {
+	Platform  string   `json:"platform"`
+	Platforms []string `json:"platforms,omitempty"`
+	Status    string   `json:"status"`
+	Available bool     `json:"available"`
+}
+
+// InspectToolRuntime returns disabled, unsupported, missing, unverified or ready.
+// Unverified means the command exists but its recipe has no platform declaration.
+func InspectToolRuntime(tool ToolConfig) ToolRuntimeStatus {
+	result := ToolRuntimeStatus{Platform: runtime.GOOS, Platforms: append([]string(nil), tool.Platforms...)}
+	switch {
+	case !tool.Enabled:
+		result.Status = "disabled"
+	case !ToolSupportsPlatform(tool, runtime.GOOS):
+		result.Status = "unsupported"
+	default:
+		if _, err := ResolveToolCommand(tool); err != nil {
+			result.Status = "missing"
+			return result
+		}
+		result.Available = true
+		result.Status = "ready"
+		if len(tool.Platforms) == 0 && !strings.HasPrefix(tool.Command, "internal:") {
+			result.Status = "unverified"
+		}
+	}
+	return result
 }

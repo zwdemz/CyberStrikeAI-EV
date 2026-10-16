@@ -1620,7 +1620,8 @@ func (c ExternalMCPServerConfig) GetTransportType() string {
 }
 
 type ToolConfig struct {
-	RuntimeToolsDir  string            `yaml:"-" json:"-"` // 工具定义所在目录，仅用于本地依赖解析，不写回配置
+	Platforms        []string          `yaml:"platforms,omitempty"` // Optional GOOS allowlist; omitted preserves legacy behavior.
+	RuntimeToolsDir  string            `yaml:"-" json:"-"`          // 工具定义所在目录，仅用于本地依赖解析，不写回配置
 	Name             string            `yaml:"name"`
 	Command          string            `yaml:"command"`
 	Args             []string          `yaml:"args,omitempty"`              // 固定参数（可选）
