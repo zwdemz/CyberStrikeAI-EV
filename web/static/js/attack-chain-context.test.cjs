@@ -245,7 +245,7 @@ test('failure text stays readable instead of showing i18next escape entities', a
     const shown = h.ids.get('attack-chain-container').children[0].textContent;
     assert.equal(shown.includes(upstream), true);
     assert.equal(/&#x2F;|&quot;|&amp;|&#39;/.test(shown), false);
-    assert.equal(h.sinks.some(html => html.includes('api.example.com')), false);
+    assert.equal(h.sinks.some(html => html.includes('context deadline exceeded')), false);
 });
 
 test('regenerate failure reports its own message key unescaped', async () => {
@@ -255,7 +255,7 @@ test('regenerate failure reports its own message key unescaped', async () => {
     const shown = h.ids.get('attack-chain-container').children[0].textContent;
     assert.equal(shown.startsWith('重新生成失败: '), true);
     assert.equal(shown.includes(upstream), true);
-    assert.equal(h.sinks.some(html => html.includes('api.example.com')), false);
+    assert.equal(h.sinks.some(html => html.includes('AI生成失败')), false);
 });
 
 test('regenerate 409 refreshes after completion while superseded timers stay inert', async () => {
