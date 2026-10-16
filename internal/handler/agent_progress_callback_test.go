@@ -181,6 +181,7 @@ func TestCreateProgressCallback_FlushesReasoningOnDone(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
+	t.Cleanup(func() { _ = db.Close() })
 	conv, err := db.CreateConversation("test", database.ConversationCreateMeta{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)

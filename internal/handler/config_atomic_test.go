@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -61,7 +62,7 @@ func TestSettingsSaveFailurePreservesRuntime(t *testing.T) {
 			if !fail {
 				for _, name := range []string{path, path + ".backup"} {
 					info, err := os.Stat(name)
-					if err != nil || info.Mode().Perm() != 0600 {
+					if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) {
 						t.Fatal("configuration is not private")
 					}
 				}
@@ -81,7 +82,13 @@ func TestConfigurationReplacementRollback(t *testing.T) {
 		}
 	}
 	if err := os.Symlink(target, second); err != nil {
-		t.Fatal(err)
+		if runtime.GOOS != "windows" {
+			t.Fatal(err)
+		}
+		// A non-regular destination also exercises rollback without symlink privilege.
+		if err := os.Mkdir(second, 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	err := persistConfiguration([]configurationWrite{{path: first, data: []byte("new")}, {path: second, data: []byte("new")}})
 	if err == nil {

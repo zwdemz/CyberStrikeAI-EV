@@ -9,7 +9,7 @@
 
 **A customized CyberStrikeAI distribution for authorized, focused security validation, SRC workflows, and evidence-based remediation verification.**
 
-CyberStrikeAI-EV is maintained in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV), based on [AIPentest/CyberStrikeAI v1.7.22](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.22), upstream commit `762f798afbe4ea957e00fa4aedf1d5ceb762bdb6`. It retains the Go/Eino agent platform, MCP integration, knowledge retrieval, workflows, and audit trail, with EV-specific role restrictions, tool readiness handling, DNSLog integration, reliability improvements, and security fixes. This is an independently maintained fork; upstream and EV tags with the same version number do not identify identical source trees.
+CyberStrikeAI-EV is maintained in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV), based on [AIPentest/CyberStrikeAI v1.7.24](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.24), with EV-specific integration. It retains the Go/Eino agent platform, MCP integration, knowledge retrieval, workflows, and audit trail, with EV-specific role restrictions, tool readiness handling, DNSLog integration, reliability improvements, and security fixes. This is an independently maintained fork; upstream and EV tags with the same version number do not identify identical source trees.
 
 **Start here:** [Quick start](#quick-start-one-command-deployment) · [Documentation](docs/en-US/README.md) · [Security hardening](docs/en-US/security-hardening.md)
 
@@ -275,10 +275,10 @@ The `run.sh` script will automatically:
 **Alternative Launch Methods:**
 ```bash
 # Direct Go run (set up env yourself); add --https to match run.sh defaults
-go run cmd/server/main.go --https
+go run ./cmd/server --https
 
 # Manual build
-go build -o cyberstrike-ai cmd/server/main.go
+go build -o cyberstrike-ai ./cmd/server
 ./cyberstrike-ai --https
 ```
 
@@ -288,7 +288,7 @@ If server logs show `client sent an HTTP request to an HTTPS server`, a client i
 
 ### Upgrade and Compatibility
 
-EV releases are published in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV/releases). The inherited `upgrade.sh` currently hardcodes `Ed1s0nZ/CyberStrikeAI`; running it unmodified downloads upstream code and can overwrite EV customizations. Use the controlled procedure below for this fork.
+EV releases are published in [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV/releases). The update source defaults to this EV repository. Review the [module integration notes](docs/en-US/upstream-v1.7.24-integration.md) and use the controlled procedure below. Windows installations use the offline bundle procedure after stopping the service.
 
 1. Read the target EV Release notes, including the upstream baseline, security fixes, and configuration or database changes.
 2. Obtain the release source in a separate directory, verify the signed tag against a trusted maintainer key, and build with the Go version required by `go.mod`.

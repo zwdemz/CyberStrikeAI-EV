@@ -1,9 +1,9 @@
 // 页面路由管理
 let currentPage = null;
 
-/** chat、漏洞管理页在切换时保留当前 hash 上的查询串（如 ?conversation= / ?conversation_id=） */
+/** 对话、漏洞管理和设置页切换时保留查询串（会话 ID 或设置分区）。 */
 function buildHashForPage(pageId) {
-    if (pageId !== 'chat' && pageId !== 'vulnerabilities') {
+    if (pageId !== 'chat' && pageId !== 'vulnerabilities' && pageId !== 'settings') {
         return pageId;
     }
     const full = window.location.hash.slice(1);
@@ -95,9 +95,9 @@ function navigateToConversation(conversationId) {
     }
 
     if (typeof loadConversation === 'function') {
-        void loadConversation(cid);
+        return loadConversation(cid);
     } else if (typeof window.loadConversation === 'function') {
-        void window.loadConversation(cid);
+        return window.loadConversation(cid);
     }
 }
 window.navigateToConversation = navigateToConversation;
@@ -108,10 +108,16 @@ function initRouter() {
     const hash = window.location.hash.slice(1);
     if (hash) {
         const hashParts = hash.split('?');
-        let pageId = hashParts[0];
+        let pageId = hashParts[0].replace(/^#?\//, '');
         if (pageId === 'c2') pageId = 'c2-listeners';
+        // 一键更新已并进系统设置页的分区菜单：#system-update 这条老深链落到设置页的那一区。
+        const settingsSection = pageId === 'system-update' ? 'update' : pageId === 'settings' && new URLSearchParams(hashParts.slice(1).join('?')).get('section') === 'token-usage' ? 'token-usage' : '';
+        if (settingsSection) pageId = 'settings';
         if (pageId && ['dashboard', 'chat', 'hitl', 'tool-guard', 'asset-overview', 'asset-library', 'info-collect', 'projects', 'vulnerabilities', 'webshell', 'chat-files', 'mcp-monitor', 'mcp-management', 'knowledge-management', 'knowledge-retrieval-logs', 'roles-management', 'platform-rbac', 'workflows', 'skills-monitor', 'skills-management', 'agents-management', 'settings', 'tasks', 'c2-listeners', 'c2-sessions', 'c2-tasks', 'c2-payloads', 'c2-events', 'c2-profiles'].includes(pageId)) {
             switchPage(pageId);
+            if (settingsSection && typeof switchSettingsSection === 'function') {
+                switchSettingsSection(settingsSection);
+            }
             if (pageId === 'chat') {
                 scheduleChatConversationFromHash(0);
             }
@@ -529,6 +535,18 @@ async function initPage(pageId) {
             if (typeof loadConfig === 'function') {
                 loadConfig(false);
             }
+            // 回到设置页时若停在「一键更新」分区，重新读一遍安装状态并把进度轮询接上——
+            // 离开设置页时轮询已被停掉，不接的话画面上会留一份不再动的进度。
+            const updateSection = document.getElementById('settings-section-update');
+            if (updateSection && updateSection.classList.contains('active') && typeof loadUpdateConsole === 'function') {
+                loadUpdateConsole();
+            }
+            // Returning through the regular settings nav reloads a retained usage panel.
+            // Deep links are loaded by switchSettingsSection after switchPage returns.
+            const tokenSection = document.getElementById('settings-section-token-usage');
+            if (tokenSection && tokenSection.classList.contains('active') && window.location.hash !== '#settings?section=token-usage' && typeof refreshTokenUsage === 'function') {
+                refreshTokenUsage();
+            }
             break;
         case 'roles-management':
             // 初始化角色管理页面
@@ -605,6 +623,14 @@ async function initPage(pageId) {
     if (pageId !== 'tasks' && typeof cleanupTasksPage === 'function') {
         cleanupTasksPage();
     }
+    // 一键更新的进度轮询同理：它现在住在系统设置页里，离开设置页就没必要每 1.5 秒读一次任务了
+    // （同一页内切到别的分区由 settings.js 的 switchSettingsSection 负责停）。
+    if (pageId !== 'settings' && typeof stopUpdatePolling === 'function') {
+        stopUpdatePolling();
+    }
+    if (pageId !== 'settings' && typeof stopTokenUsageRequests === 'function') {
+        stopTokenUsageRequests();
+    }
 }
 
 // 页面加载完成后初始化路由
@@ -618,11 +644,17 @@ document.addEventListener('DOMContentLoaded', function() {
         const hash = window.location.hash.slice(1);
         // 处理带参数的hash（如 chat?conversation=xxx）
         const hashParts = hash.split('?');
-        let pageId = hashParts[0];
+        let pageId = hashParts[0].replace(/^#?\//, '');
         
         if (pageId === 'c2') pageId = 'c2-listeners';
+        // 与首屏解析同一套别名：#system-update 落到系统设置页的「一键更新」分区。
+        const settingsSection = pageId === 'system-update' ? 'update' : pageId === 'settings' && new URLSearchParams(hashParts.slice(1).join('?')).get('section') === 'token-usage' ? 'token-usage' : '';
+        if (settingsSection) pageId = 'settings';
         if (pageId && ['dashboard', 'chat', 'hitl', 'tool-guard', 'asset-overview', 'asset-library', 'info-collect', 'projects', 'tasks', 'workflows', 'vulnerabilities', 'webshell', 'chat-files', 'mcp-monitor', 'mcp-management', 'knowledge-management', 'knowledge-retrieval-logs', 'roles-management', 'platform-rbac', 'skills-monitor', 'skills-management', 'agents-management', 'settings', 'c2-listeners', 'c2-sessions', 'c2-tasks', 'c2-payloads', 'c2-events', 'c2-profiles'].includes(pageId)) {
             switchPage(pageId);
+            if (settingsSection && typeof switchSettingsSection === 'function') {
+                switchSettingsSection(settingsSection);
+            }
             if (pageId === 'chat') {
                 scheduleChatConversationFromHash(0);
             }

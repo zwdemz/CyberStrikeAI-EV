@@ -10,7 +10,7 @@
 # ============================================
 
 # 前端显示的版本号（可选，不填则显示默认版本）
-version: "v1.7.22"
+version: "v1.7.24"
 # 普通信息查询 API（FOFA / ZoomEye / Quake / Shodan）的客户端标识。
 # 修改后重启生效；省略或留空使用 CyberStrikeAI，最长 256 字节，仅允许可打印 ASCII。
 # 不影响模型 SDK、外部 MCP、WebShell、C2 或扫描工具。
@@ -601,7 +601,10 @@ roles_dir: roles # 角色配置文件目录（相对于配置文件所在目录�
 # ============================================
 project:
   enabled: true
+  # 压缩时自动保存续接摘要为 tentative note（每会话/代理更新一条，不替代已确认事实）
+  context_checkpoints: true
   # default_project_id: "" # 可选：机器人/批量任务创建对话时的默认项目 ID
+  # 项目续接补充包含在事实索引预算内；工作文件候选清单另有最多 4000 字符预算
   fact_index_max_runes: 65000
   # 事实关系速览段预算（从索引总预算中预留）
   fact_index_path_max_runes: 10000
@@ -616,3 +619,14 @@ test_proxy:
   max_concurrent: 16
   max_concurrent_per_target: 2
   queue_timeout_seconds: 30
+
+# ============================================
+# 一键更新（可选）
+# ============================================
+# 更新源：一个仓库地址，更新跟随该仓库自己的默认分支；不配置时就是EV 仓库
+# （https://github.com/zwdemz/CyberStrikeAI-EV.git）。GitHub 访问不畅时可在这里填镜像地址，
+# 想跟随自己的二开也只改这一处；控制台「系统设置 → 一键更新」页可以直接填写保存。
+# 非 git 目录（解压/打包安装）不需要配置，也能在控制台「一键更新」页执行「接入更新源」，
+# 把目录变成跟踪该仓库的 git 工作树，此后按正常安装一键更新。
+# update:
+#   repo: https://github.com/zwdemz/CyberStrikeAI-EV.git  # 一个仓库地址；留空/不写 = EV 仓库
