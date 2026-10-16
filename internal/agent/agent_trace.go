@@ -221,7 +221,7 @@ func ExtractLastUserTurnTraceJSON(traceInputJSON string) string {
 	if lastUser <= 0 {
 		return traceInputJSON
 	}
-	trimmed := make([]map[string]interface{}, 0, len(arr)-lastUser+1)
+	var trimmed []map[string]interface{}
 	if ledger != nil {
 		trimmed = append(trimmed, ledger)
 	}

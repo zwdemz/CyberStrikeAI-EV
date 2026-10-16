@@ -169,8 +169,7 @@ func mergeMessageIntoLeadingSystem(msgs []adk.Message, msg adk.Message) []adk.Me
 		out[i] = &cloned
 		return out
 	}
-	out := make([]adk.Message, 0, len(msgs)+1)
-	out = append(out, msg)
+	out := []adk.Message{msg}
 	out = append(out, msgs...)
 	return out
 }
