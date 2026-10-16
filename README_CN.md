@@ -8,7 +8,7 @@
 
 **面向授权定向验证、SRC 专项流程和修复复测的 CyberStrikeAI 定制版。**
 
-CyberStrikeAI-EV 维护于 [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV)，基于上游 [AIPentest/CyberStrikeAI v1.7.22](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.22)，对应上游提交 `762f798afbe4ea957e00fa4aedf1d5ceb762bdb6`。项目保留 Go/Eino 智能体平台、MCP 集成、知识检索、工作流和审计能力，补充 EV 的角色范围限制、工具就绪处理、DNSLog 集成、稳定性优化与安全修复。本仓库为独立维护的定制分支；上游与 EV 的同名版本标签不代表源码完全一致。
+CyberStrikeAI-EV 维护于 [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV)，基于上游 [AIPentest/CyberStrikeAI v1.7.24](https://github.com/AIPentest/CyberStrikeAI/releases/tag/v1.7.24)，并保留 EV 定制。项目保留 Go/Eino 智能体平台、MCP 集成、知识检索、工作流和审计能力，补充 EV 的角色范围限制、工具就绪处理、DNSLog 集成、稳定性优化与安全修复。本仓库为独立维护的定制分支；上游与 EV 的同名版本标签不代表源码完全一致。
 
 **从这里开始：** [快速上手](#快速上手一条命令部署) · [中文文档](docs/zh-CN/README.md) · [安全加固](docs/zh-CN/security-hardening.md)
 
@@ -274,10 +274,10 @@ chmod +x run.sh && ./run.sh
 **其他启动方式：**
 ```bash
 # 直接运行（需自行配环境）；与 run.sh 默认一致可加 --https
-go run cmd/server/main.go --https
+go run ./cmd/server --https
 
 # 手动编译
-go build -o cyberstrike-ai cmd/server/main.go
+go build -o cyberstrike-ai ./cmd/server
 ./cyberstrike-ai --https
 ```
 
@@ -287,7 +287,7 @@ go build -o cyberstrike-ai cmd/server/main.go
 
 ### 版本升级与兼容性
 
-EV 发布位于 [zwdemz/CyberStrikeAI-EV](https://github.com/zwdemz/CyberStrikeAI-EV/releases)。继承的 `upgrade.sh` 当前固定指向 `Ed1s0nZ/CyberStrikeAI`；直接运行会下载上游源码，可能覆盖 EV 定制内容。本定制版使用以下受控升级流程。
+EV 更新源默认为本仓库。请先阅读[模块同步说明](docs/en-US/upstream-v1.7.24-integration.md)，再按以下步骤升级；Windows 安装使用停服离线升级包。
 
 1. 阅读目标 EV Release ，核对上游基线、安全修复、配置及数据库变化。
 2. 在独立目录获取发布源码，使用可信维护者密钥验证签名标签，按 `go.mod` 要求的 Go 版本构建。

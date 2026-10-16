@@ -81,6 +81,7 @@ AI 测试角色不是安全授权边界。即使选择了“渗透测试”角�
 | WebShell | `webshell:read`、`webshell:write`、`webshell:delete` |
 | C2 | `c2:read`、`c2:write`、`c2:delete` |
 | MCP | `mcp:read`、`mcp:execute`、`mcp:write`、`mcp:external:execute` |
+| 一键更新（本机源码） | `update:read`、`update:apply` |
 | 知识库 | `knowledge:read`、`knowledge:write`、`knowledge:delete` |
 | Skills | `skills:read`、`skills:write`、`skills:delete` |
 | Markdown Agents | `agents:read`、`agents:write`、`agents:delete` |
@@ -107,6 +108,8 @@ AI 测试角色不是安全授权边界。即使选择了“渗透测试”角�
 - `mcp:execute` 用于访问认证后的 MCP HTTP 入口。
 - `mcp:external:execute` 用于 Agent 调用外部 MCP 工具，当前还要求该权限的 Scope 为 `all`。
 - 管理外部 MCP 配置使用 `mcp:write`，与执行外部工具是两项权限。
+- 一键更新是**两项**：`update:read` 看本机安装的版本与更新源差集；`update:apply` 拉取更新源仓库（默认官方仓库）
+  的默认分支、重编译并换掉平台二进制。写侧还要求会话是 `all` scope——一台机器一份源码，`assigned`/`own` 不该能移动别人正在跑的代码。
 - `robot:write` 管理机器人配置和测试入口；机器人聊天本身使用绑定用户或服务账号的业务权限。
 
 ---
@@ -152,6 +155,7 @@ project:write → own
 - 知识库写操作（搜索除外）。
 - HITL 全局白名单、默认审核方和审计策略。
 - C2 Profile 写操作。
+- 一键更新的写操作（`check`/`apply`/`rollback`，即 `update:apply`）。
 - 部分全局监控统计。
 
 ---
@@ -206,7 +210,7 @@ project:write → own
 ### 7.3 权限变更何时生效
 
 - 更新用户、密码、启用状态或角色后，该用户现有会话会被撤销，需要重新登录。
-- 更新或删除自定义角色后，平台会撤销全部现有会话，所有用户需重新登录。
+- 修改自定义角色的权限或 Scope、或删除自定义角色后，仅该角色成员的现有会话会被撤销，需要重新登录；无关用户保持在线。仅修改名称、描述或调整权限顺序不会撤销会话；删除零成员角色也不影响现有会话。
 - 机器人每条消息实时解析绑定用户/服务账号权限；用户禁用或角色调整会立即影响下一条消息。
 - 后台批量任务会根据任务 owner 重新解析 Principal，不应依赖创建任务时的前端状态。
 
@@ -371,7 +375,7 @@ curl -X POST http://localhost:8080/api/rbac/resource-assignments \
 
 ### 角色改了但用户仍是旧权限
 
-角色变更会撤销会话。让用户重新登录；机器人下一条消息会重新解析权限。
+角色权限或 Scope 变更会撤销该角色成员的会话。让受影响用户重新登录；机器人下一条消息会重新解析权限。
 
 ### 忘记了内置 `admin` 密码
 

@@ -27,6 +27,13 @@ const (
 	sqlitePassiveCheckpointInterval = 300 * time.Second
 )
 
+func sqliteOpenDSN(path string) string {
+	// Reserve the writer at Begin, before read-modify-write transactions take a
+	// snapshot. DEFERRED upgrades may fail immediately without busy_timeout.
+	// EV retains its bounded asset retry and ten-second per-wait budget.
+	return fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=%d&_synchronous=NORMAL&_txlock=immediate", path, sqliteBusyTimeoutMS)
+}
+
 // configureDBPool 设置 SQLite 连接池参数，提升并发稳定性
 func configureDBPool(db *sql.DB) {
 	// SQLite 同一时间只允许一个写入者；过高连接数会放大锁竞争和 WAL 回收延迟。
@@ -125,7 +132,7 @@ func (db *DB) runPassiveCheckpoint(trigger string) {
 
 // NewDB 创建数据库连接
 func NewDB(dbPath string, logger *zap.Logger) (*DB, error) {
-	db, err := sql.Open("sqlite3", dbPath+fmt.Sprintf("?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=%d&_txlock=immediate&_synchronous=NORMAL", sqliteBusyTimeoutMS))
+	db, err := sql.Open("sqlite3", sqliteOpenDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
@@ -193,6 +200,10 @@ func (db *DB) SetChatUploadsDir(dir string) {
 
 // initTables 初始化数据库表
 func (db *DB) initTables() error {
+	if err := db.reconcileSchema(applicationSchema); err != nil {
+		return err
+	}
+
 	// 创建对话表（last_react_input / last_react_output 存「代理消息轨迹」JSON 与助手摘要，列名保留以兼容已有库）
 	createConversationsTable := `
 	CREATE TABLE IF NOT EXISTS conversations (
@@ -1471,122 +1482,6 @@ func (db *DB) dropProjectFactVersionsTable() error {
 	return err
 }
 
-// migrateVulnerabilitiesConversationFK 将 vulnerabilities.conversation_id 外键改为 ON DELETE SET NULL，删除对话时保留漏洞记录。
-func (db *DB) migrateVulnerabilitiesConversationFK() error {
-	ok, err := vulnerabilitiesConversationFKOnDeleteSetNull(db.DB)
-	if err != nil {
-		return err
-	}
-	if ok {
-		return nil
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	const createNew = `
-	CREATE TABLE vulnerabilities_new (
-		id TEXT PRIMARY KEY,
-		conversation_id TEXT,
-		conversation_tag TEXT,
-		task_tag TEXT,
-		title TEXT NOT NULL,
-		description TEXT,
-		severity TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'open',
-		vulnerability_type TEXT,
-		target TEXT,
-		preconditions TEXT,
-		reproduction_steps TEXT,
-		evidence TEXT,
-		impact TEXT,
-		recommendation TEXT,
-		retest_notes TEXT,
-		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		project_id TEXT,
-		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
-	);`
-	if _, err := tx.Exec(createNew); err != nil {
-		return fmt.Errorf("创建 vulnerabilities_new 失败: %w", err)
-	}
-
-	const copyRows = `
-	INSERT INTO vulnerabilities_new (
-		id, conversation_id, conversation_tag, task_tag, title, description,
-		severity, status, vulnerability_type, target, preconditions, reproduction_steps,
-		evidence, impact, recommendation, retest_notes,
-		created_at, updated_at, project_id
-	)
-	SELECT
-		id, conversation_id, conversation_tag, task_tag, title, description,
-		severity, status, vulnerability_type, target,
-		COALESCE(preconditions, ''), COALESCE(reproduction_steps, ''),
-		COALESCE(evidence, ''), impact, recommendation, COALESCE(retest_notes, ''),
-		created_at, updated_at, project_id
-	FROM vulnerabilities;`
-	if _, err := tx.Exec(copyRows); err != nil {
-		return fmt.Errorf("复制 vulnerabilities 数据失败: %w", err)
-	}
-	if _, err := tx.Exec(`DROP TABLE vulnerabilities`); err != nil {
-		return fmt.Errorf("删除旧 vulnerabilities 表失败: %w", err)
-	}
-	if _, err := tx.Exec(`ALTER TABLE vulnerabilities_new RENAME TO vulnerabilities`); err != nil {
-		return fmt.Errorf("重命名 vulnerabilities 表失败: %w", err)
-	}
-
-	indexes := []string{
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_conversation_id ON vulnerabilities(conversation_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_conversation_tag ON vulnerabilities(conversation_tag)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_task_tag ON vulnerabilities(task_tag)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(severity)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_status ON vulnerabilities(status)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_created_at ON vulnerabilities(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_project_id ON vulnerabilities(project_id)`,
-	}
-	for _, stmt := range indexes {
-		if _, err := tx.Exec(stmt); err != nil {
-			return fmt.Errorf("重建 vulnerabilities 索引失败: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交 vulnerabilities 外键迁移失败: %w", err)
-	}
-	db.logger.Info("vulnerabilities 表已迁移：删除对话时保留漏洞记录")
-	return nil
-}
-
-func vulnerabilitiesConversationFKOnDeleteSetNull(db *sql.DB) (bool, error) {
-	rows, err := db.Query(`PRAGMA foreign_key_list(vulnerabilities)`)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-
-	found := false
-	for rows.Next() {
-		var id, seq int
-		var table, from, to, onUpdate, onDelete, match string
-		if err := rows.Scan(&id, &seq, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
-			return false, err
-		}
-		if from == "conversation_id" {
-			found = true
-			if !strings.EqualFold(onDelete, "SET NULL") {
-				return false, nil
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	return found, nil
-}
-
 // migrateVulnerabilitiesTable 迁移 vulnerabilities 表，补充标签字段
 func (db *DB) migrateVulnerabilitiesTable() error {
 	columns := []struct {
@@ -1661,7 +1556,7 @@ func (db *DB) migrateC2ListenersTable() error {
 
 // NewKnowledgeDB 创建知识库数据库连接（只包含知识库相关的表）
 func NewKnowledgeDB(dbPath string, logger *zap.Logger) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite3", dbPath+fmt.Sprintf("?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=%d&_synchronous=NORMAL", sqliteBusyTimeoutMS))
+	sqlDB, err := sql.Open("sqlite3", sqliteOpenDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("打开知识库数据库失败: %w", err)
 	}
@@ -1694,6 +1589,10 @@ func NewKnowledgeDB(dbPath string, logger *zap.Logger) (*DB, error) {
 
 // initKnowledgeTables 初始化知识库数据库表（只包含知识库相关的表）
 func (db *DB) initKnowledgeTables() error {
+	if err := db.reconcileSchema(knowledgeSchema); err != nil {
+		return err
+	}
+
 	// 创建知识库项表
 	createKnowledgeBaseItemsTable := `
 	CREATE TABLE IF NOT EXISTS knowledge_base_items (

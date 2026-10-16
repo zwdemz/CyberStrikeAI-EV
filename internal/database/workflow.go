@@ -466,6 +466,14 @@ func (db *DB) ListWorkflowRunsAwaitingHITLFiltered(conversationID string, limit 
 	return out, rows.Err()
 }
 
+func nullString(v string) interface{} {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
 func (db *DB) migrateWorkflowRunsTable() error {
 	cols := []struct{ name, ddl string }{
 		{"pending_hitl_node_id", "ALTER TABLE workflow_runs ADD COLUMN pending_hitl_node_id TEXT"},
@@ -485,12 +493,4 @@ func (db *DB) migrateWorkflowRunsTable() error {
 		}
 	}
 	return nil
-}
-
-func nullString(v string) interface{} {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return nil
-	}
-	return v
 }

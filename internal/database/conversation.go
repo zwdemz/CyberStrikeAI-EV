@@ -29,6 +29,7 @@ type Conversation struct {
 	UpdatedAt   time.Time                `json:"updatedAt"`
 	Messages    []Message                `json:"messages,omitempty"`
 	MessagePage *ConversationMessagePage `json:"messagePage,omitempty"`
+	Retest      *VulnerabilityRetest     `json:"retest,omitempty"`
 }
 
 // Message 消息
