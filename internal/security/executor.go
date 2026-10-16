@@ -130,6 +130,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		zap.Any("args", args),
 	)
 
+	if tool, exists := e.toolIndex[toolName]; exists && !config.ToolSupportsPlatform(*tool, runtime.GOOS) {
+		return nil, fmt.Errorf("tool does not support %s", runtime.GOOS)
+	}
 	if err := testproxy.CheckTool(ctx, toolName); err != nil {
 		return nil, err
 	}

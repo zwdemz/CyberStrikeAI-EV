@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 Push-Location $PSScriptRoot
 try {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Use run.sh on Linux.' }
+    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.upgrade.lock')) { throw 'Upgrade in progress; wait before starting the service.' }
     if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
         throw 'Binary missing. Run .\scripts\build-windows.ps1 first.'
     }
