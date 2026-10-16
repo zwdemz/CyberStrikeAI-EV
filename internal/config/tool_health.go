@@ -52,6 +52,11 @@ func CheckToolAvailability(tools []ToolConfig) []ToolAvailability {
 // naturally by LookPath, while executable paths containing spaces remain valid.
 func ResolveToolCommand(tool ToolConfig) (string, error) {
 	command := strings.TrimSpace(tool.Command)
+	// The exec recipe is dispatched to the native executor, not its legacy sh
+	// command field. Report the actual Windows default without changing tools.
+	if runtime.GOOS == "windows" && tool.Name == "exec" && command == "sh" {
+		return exec.LookPath("powershell.exe")
+	}
 	if command == "" {
 		return "", exec.ErrNotFound
 	}

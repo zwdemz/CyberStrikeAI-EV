@@ -190,6 +190,10 @@ def run(binary, repository, https=False):
                          '/api/vulnerabilities', '/api/knowledge/items']:
                 service.request(path, authenticated=False, expected=401)
                 service.request(path)
+            # Authentication must precede body parsing and terminal process creation.
+            for path in ['/api/terminal/run', '/api/terminal/run/stream']:
+                service.request(path, {}, authenticated=False, expected=401)
+            service.request('/api/terminal/ws', authenticated=False, expected=401)
             service.request('/api/projects', {}, expected=400)
             service.request('/api/assets/import', {'assets': []}, expected=400)
             service.request('/api/knowledge/items', {}, expected=400)

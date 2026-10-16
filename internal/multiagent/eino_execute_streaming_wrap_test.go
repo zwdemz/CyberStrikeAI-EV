@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,11 @@ func TestEinoStreamingShellWrap_PreparesNonInteractiveCommand(t *testing.T) {
 			t.Fatalf("recv: %v", rerr)
 		}
 	}
-	if !strings.Contains(inner.lastCommand, "PYTHONUNBUFFERED=1") {
+	if runtime.GOOS == "windows" {
+		if inner.lastCommand != "echo ok" {
+			t.Fatalf("POSIX wrapper injected on Windows: %q", inner.lastCommand)
+		}
+	} else if !strings.Contains(inner.lastCommand, "PYTHONUNBUFFERED=1") {
 		t.Fatalf("missing python unbuffer in inner command: %q", inner.lastCommand)
 	}
 }

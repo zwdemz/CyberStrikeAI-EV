@@ -60,13 +60,16 @@ func init() {
 	}
 }
 
-func startWatchdog(req watchRequest, onExit func()) (*watchdog, error) {
+func startWatchdog(req watchRequest, onExit func(), prepare ...func(*exec.Cmd)) (*watchdog, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(exe, guardianArg)
 	configureGuardian(cmd)
+	for _, configure := range prepare {
+		configure(cmd)
+	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

@@ -773,6 +773,10 @@ func (e *Executor) formatParamValue(param config.ParameterConfig, value interfac
 // IsBackgroundShellCommand 检测命令是否为完全后台命令（末尾有独立 &，且不在引号内）。
 // command1 & command2 不算完全后台（command2 仍在前台执行）。
 func IsBackgroundShellCommand(command string) bool {
+	// Windows uses explicit managed-background requests; & is not POSIX syntax.
+	if runtime.GOOS == "windows" {
+		return false
+	}
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return false
@@ -825,8 +829,8 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 
 	command = PrepareShellCommandForExecute(command)
 
-	// 获取shell类型（可选，默认为sh）
-	shell := "sh"
+	// 获取 shell 类型；留空时由操作系统选择默认 shell。
+	shell := ""
 	if s, ok := args["shell"].(string); ok && s != "" {
 		shell = s
 	}
@@ -841,13 +845,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 	isBackground := IsBackgroundShellCommand(command)
 
 	// 构建命令
-	var cmd *exec.Cmd
-	if workDir != "" {
-		cmd = exec.CommandContext(ctx, shell, "-c", command)
-		cmd.Dir = workDir
-	} else {
-		cmd = exec.CommandContext(ctx, shell, "-c", command)
-	}
+	cmd := NewShellCommand(ctx, shell, command, workDir)
 	ConfigureShellCmdForAgentExecute(cmd)
 
 	// 执行命令
@@ -877,7 +875,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec), e.toolOutputMaxBytes, spill)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
-			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
+			cmd2 := NewShellCommand(ctx, shell, command, workDir)
 			if workDir != "" {
 				cmd2.Dir = workDir
 			}
@@ -888,7 +886,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		output, err = combinedOutputCancellableWithLimit(ctx, cmd, e.toolOutputMaxBytes, spill)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
-			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
+			cmd2 := NewShellCommand(ctx, shell, command, workDir)
 			if workDir != "" {
 				cmd2.Dir = workDir
 			}

@@ -73,6 +73,7 @@ func startShellSessionContext(ctx context.Context, cmd *exec.Cmd, start func() e
 	}
 
 	var launch *processguard.Launch
+	var parentGuard processguard.Group
 	if scope != nil {
 		if scope.guard == nil && scope.guardErr == nil {
 			scope.guard, scope.guardErr = processguard.New(scope.ID)
@@ -80,6 +81,27 @@ func startShellSessionContext(ctx context.Context, cmd *exec.Cmd, start func() e
 		if scope.guardErr != nil {
 			return nil, scope.guardErr
 		}
+		parentGuard = scope.guard
+	}
+	ownedGuard, err := newSessionGuard(parentGuard)
+	if err != nil {
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if ownedGuard != nil && !started {
+			cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = ownedGuard.Close(cleanup)
+		}
+	}()
+	if ownedGuard != nil {
+		launch, err = ownedGuard.Prepare(cmd)
+		if err != nil {
+			return nil, err
+		}
+		defer launch.Dispose()
+	} else if scope != nil {
 		var err error
 		launch, err = scope.guard.Prepare(cmd)
 		if err != nil {
@@ -98,16 +120,17 @@ func startShellSessionContext(ctx context.Context, cmd *exec.Cmd, start func() e
 		if err := launch.Commit(); err != nil {
 			terminateProcessGroup(cmd.Process.Pid, cmd)
 			_ = cmd.Wait()
-			if scope != nil {
+			if scope != nil && scope.guard != nil {
 				_ = scope.guard.Release(cmd.Process.Pid)
 			}
 			return nil, err
 		}
 	}
-	session := &ShellSession{Cmd: cmd, rootPID: cmd.Process.Pid, scope: scope, done: make(chan struct{})}
+	session := &ShellSession{Cmd: cmd, rootPID: cmd.Process.Pid, scope: scope, done: make(chan struct{}), ownedGuard: ownedGuard}
 	if scope != nil {
 		scope.sessions[session] = struct{}{}
 	}
+	started = true
 	return session, nil
 }
 
@@ -183,7 +206,7 @@ func StartManagedBackground(ctx context.Context, shell, command, dir string) (*S
 	if ProcessScopeFromContext(ctx) == nil {
 		return nil, ErrBackgroundNeedsTask
 	}
-	cmd := exec.Command(shell, "-c", PrepareShellCommandForExecute(command))
+	cmd := NewShellCommand(context.WithoutCancel(ctx), shell, PrepareShellCommandForExecute(command), dir)
 	cmd.Dir = dir
 	ConfigureShellCmdForAgentExecute(cmd)
 	// Nil output streams use /dev/null; background output cannot hold tool pipes.
@@ -212,6 +235,11 @@ func (s *ProcessScope) IsolationBackend() string {
 	defer s.mu.Unlock()
 	if s.guard != nil {
 		return s.guard.Name()
+	}
+	for session := range s.sessions {
+		if session.ownedGuard != nil {
+			return session.ownedGuard.Name()
+		}
 	}
 	if s.guardErr != nil {
 		return "unavailable"

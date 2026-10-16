@@ -1,7 +1,7 @@
 name: Native service
 on:
   pull_request:
-    paths: ['cmd/**', 'internal/**', 'tests/native/**', 'scripts/build-windows.ps1', 'run.ps1', 'go.mod', 'go.sum', 'config.example.yaml', '.github/workflows/native-service.yml']
+    paths: ['cmd/**', 'internal/**', 'tests/native/**', 'tests/internal/**', 'tools/exec.yaml', 'scripts/build-windows.ps1', 'run.ps1', 'go.mod', 'go.sum', 'config.example.yaml', '.github/workflows/native-service.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -35,6 +35,15 @@ jobs:
         run: go build -mod=readonly -o bin/cyberstrike-ai ./cmd/server
       - name: Test core persistence and configuration
         run: go test -p 2 ./internal/config ./internal/database ./internal/knowledge ./internal/processguard -count=1 -timeout 5m
+      - name: Test native Windows execution and terminal
+        if: runner.os == 'Windows'
+        run: |
+          go test -p 1 ./tests/internal/security ./tests/internal/handler ./tests/internal/terminalpty -run 'TestWindows|TestNativeConsole|TestTerminalPermissionBoundary' -count=1 -timeout 2m
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test ./internal/multiagent -run TestEinoStreamingShellWrap -count=1 -timeout 2m
+      - name: Preserve Linux execution behavior
+        if: runner.os == 'Linux'
+        run: go test -p 2 ./internal/security ./internal/handler ./internal/multiagent ./tests/internal/security -count=1 -timeout 5m
       - name: Verify Windows lifecycle
         if: runner.os == 'Windows'
         run: |
