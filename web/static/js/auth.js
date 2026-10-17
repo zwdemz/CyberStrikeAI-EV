@@ -44,6 +44,7 @@ function saveAuth(token, expiresAt, meta = {}) {
 }
 
 function clearAuthStorage() {
+    if (typeof window !== 'undefined' && typeof window.stopExecutionView === 'function') window.stopExecutionView();
     if (typeof window.invalidateConversationLiteCache === 'function') window.invalidateConversationLiteCache();
     if (typeof cancelPendingConversationLoad === 'function') cancelPendingConversationLoad();
     authToken = null;
@@ -405,6 +406,7 @@ async function bootstrapApp() {
 const PAGE_PERMISSION_MAP = {
     dashboard: 'dashboard:read',
     chat: 'chat:read',
+    'execution-view': 'chat:read',
     hitl: 'hitl:read',
     'tool-guard': 'config:read',
     'info-collect': 'fofa:execute',

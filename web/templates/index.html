@@ -40,6 +40,7 @@
         })();
     </script>
     <link rel="stylesheet" href="/static/css/style.css?v=20261016-context-memory-token-analytics">
+    <link rel="stylesheet" href="/static/css/execution-view.css?v=20261017-4">
     <link rel="stylesheet" href="/static/css/tool-guard.css?v=20260907-7">
     <link rel="stylesheet" href="/static/css/chat-history.css?v=20261012-chat-scroll">
     <link rel="stylesheet" href="/static/css/chat-plan-progress.css?v=20260813-4">
@@ -47,7 +48,7 @@
     <link rel="stylesheet" href="/static/vendor/xterm.css">
     <!-- 移动端样式层：全部规则限定在 767.98px 以下，桌面端零影响 -->
     <link rel="stylesheet" href="/static/css/mobile.css?v=20261015-project-table-3">
-    <script src="/static/js/router.js?v=20261017-storage-access"></script>
+    <script src="/static/js/router.js?v=20261017-execution-view"></script>
 </head>
 <body>
     <div id="login-overlay" class="login-overlay" style="display: none;">
@@ -232,6 +233,12 @@
                                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                             </svg>
                             <span data-i18n="nav.chat">对话</span>
+                        </div>
+                    </div>
+                    <div class="nav-item" data-page="execution-view" data-require-permission="chat:read">
+                        <div class="nav-item-content" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}" data-title="AI 执行过程" onclick="switchPage('execution-view')" data-i18n="executionView.title" data-i18n-attr="data-title" data-i18n-skip-text="true">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="5" cy="19" r="2"/><path d="M5 7v10M7 5h3a9 9 0 0 1 9 5M7 19h3a9 9 0 0 0 9-5"/></svg>
+                            <span data-i18n="executionView.title">AI 执行过程</span>
                         </div>
                     </div>
                     <div class="nav-item nav-item-has-submenu" data-page="security" data-require-permission-any="hitl:read config:read">
@@ -1653,6 +1660,7 @@
                 </div>
 
                 <!-- MCP状态监控页面 -->
+                <div id="page-execution-view" class="page" data-require-permission="chat:read"></div>
                 <div id="page-mcp-monitor" class="page mcp-monitor-page">
                     <div class="page-header">
                         <div class="page-header-main">
@@ -7022,7 +7030,7 @@
     <script src="/static/js/i18n.js"></script>
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/builtin-tools.js"></script>
-    <script src="/static/js/auth.js?v=20261008-password-eye-1"></script>
+    <script src="/static/js/auth.js?v=20261017-execution-view"></script>
     <script src="/static/js/modal.js"></script>
     <script src="/static/js/notifications.js"></script>
     <script src="/static/js/info-collect.js?v=20260717-1"></script>
@@ -7037,6 +7045,9 @@
     <script src="/static/js/chat-plan-progress.js?v=20260815-1"></script>
     <script src="/static/js/hitl.js?v=20260819-1"></script>
     <script src="/static/js/tool-guard.js?v=20261010-conflict"></script>
+    <script src="/static/js/execution-swarm.js?v=20261017-3"></script>
+    <script src="/static/js/execution-evidence.js?v=20261017-4"></script>
+    <script src="/static/js/execution-view.js?v=20261017-4"></script>
     <script src="/static/js/token-usage.js?v=20261012-token-analytics"></script>
     <script src="/static/js/settings.js?v=20261017-storage-access"></script>
     <script src="/static/js/test-proxy.js?v=20261012-readiness"></script>
