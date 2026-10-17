@@ -53,10 +53,13 @@ func TestSessionContextReloadsProjectResultsEveryTurn(t *testing.T) {
 	}
 	for _, id := range ids {
 		block := h.agentSessionContextBlock(id)
-		for _, want := range []string{"artifacts/parse_capture.py", "input capture.txt", v.ID, "tracked-finding", "先恢复成果"} {
+		for _, want := range []string{"artifacts/parse_capture.py", "input capture.txt", "先恢复成果"} {
 			if !strings.Contains(block, want) {
 				t.Errorf("conversation %s missing %s", id, want)
 			}
+		}
+		if strings.Contains(block, v.ID) || strings.Contains(block, "tracked-finding") {
+			t.Fatal("unscoped findings injected into session context")
 		}
 		if strings.Contains(block, "print('done')") {
 			t.Fatal("script content injected without reading")

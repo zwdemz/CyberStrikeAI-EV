@@ -280,6 +280,9 @@ func isMutationMethod(method string) bool {
 }
 
 func isProcessGlobalMutationPath(path string) bool {
+	if path == "/storage/policy" || path == "/storage/cleanup" {
+		return true
+	}
 	if strings.HasPrefix(path, "/system/update") {
 		// One installation, one source tree: an assigned/own-scoped session must not be able to
 		// move the code every other user is running.

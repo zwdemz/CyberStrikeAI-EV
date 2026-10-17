@@ -1,8 +1,10 @@
 package security
 
 import (
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/database"
@@ -25,6 +27,7 @@ func AuthMiddleware(manager *AuthManager) gin.HandlerFunc {
 		token := extractTokenFromRequest(c)
 		session, ok := manager.ValidateToken(token)
 		if !ok {
+			drainRejectedTLSBody(c.Writer, c.Request)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "未授权访问，请先登录",
 			})
@@ -44,6 +47,27 @@ func AuthMiddleware(manager *AuthManager) gin.HandlerFunc {
 		c.Request = c.Request.WithContext(authctx.WithPrincipal(c.Request.Context(), principal))
 		c.Next()
 	}
+}
+
+// drainRejectedTLSBody discards a small, known-length body before rejecting a
+// closing TLS request. Otherwise unread TLS records can reset the connection
+// before Windows clients receive the 401 response. It never parses the body or
+// authorizes execution; oversized, streaming and Expect requests are skipped.
+// A short read deadline bounds stalled clients; unsupported deadlines skip the
+// drain, and read failures still leave the request unauthorized.
+func drainRejectedTLSBody(writer http.ResponseWriter, request *http.Request) {
+	const maxDrainBytes = 8 * 1024
+	if request.TLS == nil || request.ProtoMajor != 1 || !request.Close ||
+		request.Body == nil || request.ContentLength <= 0 || request.ContentLength > maxDrainBytes ||
+		request.Header.Get("Expect") != "" {
+		return
+	}
+	controller := http.NewResponseController(writer)
+	if err := controller.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		return
+	}
+	// This connection is already closing, so its deadline need not be reset.
+	_, _ = io.CopyN(io.Discard, request.Body, request.ContentLength)
 }
 
 func RequirePermission(permission string) gin.HandlerFunc {

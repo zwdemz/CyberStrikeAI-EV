@@ -39,6 +39,12 @@ jobs:
         run: go test ./tests/internal/config ./tests/internal/handler ./tests/internal/security -run 'TestToolPlatform|TestToolRuntime|TestUnsupportedPlatform' -count=1 -timeout 2m
       - name: Test core persistence and configuration
         run: go test -p 2 ./internal/config ./internal/database ./internal/knowledge ./internal/processguard -count=1 -timeout 5m
+      - name: Test storage permissions and policy updates
+        run: go test -p 2 ./internal/security ./tests/internal/handler -run 'TestStorage|TestRBAC' -count=1 -timeout 3m
+      - name: Test rejected TLS request delivery
+        run: go test ./internal/security -run 'TestAuthTLSClosingBody|TestRejectedTLSBodyBounds' -count=3 -timeout 1m
+      - name: Test context and update output security
+        run: go test -p 2 ./internal/project ./internal/update ./internal/handler ./internal/multiagent -run 'Resume|SessionContextReloads|CompactionRefreshRestores|UpdateCredential|UpdateRedaction|RedactSource' -count=1 -timeout 3m
       - name: Test native Windows execution and terminal
         if: runner.os == 'Windows'
         run: |

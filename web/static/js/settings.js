@@ -619,6 +619,7 @@ window.syncC2NavOnceFromServer = async function syncC2NavOnceFromServer() {
     if (c2NavSyncedOnce || typeof apiFetch === 'undefined') {
         return;
     }
+    if (typeof hasPermission === 'function' && !hasPermission('config:read')) return;
     c2NavSyncedOnce = true;
     try {
         const r = await apiFetch('/api/config');
@@ -652,8 +653,21 @@ function syncC2NavFromConfig(cfg) {
     }
 }
 
+/** Return the permission required to open a settings section. */
+function settingsSectionPermission(section) {
+    return ({storage: 'storage:read', update: 'update:read', 'token-usage': 'dashboard:read', rbac: 'rbac:read'})[section] || 'config:read';
+}
+
+/** Return the first accessible settings section, or null when access is denied. */
+function defaultSettingsSection() {
+    return ['basic', 'storage', 'update', 'token-usage'].find(section =>
+        typeof hasPermission !== 'function' || hasPermission(settingsSectionPermission(section))) || null;
+}
+
 // 切换设置分类
 function switchSettingsSection(section) {
+    const required = settingsSectionPermission(section);
+    if (typeof hasPermission === 'function' && !hasPermission(required)) return;
     if (section === 'rbac') {
         if (typeof switchPage === 'function') {
             switchPage('platform-rbac');
@@ -715,6 +729,9 @@ function switchSettingsSection(section) {
 
 // 打开设置
 async function openSettings() {
+    const section = defaultSettingsSection();
+    if (!section) return;
+    const canReadConfig = typeof hasPermission !== 'function' || hasPermission('config:read');
     // 切换到设置页面
     if (typeof switchPage === 'function') {
         switchPage('settings');
@@ -724,7 +741,7 @@ async function openSettings() {
     toolStateMap.clear();
     
     // 每次打开时重新加载最新配置（系统设置页面不需要加载工具列表）
-    await loadConfig(false);
+    if (canReadConfig) await loadConfig(false);
     initSettingsCustomSelects();
     
     // 清除之前的验证错误状态
@@ -733,7 +750,7 @@ async function openSettings() {
     });
     
     // 默认显示基本设置
-    switchSettingsSection('basic');
+    switchSettingsSection(section);
 }
 
 // 关闭设置（保留函数以兼容旧代码，但现在不需要关闭功能）
@@ -4866,7 +4883,9 @@ async function pollExternalMCPStatus(name, maxAttempts = 30) {
 const originalOpenSettings = openSettings;
 openSettings = async function() {
     await originalOpenSettings();
-    await loadExternalMCPs();
+    if (typeof hasPermission !== 'function' || hasPermission('config:read')) {
+        await loadExternalMCPs();
+    }
 };
 
 // 语言切换后重新渲染 MCP 管理页中由 JS 写入的区块（innerHTML 不会随 data-i18n 自动更新）
