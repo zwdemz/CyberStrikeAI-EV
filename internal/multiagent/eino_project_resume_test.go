@@ -40,10 +40,13 @@ func TestCompactionRefreshRestoresLatestProjectResults(t *testing.T) {
 	}
 	msgs := []adk.Message{schema.SystemMessage("custom-instruction\n" + old), schema.UserMessage("continue")}
 	out := refreshFactIndexInMessages(msgs, db, p.ID, cfg, nil)
-	for _, want := range []string{"custom-instruction", "artifacts/parser.py --input file", "bounded-test-evidence", v.ID, `"status":"fixed"`} {
+	for _, want := range []string{"custom-instruction", "artifacts/parser.py --input file", "bounded-test-evidence"} {
 		if !strings.Contains(out[0].Content, want) {
 			t.Errorf("missing %s in refreshed prompt", want)
 		}
+	}
+	if strings.Contains(out[0].Content, v.ID) || strings.Contains(out[0].Content, "existing-finding") || strings.Contains(out[0].Content, `"status":"fixed"`) {
+		t.Fatal("compaction injected unscoped findings")
 	}
 	if msgs[0].Content != "custom-instruction\n"+old {
 		t.Fatal("refresh mutated original system message")
