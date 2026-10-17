@@ -95,6 +95,12 @@
 .execution-feed-panel li p { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--text-secondary); }
 .execution-panel h2.execution-board-heading { margin-bottom: 10px; }
 @media (max-width: 1100px) { .execution-dispatch { grid-template-columns: 1fr; } }
-@media (max-width: 600px) { .execution-graph { height: 280px; } .execution-shell .execution-graph-node { width: 84px; } .execution-graph-core { width: 88px; min-height: 88px; } .execution-graph-core small { font-size: 8px; } .execution-graph-core strong { font-size: 12px; } }
+@media (max-width: 600px) {
+    .execution-graph { height: auto; min-height: 260px; padding: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .execution-graph svg { display: none; }
+    .execution-graph-core { position: static; transform: none; width: 100%; min-height: 80px; border-radius: 10px; grid-column: 1 / -1; }
+    #page-execution-view .execution-graph-node { position: static; transform: none; width: 100%; min-height: 48px; }
+    .execution-graph-empty { position: static; width: auto; grid-column: 1 / -1; }
+}
 @media (max-width: 900px) { .execution-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 600px) { .execution-shell { padding: 16px; } .execution-header { align-items: start; flex-direction: column; gap: 14px; } .execution-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .execution-panel { padding: 16px; } .execution-selectors > label { min-width: 100%; } .execution-search > label { width: 100%; } .execution-toolbar { align-items: start; } .execution-toolbar h2 { width: 100%; } }

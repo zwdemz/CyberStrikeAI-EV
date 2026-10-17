@@ -116,6 +116,11 @@ const root = path.resolve(__dirname, '../..');
         await page.addStyleTag({ content: '.execution-shell {font-size:20px}' });
         await page.evaluate(() => document.getElementById('page-execution-view').scrollTop = 0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile page overflow');
+        const overlap = await page.locator('#execution-graph button').evaluateAll(buttons => {
+            const boxes = buttons.map(button => button.getBoundingClientRect());
+            return boxes.some((box, index) => boxes.slice(index + 1).some(other => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top));
+        });
+        assert.equal(overlap, false, 'mobile graph nodes overlap');
         if (folder) await page.screenshot({ path: path.join(folder, 'mobile.png'), fullPage: false });
         await page.locator('#execution-tab-timeline').click();
         await page.setViewportSize({ width: 1280, height: 720 });
