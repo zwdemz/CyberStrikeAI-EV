@@ -448,7 +448,8 @@ test('the console lives inside the settings page as its own section', () => {
     // Coming back to the settings page while the update section is still selected must re-read the
     // install state and re-arm the poller: leaving the page stopped it, and a frozen progress
     // read is exactly the "nothing is happening" picture an operator must never be shown.
-    assert.match(router, /case 'settings':[\s\S]{0,450}?getElementById\('settings-section-update'\)[\s\S]{0,250}?loadUpdateConsole\(\)/);
+    const settingsRoute = router.split("case 'settings':")[1].split("case 'roles-management':")[0];
+    assert.match(settingsRoute, /getElementById\('settings-section-update'\)[\s\S]{0,250}?loadUpdateConsole\(\)/);
 
     // Selecting the section runs the console; selecting anything else stops its poller.
     assert.match(settings, /if \(section === 'update'\) \{[\s\S]{0,160}?loadUpdateConsole\(\)/);

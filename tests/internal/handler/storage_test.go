@@ -108,6 +108,11 @@ func TestStorageWriterCanSaveOnlyStoragePolicy(t *testing.T) {
 		router.ServeHTTP(response, req)
 		return response
 	}
+	for _, body := range []string{`null`, `[]`, `{`, `{} {}`, `{"auto_clean":"yes"}`} {
+		if response := request("storage:write", body); response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid payload accepted: status=%d", response.Code)
+		}
+	}
 	if response := request("storage:read", `{"auto_clean":true}`); response.Code != http.StatusForbidden {
 		t.Fatalf("reader saved policy: %d %s", response.Code, response.Body.String())
 	}
@@ -126,5 +131,16 @@ func TestStorageWriterCanSaveOnlyStoragePolicy(t *testing.T) {
 	}
 	if response := request("storage:write", `{"openai":{"model":"tampered"}}`); response.Code != http.StatusBadRequest {
 		t.Fatalf("storage endpoint accepted unrelated config: %d %s", response.Code, response.Body.String())
+	} else {
+		var body struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Code != "invalid_storage_policy" || body.Message == "" {
+			t.Fatalf("unstable policy error: %s", response.Body.String())
+		}
 	}
 }

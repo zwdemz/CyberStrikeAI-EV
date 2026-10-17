@@ -47,7 +47,7 @@
     <link rel="stylesheet" href="/static/vendor/xterm.css">
     <!-- 移动端样式层：全部规则限定在 767.98px 以下，桌面端零影响 -->
     <link rel="stylesheet" href="/static/css/mobile.css?v=20261015-project-table-3">
-    <script src="/static/js/router.js?v=20261011-token-settings"></script>
+    <script src="/static/js/router.js?v=20261017-storage-access"></script>
 </head>
 <body>
     <div id="login-overlay" class="login-overlay" style="display: none;">
@@ -464,7 +464,7 @@
                             <span data-i18n="nav.platformRbac">平台权限</span>
                         </div>
                     </div>
-                    <div class="nav-item" data-page="settings">
+                    <div class="nav-item" data-page="settings" data-require-permission-any="config:read storage:read update:read dashboard:read">
                         <div class="nav-item-content" data-title="系统设置" onclick="switchPage('settings')" data-i18n="nav.settings" data-i18n-attr="data-title" data-i18n-skip-text="true">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <circle cx="12" cy="12" r="3"></circle>
@@ -3603,37 +3603,37 @@
                         <!-- 左侧导航栏 -->
                         <aside class="settings-sidebar">
                             <nav class="settings-nav">
-                                <div class="settings-nav-item active" data-section="basic" onclick="switchSettingsSection('basic')">
+                                <div class="settings-nav-item active" data-section="basic" data-require-permission="config:read" onclick="switchSettingsSection('basic')">
                                     <span data-i18n="settings.nav.basic">基本设置</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="token-usage" role="button" tabindex="0" onclick="switchSettingsSection('token-usage')" onkeydown="if(event.key==='Enter'||event.key===' ') { event.preventDefault(); switchSettingsSection('token-usage'); }">
+                                <div class="settings-nav-item" data-section="token-usage" data-require-permission="dashboard:read" role="button" tabindex="0" onclick="switchSettingsSection('token-usage')" onkeydown="if(event.key==='Enter'||event.key===' ') { event.preventDefault(); switchSettingsSection('token-usage'); }">
                                     <span data-i18n="settings.nav.tokenUsage">Token 用量</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="hitl" onclick="switchSettingsSection('hitl')">
+                                <div class="settings-nav-item" data-section="hitl" data-require-permission="config:read" onclick="switchSettingsSection('hitl')">
                                     <span data-i18n="settings.nav.hitl">人机协同</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="infocollect" onclick="switchSettingsSection('infocollect')">
+                                <div class="settings-nav-item" data-section="infocollect" data-require-permission="config:read" onclick="switchSettingsSection('infocollect')">
                                     <span data-i18n="settings.nav.infocollect">资产管理</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="knowledge" onclick="switchSettingsSection('knowledge')">
+                                <div class="settings-nav-item" data-section="knowledge" data-require-permission="config:read" onclick="switchSettingsSection('knowledge')">
                                     <span data-i18n="settings.nav.knowledge">知识库</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="c2" onclick="switchSettingsSection('c2')">
+                                <div class="settings-nav-item" data-section="c2" data-require-permission="config:read" onclick="switchSettingsSection('c2')">
                                     <span data-i18n="settings.nav.c2">C2</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="robots" onclick="switchSettingsSection('robots')">
+                                <div class="settings-nav-item" data-section="robots" data-require-permission="config:read" onclick="switchSettingsSection('robots')">
                                     <span data-i18n="settings.nav.robots">机器人设置</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="terminal" onclick="switchSettingsSection('terminal')">
+                                <div class="settings-nav-item" data-section="terminal" data-require-permission="config:read" onclick="switchSettingsSection('terminal')">
                                     <span data-i18n="settings.nav.terminal">终端</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="security" onclick="switchSettingsSection('security')">
+                                <div class="settings-nav-item" data-section="security" data-require-permission="config:read" onclick="switchSettingsSection('security')">
                                     <span data-i18n="settings.nav.security">安全设置</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="audit" onclick="switchSettingsSection('audit')">
+                                <div class="settings-nav-item" data-section="audit" data-require-permission="config:read" onclick="switchSettingsSection('audit')">
                                     <span data-i18n="settings.nav.audit">日志审计</span>
                                 </div>
-                                <div class="settings-nav-item" data-section="storage" onclick="switchSettingsSection('storage')">
+                                <div class="settings-nav-item" data-section="storage" data-require-permission="storage:read" onclick="switchSettingsSection('storage')">
                                     <span data-i18n="settings.nav.storage">存储清理</span>
                                 </div>
                                 <div class="settings-nav-item" data-section="update" data-require-permission="update:read" onclick="switchSettingsSection('update')">
@@ -7038,7 +7038,7 @@
     <script src="/static/js/hitl.js?v=20260819-1"></script>
     <script src="/static/js/tool-guard.js?v=20261010-conflict"></script>
     <script src="/static/js/token-usage.js?v=20261012-token-analytics"></script>
-    <script src="/static/js/settings.js?v=20261011-token-settings"></script>
+    <script src="/static/js/settings.js?v=20261017-storage-access"></script>
     <script src="/static/js/test-proxy.js?v=20261012-readiness"></script>
     <script src="/static/js/audit-datetime-picker.js"></script>
     <script src="/static/js/audit.js"></script>

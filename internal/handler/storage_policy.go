@@ -19,37 +19,41 @@ import (
 // storage:write, without granting access to unrelated configuration secrets.
 func (h *StorageHandler) UpdatePolicy(c *gin.Context) {
 	if h.cfg == nil || strings.TrimSpace(h.configPath) == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage configuration is unavailable"})
+		storagePolicyError(c, http.StatusServiceUnavailable, "storage_unavailable", "storage configuration is unavailable")
 		return
 	}
-	var patch config.StorageConfig
+	var patch *config.StorageConfig
 	decoder := json.NewDecoder(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&patch); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid storage policy: " + err.Error()})
+	if err := decoder.Decode(&patch); err != nil || patch == nil {
+		storagePolicyError(c, http.StatusBadRequest, "invalid_storage_policy", "storage policy must be a valid JSON object with supported fields")
 		return
 	}
 	if err := decoder.Decode(new(interface{})); err != io.EOF {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "storage policy must contain one JSON object"})
+		storagePolicyError(c, http.StatusBadRequest, "invalid_storage_policy", "storage policy must contain one JSON object")
 		return
 	}
 
 	configFileMu.Lock()
 	defer configFileMu.Unlock()
 	if err := h.cfg.UpdateStoragePolicy(func(current config.StorageConfig) (config.StorageConfig, error) {
-		next := mergeStoragePolicy(current, patch)
+		next := mergeStoragePolicy(current, *patch)
 		return next, saveStoragePolicy(h.configPath, next)
 	}); err != nil {
 		if h.logger != nil {
 			h.logger.Error("save storage policy failed", zap.Error(err))
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage policy could not be saved"})
+		storagePolicyError(c, http.StatusInternalServerError, "storage_save_failed", "storage policy could not be saved")
 		return
 	}
 	if h.audit != nil {
 		h.audit.RecordOK(c, "storage", "update_policy", "Updated storage retention policy", "storage", "", nil)
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "storage policy saved"})
+}
+
+func storagePolicyError(c *gin.Context, status int, code, message string) {
+	c.JSON(status, gin.H{"code": code, "message": message, "error": message})
 }
 
 func mergeStoragePolicy(current, patch config.StorageConfig) config.StorageConfig {

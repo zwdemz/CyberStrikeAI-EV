@@ -531,6 +531,13 @@ async function initPage(pageId) {
             }
             break;
         case 'settings':
+            if (typeof hasPermission === 'function' && !hasPermission('config:read')) {
+                if (typeof defaultSettingsSection === 'function' && typeof switchSettingsSection === 'function') {
+                    const section = defaultSettingsSection();
+                    if (section) switchSettingsSection(section);
+                }
+                break;
+            }
             // 初始化设置页面（不需要加载工具列表）
             if (typeof loadConfig === 'function') {
                 loadConfig(false);

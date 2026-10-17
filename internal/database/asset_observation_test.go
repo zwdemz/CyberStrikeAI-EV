@@ -51,3 +51,57 @@ func TestAssetScanCountsCanonicalFindingObservedInLaterConversation(t *testing.T
 		t.Fatalf("asset count/risk missed later observation: %#v, err = %v", asset, err)
 	}
 }
+
+func TestObservationLinkedAssetCacheRefreshesOnFindingChangeAndDelete(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "assets.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	project, err := db.CreateProject(&Project{Name: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := db.CreateConversation("first", ConversationCreateMeta{ProjectID: project.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.CreateConversation("second", ConversationCreateMeta{ProjectID: project.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := []*Asset{{ProjectID: project.ID, Domain: "example.invalid", Port: 443, Protocol: "https"}}
+	if _, err := db.UpsertAssets(assets, "", true); err != nil {
+		t.Fatal(err)
+	}
+	finding, err := db.CreateVulnerability(&Vulnerability{ProjectID: project.ID, ConversationID: first.ID, Title: "finding", Target: "https://example.invalid/a", Type: "test", FindingKey: "stable-key", Severity: "critical"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkAssetScanned(assets[0].ID, second.ID, "", "", RBACListAccess{Scope: RBACScopeAll}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateVulnerability(&Vulnerability{ProjectID: project.ID, ConversationID: second.ID, Title: "finding", Target: "https://example.invalid/a", Type: "test", FindingKey: "stable-key", Severity: "critical"}); err != nil {
+		t.Fatal(err)
+	}
+	assertAsset := func(wantCount int, wantRisk string) {
+		t.Helper()
+		asset, err := db.GetAsset(assets[0].ID, RBACListAccess{Scope: RBACScopeAll})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if asset.VulnerabilityCount != wantCount || asset.RiskLevel != wantRisk {
+			t.Fatalf("asset count=%d risk=%s, want %d %s", asset.VulnerabilityCount, asset.RiskLevel, wantCount, wantRisk)
+		}
+	}
+	assertAsset(1, "critical")
+	finding.Severity = "low"
+	if err := db.UpdateVulnerability(finding.ID, finding); err != nil {
+		t.Fatal(err)
+	}
+	assertAsset(1, "low")
+	if err := db.DeleteVulnerability(finding.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertAsset(0, "normal")
+}
