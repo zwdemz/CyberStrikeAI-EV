@@ -277,6 +277,10 @@ func (h *ConversationHandler) GetConversation(c *gin.Context) {
 
 // GetConversationPlanTasks returns the task list maintained by the agent's
 // TaskCreate/TaskUpdate tools for this conversation.
+// snapshot=latest explicitly reads the last saved conversation board, including
+// stopped runs; limit/offset bound that view. It is not a per-turn historical
+// snapshot. Invalid snapshot pagination returns 400; existing live-chat behavior
+// remains unchanged when snapshot is omitted. All paths require conversation access.
 func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	session, ok := security.CurrentSession(c)
@@ -288,17 +292,41 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "对话不存在"})
 		return
 	}
+	snapshot := c.Query("snapshot")
+	if snapshot != "" && snapshot != "latest" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task snapshot"})
+		return
+	}
+	limit, offset := 50, 0
+	if snapshot == "latest" {
+		var parseErr error
+		limit, parseErr = strconv.Atoi(c.DefaultQuery("limit", "50"))
+		if parseErr != nil || limit < 1 || limit > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task page limit"})
+			return
+		}
+		offset, parseErr = strconv.Atoi(c.DefaultQuery("offset", "0"))
+		if parseErr != nil || offset < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task page offset"})
+			return
+		}
+	}
 	running := false
 	startedAt := time.Time{}
 	if h.taskState != nil {
 		running, startedAt = h.taskState.ConversationTaskRuntimeState(id)
 	}
-	if !running {
+	if !running && snapshot == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"tasks": []database.ConversationPlanTask{}, "total": 0,
 			"completed": 0, "activeStep": 0, "running": false,
 		})
 		return
+	}
+	if snapshot == "latest" {
+		// An explicit saved-board view must not hide the final plan after a run
+		// stops. Its running flag is still derived from the real runtime state.
+		startedAt = time.Time{}
 	}
 	tasks, err := h.db.ListConversationPlanTasksSince(id, startedAt)
 	if err != nil {
@@ -329,13 +357,22 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 	if activeStep == 0 && len(tasks) > 0 {
 		activeStep = len(tasks)
 	}
+	total := len(tasks)
+	if snapshot == "latest" {
+		start := min(offset, total)
+		end := start + min(limit, total-start)
+		tasks = tasks[start:end]
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"tasks":      tasks,
-		"total":      len(tasks),
+		"total":      total,
 		"completed":  completed,
 		"activeStep": activeStep,
-		"running":    true,
+		"running":    running,
+		"snapshot":   snapshot,
+		"limit":      limit,
+		"offset":     offset,
 	})
 }
 

@@ -4,7 +4,8 @@
     const PAGE_SIZE = 50;
     const state = { conversations: [], conversation: '', turns: [], turn: '', details: [], summary: {},
         listOffset: 0, listTotal: 0, offset: 0, total: 0, before: '', filter: 'all', auto: true,
-        failures: 0, updated: null, controller: null, timer: null, epoch: 0, active: false };
+        failures: 0, updated: null, controller: null, timer: null, epoch: 0, active: false,
+        tasks: [], taskOffset: 0, taskTotal: 0, boardRunning: false, view: 'board', focus: null };
     const terminal = new Set(['completed', 'failed', 'cancelled', 'timeout']);
     const statusKeys = new Set(['completed', 'failed', 'cancelled', 'timeout', 'running', 'pending', 'queued',
         'blocked', 'result_missing', 'background_running', 'hard_timeout', 'orphaned']);
@@ -56,6 +57,65 @@
         state.conversations = []; state.turns = []; state.details = []; state.summary = {};
         state.conversation = ''; state.turn = ''; state.total = 0; state.before = '';
         state.listOffset = 0; state.listTotal = 0; state.offset = 0;
+        state.tasks = []; state.taskOffset = 0; state.taskTotal = 0; state.boardRunning = false;
+        state.focus = null;
+    }
+
+    /** Map saved task states to board lanes. Completed is awaiting independent
+     * verification; this projection never claims evidence has been verified. */
+    function boardTask(raw) {
+        raw = raw && typeof raw === 'object' ? raw : {};
+        raw = { ...raw, status: String(raw.status || '').trim().toLowerCase() };
+        const known = ['pending', 'in_progress', 'completed', 'deleted'].includes(raw.status);
+        const recordedStatus = known ? raw.status : 'unknown';
+        return { id: String(raw.id || '').slice(0, 80), subject: String(raw.subject || text('untitledTask')).slice(0, 200),
+            description: String(raw.description || '').slice(0, 600), owner: String(raw.owner || '').slice(0, 80),
+            blockedBy: (Array.isArray(raw.blockedBy) ? raw.blockedBy : []).slice(0, 10).map(id => String(id).slice(0, 40)),
+            status: recordedStatus, lane: recordedStatus === 'in_progress' ? 'execute' : recordedStatus === 'completed' ? 'verify' : 'plan' };
+    }
+
+    /** Build a bounded topology from recorded Agent/tool metadata only. Edges
+     * never imply delegation, target reachability or unrecorded tool activity. */
+    function topology(details) {
+        const agents = new Set(), tools = new Set(), links = new Map();
+        details.forEach(detail => {
+            const data = detail.data && typeof detail.data === 'object' ? detail.data : {};
+            const agent = typeof data.einoAgent === 'string' ? data.einoAgent.trim().slice(0, 80) : '';
+            if (agent) agents.add(agent);
+            if (!toolEvents.has(detail.eventType)) return;
+            const tool = typeof data.toolName === 'string' ? data.toolName.trim().slice(0, 100) : '';
+            if (!tool) return;
+            tools.add(tool);
+            if (agent) links.set(JSON.stringify([agent, tool]), { agent, tool });
+        });
+        const visibleAgents = [...agents].slice(0, 5), visibleTools = [...tools].slice(0, 5);
+        return { agents: visibleAgents, tools: visibleTools,
+            links: [...links.values()].filter(link => visibleAgents.includes(link.agent) && visibleTools.includes(link.tool)),
+            omitted: agents.size + tools.size - visibleAgents.length - visibleTools.length };
+    }
+
+    function renderDispatch(executions) {
+        const graph = topology(state.details);
+        const y = (index, length) => 30 + (index + 1) * 300 / (length + 1);
+        const positions = { agent: new Map(graph.agents.map((name, index) => [name, y(index, graph.agents.length)])),
+            tool: new Map(graph.tools.map((name, index) => [name, y(index, graph.tools.length)])) };
+        const node = (kind, name, index) => '<button type="button" class="execution-graph-node" data-kind="' + kind + '" data-index="' + index +
+            '" title="' + escape(name) + '" aria-pressed="' + String(!!state.focus && state.focus.kind === kind && state.focus.name === name) + '" style="left:' + (kind === 'agent' ? 45 : 80) + '%;top:' + (positions[kind].get(name) / 360 * 100) + '%"><small>' +
+            escape(text(kind === 'agent' ? 'graphAgent' : 'graphTool')) + '</small><strong>' + escape(name) + '</strong></button>';
+        let paths = graph.agents.map(name => '<path d="M 180 180 C 250 180 260 ' + positions.agent.get(name) + ' 360 ' + positions.agent.get(name) + '"/>').join('');
+        paths += graph.links.map(link => '<path d="M 360 ' + positions.agent.get(link.agent) + ' C 490 ' + positions.agent.get(link.agent) + ' 510 ' + positions.tool.get(link.tool) + ' 640 ' + positions.tool.get(link.tool) + '"/>').join('');
+        el('graph').innerHTML = '<svg viewBox="0 0 800 360" preserveAspectRatio="none" aria-hidden="true"><g class="execution-graph-guides"><circle cx="150" cy="180" r="65"/><circle cx="150" cy="180" r="105"/><circle cx="150" cy="180" r="145"/></g><g class="execution-graph-links">' + paths +
+            '</g></svg><div class="execution-graph-core"><small>CyberStrikeAI-EV</small><strong>' + escape(text('graphContext')) + '</strong><span>' + escape(state.conversation ? text('selected') : text('select')) + '</span></div>' +
+            graph.agents.map((name, index) => node('agent', name, index)).join('') + graph.tools.map((name, index) => node('tool', name, index)).join('') +
+            (!graph.agents.length && !graph.tools.length ? '<p class="execution-graph-empty">' + escape(text('graphEmpty')) + '</p>' : '');
+        el('graph-note').textContent = text('graphScope') + (graph.omitted ? ' · +' + graph.omitted + ' ' + text('graphOmitted') : '');
+        const records = state.details.map(detail => ({ detail, view: describe(detail, executions) }));
+        const filtered = state.focus ? records.filter(item => state.focus.kind === 'agent' ? item.view.agent === state.focus.name : item.view.group === 'tools' && item.view.title === state.focus.name) : records;
+        el('feed-title').textContent = state.focus ? state.focus.name : text('feedTitle');
+        el('feed-reset').hidden = !state.focus;
+        el('feed').innerHTML = filtered.slice(-8).reverse().map(({ detail, view }) => '<li><div><strong>' + escape(view.title) + '</strong>' + badge(view.outcome) + '</div><p><time>' + escape(time(detail.createdAt)) + '</time><span>' + escape(view.agent || text(view.group)) + '</span></p></li>').join('') ||
+            '<li class="execution-lane-empty">' + escape(text('noEvents')) + '</li>';
+        el('dispatch-status').textContent = text(state.summary.status === 'running' ? 'dispatchActive' : 'dispatchRecorded');
     }
 
     /** Fetch through existing authentication. Abort/failed responses never become empty success. */
@@ -73,9 +133,9 @@
     }
 
     function schedule() {
-        if (!state.active || document.hidden || !state.auto || !state.turn || state.failures >= 3 ||
-            terminal.has(state.summary.status)) return;
-        state.timer = setTimeout(() => run(loadTurn), 10000 * Math.max(1, state.failures + 1));
+        if (!state.active || document.hidden || !state.auto || !state.conversation || state.failures >= 3 ||
+            (!state.boardRunning && (!state.turn || terminal.has(state.summary.status)))) return;
+        state.timer = setTimeout(() => run(state.turn ? loadTurn : loadBoard), 10000 * Math.max(1, state.failures + 1));
     }
 
     /** Serialize refreshes, preserve a last-good snapshot on errors, pause after three failures. */
@@ -135,7 +195,15 @@
         state.turns = state.turns.map(message => ({ id: message.id, createdAt: message.createdAt }));
         state.turn = state.turns.length ? state.turns[0].id : '';
         state.offset = 0; state.details = []; state.summary = {}; state.total = 0;
-        if (state.turn) await loadTurn(controller);
+        if (state.turn) await loadTurn(controller); else await loadBoard(controller);
+    }
+
+    async function loadBoard(controller, offset = state.taskOffset) {
+        if (!state.conversation) return;
+        const params = new URLSearchParams({ snapshot: 'latest', limit: String(PAGE_SIZE), offset: String(offset) });
+        const result = await read('/api/conversations/' + encodeURIComponent(state.conversation) + '/plan-tasks?' + params, controller);
+        state.tasks = (Array.isArray(result.tasks) ? result.tasks : []).map(boardTask).filter(task => task.status !== 'deleted');
+        state.taskOffset = offset; state.taskTotal = count(result.total); state.boardRunning = result.running === true;
     }
 
     async function loadTurn(controller, offset = state.offset) {
@@ -144,6 +212,7 @@
         // Sequential reads avoid competing refreshes and do not request full histories.
         const summary = await read(base + '?summary=1', controller);
         const result = await read(base + '?limit=' + PAGE_SIZE + '&offset=' + offset, controller);
+        await loadBoard(controller);
         state.offset = offset;
         state.summary = summary.summary || {};
         state.details = Array.isArray(result.processDetails) ? result.processDetails : [];
@@ -173,22 +242,40 @@
         el('next').disabled = state.offset + PAGE_SIZE >= state.total;
         el('range').textContent = state.total ? (state.offset + 1) + '–' + Math.min(state.offset + PAGE_SIZE, state.total) + ' / ' + state.total : '0 / 0';
         el('open').disabled = !state.conversation;
+        el('board-auto').checked = state.auto;
+        el('board').hidden = state.view !== 'board';
+        el('timeline').hidden = state.view !== 'timeline';
+        el('stats').hidden = state.view !== 'timeline';
+        ['board', 'timeline'].forEach(name => {
+            const selected = state.view === name;
+            el('tab-' + name).setAttribute('aria-selected', String(selected));
+            el('tab-' + name).tabIndex = selected ? 0 : -1;
+        });
+        el('board-prev').disabled = state.taskOffset === 0;
+        el('board-next').disabled = state.taskOffset + PAGE_SIZE >= state.taskTotal;
+        el('board-range').textContent = state.taskTotal ? (state.taskOffset + 1) + '–' + Math.min(state.taskOffset + PAGE_SIZE, state.taskTotal) + ' / ' + state.taskTotal : '0 / 0';
+        el('board-runtime').textContent = text(state.boardRunning ? 'boardLive' : 'boardSaved');
+        el('board-columns').innerHTML = ['plan', 'execute', 'verify'].map(lane => {
+            const tasks = state.tasks.filter(task => task.lane === lane);
+            return '<section class="execution-lane" data-lane="' + lane + '"><header><h3>' + escape(text(lane)) + '</h3><span>' + tasks.length + '</span></header>' +
+                '<p class="execution-lane-hint">' + escape(text(lane + 'Hint')) + '</p><div class="execution-lane-cards">' +
+                (tasks.length ? tasks.map(task => '<details class="execution-task-card"><summary><span class="execution-task-id">#' + escape(task.id) + '</span><strong>' + escape(task.subject) +
+                    '</strong><span class="execution-task-state">' + escape(text(task.status === 'completed' ? 'awaitingVerification' : task.status === 'in_progress' ? state.boardRunning ? 'taskExecuting' : 'taskPaused' : task.status === 'pending' ? 'taskPlanned' : 'unknown')) + '</span></summary>' +
+                    '<p>' + escape(task.description || text('noDescription')) + '</p>' + (task.owner ? '<p>' + escape(text('owner')) + ': ' + escape(task.owner) + '</p>' : '') +
+                    (task.blockedBy.length ? '<p>' + escape(text('blockedBy')) + ': ' + escape(task.blockedBy.join(', ')) + '</p>' : '') + '</details>').join('') : '<div class="execution-lane-empty">' + escape(text('noTasks')) + '</div>') + '</div></section>';
+        }).join('');
         const executions = Array.isArray(summary.toolExecutions) ? summary.toolExecutions : [];
         const failed = executions.filter(item => ['failed', 'blocked', 'timeout', 'hard_timeout', 'orphaned', 'result_missing'].includes(item.status)).length;
         el('stats').innerHTML = [ ['turnStatus', state.turn ? badge(summary.status) : '—'],
             ['iterations', count(summary.iterationCount)], ['actions', count(summary.toolCount)],
             ['issues', failed], ['duration', summary.durationMs > 0 ? (summary.durationMs / 1000).toFixed(1) + ' s' : '—'] ]
             .map(([key, value]) => '<div class="execution-stat"><span>' + escape(text(key)) + '</span><strong>' + value + '</strong></div>').join('');
-        el('stages').innerHTML = ['selected', 'model', 'tools', 'outcome'].map((key, index) => {
-            const recorded = [!!state.turn, count(summary.iterationCount) > 0, count(summary.toolCount) > 0, terminal.has(summary.status)][index];
-            return '<div class="execution-stage' + (recorded ? ' recorded' : '') + '"><span>' + (index + 1) + '</span>' + escape(text(key)) +
-                '<small>' + escape(text(recorded ? 'recorded' : 'noRecord')) + '</small></div>';
-        }).join('');
         const byDetail = new Map();
         executions.forEach(item => {
             if (item.processDetailId) byDetail.set(String(item.processDetailId), item);
             if (item.resultDetailId) byDetail.set(String(item.resultDetailId), item);
         });
+        renderDispatch(byDetail);
         const items = state.details.map(detail => ({ detail, view: describe(detail, byDetail) }))
             .filter(item => state.filter === 'all' || (state.filter === 'issues' ? item.view.issue : item.view.group === state.filter));
         el('events').innerHTML = items.length ? items.map(({ detail, view }) =>
@@ -211,8 +298,11 @@
             '<label>' + escape(text('turn')) + '<select id="execution-turn"></select></label><button id="execution-latest-turns" type="button">' + escape(text('latestTurns')) + '</button><button id="execution-older-turns" type="button">' + escape(text('olderTurns')) + '</button></div></section>' +
             '<div id="execution-notice" class="execution-notice" role="status" aria-live="polite"></div><div id="execution-content">' +
             '<section id="execution-stats" class="execution-stats" aria-label="' + escape(text('overview')) + '"></section>' +
-            '<section class="execution-panel"><h2>' + escape(text('stages')) + '</h2><div id="execution-stages" class="execution-stages"></div></section>' +
-            '<section class="execution-panel"><div class="execution-toolbar"><h2>' + escape(text('timeline')) + '</h2><label>' + escape(text('filter')) +
+            '<div class="execution-tabs" role="tablist" aria-label="' + escape(text('viewMode')) + '"><button id="execution-tab-board" type="button" role="tab" aria-controls="execution-board">' + escape(text('board')) + '</button><button id="execution-tab-timeline" type="button" role="tab" aria-controls="execution-timeline">' + escape(text('timeline')) + '</button></div>' +
+            '<section id="execution-board" role="tabpanel" aria-labelledby="execution-tab-board" tabindex="0" class="execution-panel"><div class="execution-toolbar"><div><h2>' + escape(text('dispatchTitle')) + '</h2><p id="execution-board-runtime" class="execution-lane-hint"></p></div><label class="execution-auto"><input id="execution-board-auto" type="checkbox">' + escape(text('auto')) + '</label><button id="execution-board-refresh" type="button">' + escape(text('refresh')) + '</button></div>' +
+            '<div class="execution-dispatch"><figure class="execution-graph-panel"><figcaption><span>' + escape(text('graphTitle')) + '</span><span id="execution-dispatch-status"></span></figcaption><div id="execution-graph" class="execution-graph" role="group" aria-label="' + escape(text('graphTitle')) + '"></div><p id="execution-graph-note"></p></figure><aside class="execution-feed-panel" aria-label="' + escape(text('feedTitle')) + '"><div><h3 id="execution-feed-title"></h3><button id="execution-feed-reset" type="button">' + escape(text('all')) + '</button></div><ol id="execution-feed"></ol></aside></div>' +
+            '<h2 class="execution-board-heading">' + escape(text('boardTitle')) + '</h2><p class="execution-board-scope">' + escape(text('boardScope')) + '</p><div id="execution-board-columns" class="execution-board-columns"></div><footer class="execution-pagination"><button id="execution-board-prev" type="button">' + escape(text('previous')) + '</button><span id="execution-board-range"></span><button id="execution-board-next" type="button">' + escape(text('next')) + '</button></footer></section>' +
+            '<section id="execution-timeline" role="tabpanel" aria-labelledby="execution-tab-timeline" tabindex="0" class="execution-panel" hidden><div class="execution-toolbar"><h2>' + escape(text('timeline')) + '</h2><label>' + escape(text('filter')) +
             '<select id="execution-filter">' + ['all', 'model', 'tools', 'issues', 'control'].map(key => '<option value="' + key + '">' + escape(text(key)) + '</option>').join('') +
             '</select></label><label class="execution-auto"><input id="execution-auto" type="checkbox">' + escape(text('auto')) + '</label><button id="execution-refresh" type="button">' + escape(text('refresh')) + '</button></div>' +
             '<ol id="execution-events" class="execution-events"></ol><footer class="execution-pagination"><button id="execution-prev" type="button">' + escape(text('previous')) + '</button>' +
@@ -220,6 +310,8 @@
         el('search-form').addEventListener('submit', event => { event.preventDefault(); state.listOffset = 0; run(loadConversations); });
         el('conversation').addEventListener('change', () => {
             state.conversation = el('conversation').value; state.turn = ''; state.turns = []; state.details = []; state.summary = {}; state.total = 0; state.before = '';
+            state.tasks = []; state.taskTotal = 0; state.taskOffset = 0; state.boardRunning = false;
+            state.focus = null;
             render(); if (state.conversation) run(loadTurns); else cancel();
         });
         el('turn').addEventListener('change', () => { state.turn = el('turn').value; state.offset = 0; state.details = []; state.summary = {}; state.total = 0; render(); if (state.turn) run(loadTurn); else cancel(); });
@@ -227,6 +319,31 @@
         el('latest-turns').addEventListener('click', () => run(loadTurns));
         el('filter').addEventListener('change', () => { state.filter = el('filter').value; render(); });
         el('auto').addEventListener('change', () => { state.auto = el('auto').checked; cancel(); if (state.auto) run(loadTurn); });
+        el('board-auto').addEventListener('change', () => { state.auto = el('board-auto').checked; cancel(); render(); if (state.auto) run(state.turn ? loadTurn : loadBoard); });
+        el('board-refresh').addEventListener('click', () => { state.failures = 0; run(state.conversation ? state.turn ? loadTurn : loadBoard : loadConversations); });
+        el('graph').addEventListener('click', event => {
+            const button = event.target.closest('button[data-kind]');
+            if (!button) return;
+            const graph = topology(state.details), kind = button.dataset.kind;
+            if (kind !== 'agent' && kind !== 'tool') return;
+            const names = kind === 'agent' ? graph.agents : graph.tools;
+            const name = names[Number(button.dataset.index)];
+            if (name) {
+                state.focus = { kind, name }; render();
+                el('graph').querySelector('button[data-kind="' + kind + '"][data-index="' + button.dataset.index + '"]').focus({ preventScroll: true });
+            }
+        });
+        el('feed-reset').addEventListener('click', () => { state.focus = null; render(); });
+        ['board', 'timeline'].forEach((name, index) => {
+            const select = () => { state.view = name; render(); };
+            el('tab-' + name).addEventListener('click', select);
+            el('tab-' + name).addEventListener('keydown', event => {
+                if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                    event.preventDefault(); state.view = index ? 'board' : 'timeline'; render(); el('tab-' + state.view).focus();
+                }
+            });
+        });
+        [['board-prev', -PAGE_SIZE], ['board-next', PAGE_SIZE]].forEach(([id, delta]) => el(id).addEventListener('click', () => run(controller => loadBoard(controller, Math.max(0, state.taskOffset + delta)))));
         el('refresh').addEventListener('click', () => { state.failures = 0; run(state.turn ? loadTurn : loadConversations); });
         [['list-prev', -25], ['list-next', 25]].forEach(([id, delta]) => el(id).addEventListener('click', () => { state.listOffset = Math.max(0, state.listOffset + delta); run(loadConversations); }));
         [['prev', -PAGE_SIZE], ['next', PAGE_SIZE]].forEach(([id, delta]) => el(id).addEventListener('click', () => run(controller => loadTurn(controller, Math.max(0, state.offset + delta)))));
@@ -248,6 +365,7 @@
         const linked = params.get('conversation');
         if (linked && linked !== state.conversation) {
             state.conversation = linked; state.turn = ''; state.turns = []; state.details = []; state.summary = {};
+            state.tasks = []; state.taskOffset = 0; state.taskTotal = 0; state.boardRunning = false;
         }
         render();
         run(async controller => { const selected = state.conversation; await loadConversations(controller); if (selected) await loadTurns(controller); });
@@ -264,5 +382,5 @@
     document.addEventListener('visibilitychange', () => { cancel(); if (state.active && !document.hidden) run(state.turn ? loadTurn : loadConversations); });
     document.addEventListener('languagechange', () => { if (state.active) { mount(); render(); } });
     // A pure projection is shared with regression tests; it never returns raw payloads.
-    if (typeof module !== 'undefined' && module.exports) module.exports = { describe, status, count };
+    if (typeof module !== 'undefined' && module.exports) module.exports = { describe, status, count, boardTask, topology };
 })();

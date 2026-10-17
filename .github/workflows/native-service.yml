@@ -43,6 +43,8 @@ jobs:
         run: go test -p 2 ./internal/security ./tests/internal/handler -run 'TestStorage|TestRBAC' -count=1 -timeout 3m
       - name: Test rejected TLS request delivery
         run: go test ./internal/security -run 'TestAuthTLSClosingBody|TestRejectedTLSBodyBounds' -count=3 -timeout 1m
+      - name: Test saved conversation board access
+        run: go test ./tests/internal/handler ./internal/handler -run 'TestConversationBoardSnapshot|TestGetConversationPlanTasks' -count=1 -timeout 2m
       - name: Test context and update output security
         run: go test -p 2 ./internal/project ./internal/update ./internal/handler ./internal/multiagent -run 'Resume|SessionContextReloads|CompactionRefreshRestores|UpdateCredential|UpdateRedaction|RedactSource' -count=1 -timeout 3m
       - name: Test native Windows execution and terminal

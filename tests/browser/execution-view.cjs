@@ -34,13 +34,19 @@ const root = path.resolve(__dirname, '../..');
                     const params = new URLSearchParams(url.split('?')[1]);
                     let value;
                     if (url.startsWith('/api/conversations?')) value = { conversations: [{ id: 'first', title: '授权站点评估 · 执行记录' }, { id: 'second', title: '第二会话' }], total: 2 };
+                    else if (url.includes('/plan-tasks?')) value = { total: 3, running, tasks: [
+                        { id: '1', subject: '核对授权范围与已有事实', description: '只读取已授权项目的任务记录。', status: 'pending', blockedBy: ['2'] },
+                        { id: '2', subject: '整理资产与工具执行结果', description: '汇总已记录的动作与结果，不重复执行。', status: window.taskFinished ? 'completed' : 'in_progress', owner: 'cyberstrike-eino-single' },
+                        { id: '3', subject: '核对证据与实际影响', description: '完成执行后，等待人工独立核对证据。', status: 'completed' },
+                        { id: '4', subject: '已删除的计划', status: 'deleted' }
+                    ] };
                     else if (url.startsWith('/api/conversations/')) value = { messages: [{ id: url.includes('second') ? 'turn-second' : 'turn-first', role: 'assistant', createdAt: timestamp, content: 'SECRET-CONTENT', reasoningContent: 'SECRET-REASONING' }], messagePage: { hasMore: false } };
                     else if (params.has('summary')) value = { summary: { status: running ? 'running' : 'completed', iterationCount: 4, toolCount: 3, durationMs: 12500,
                         toolExecutions: [{ processDetailId: 'event-0', status: 'completed' }, { processDetailId: 'event-1', status: 'failed' }] } };
                     else {
                         const offset = Number(params.get('offset')); const length = offset ? 5 : 50;
                         value = { total: 55, processDetails: Array.from({ length }, (_, i) => ({ id: 'event-' + (offset + i), eventType: i < 2 ? 'tool_call' : i === 2 ? 'hitl_interrupt' : i % 4 === 0 ? 'iteration' : 'tool_result',
-                            createdAt: timestamp, message: 'SECRET-MESSAGE', data: { toolName: i === 0 && !window.safeScreenshot ? '<img src=x onerror=alert(1)>' : 'query_assets', einoAgent: 'cyberstrike-eino-single', success: true, arguments: 'SECRET-ARGUMENT', resultPreview: 'SECRET-OUTPUT' } })) };
+                            createdAt: timestamp, message: 'SECRET-MESSAGE', data: { toolName: i === 0 && !window.safeScreenshot ? '<img src=x onerror=alert(1)>' : i < 2 ? 'query_assets' : ['query_assets', 'search_knowledge_base', 'get_project_fact', 'http-framework-test'][i % 4], einoAgent: i < 2 ? 'cyberstrike-eino-single' : ['cyberstrike-eino-single', 'recon-agent', 'evidence-agent'][i % 3], success: true, arguments: 'SECRET-ARGUMENT', resultPreview: 'SECRET-OUTPUT' } })) };
                     }
                     return { ok: true, json: async () => value };
                 } finally { activeReads--; }
@@ -49,12 +55,30 @@ const root = path.resolve(__dirname, '../..');
         await page.addScriptTag({ path: root + '/web/static/js/execution-view.js' });
         await page.evaluate(() => window.initExecutionView());
         await page.waitForFunction(() => document.querySelectorAll('.execution-event').length === 50);
+        assert.equal(await page.locator('#execution-board').isVisible(), true);
+        assert.equal(await page.locator('#execution-graph img').count(), 0);
+        await page.locator('#execution-graph button[data-kind="agent"]').first().click();
+        assert.equal(await page.locator('#execution-feed-title').innerText(), 'cyberstrike-eino-single');
+        await page.locator('#execution-feed-reset').click();
+        assert.equal(await page.locator('[data-lane="plan"] .execution-task-card').count(), 1);
+        assert.equal(await page.locator('[data-lane="execute"] .execution-task-card').count(), 1);
+        assert.equal(await page.locator('[data-lane="verify"] .execution-task-card').count(), 1);
+        assert.ok((await page.locator('[data-lane="verify"]').innerText()).includes('待核验'));
+        assert.ok((await page.locator('[data-lane="execute"]').innerText()).includes('当前已停止'));
+        await page.evaluate(() => { taskFinished = true; });
+        await page.locator('#execution-board-refresh').click();
+        await page.waitForFunction(() => document.querySelectorAll('[data-lane="verify"] .execution-task-card').length === 2);
+        assert.equal(await page.locator('[data-lane="execute"] .execution-task-card').count(), 0);
+        await page.evaluate(() => { taskFinished = false; });
+        await page.locator('#execution-board-refresh').click();
+        await page.waitForFunction(() => document.querySelectorAll('[data-lane="execute"] .execution-task-card').length === 1);
+        await page.locator('#execution-tab-timeline').click();
         assert.equal(await page.locator('#execution-events img').count(), 0);
         assert.ok((await page.locator('#execution-events').innerText()).includes('<img src=x'));
         assert.ok(!(await page.locator('#page-execution-view').innerText()).includes('SECRET-'));
         assert.equal(await page.locator('.execution-event').first().locator('[data-status="completed"]').count(), 1);
         assert.equal(await page.evaluate(() => peakReads), 1);
-        assert.equal(await page.evaluate(() => calls.length), 4, 'initial reads must not duplicate the turn');
+        assert.equal(await page.evaluate(() => calls.filter(url => url.startsWith('/api/conversations?')).length), 1, 'board refresh duplicated conversation discovery');
         await page.locator('#execution-filter').selectOption('issues');
         assert.equal(await page.locator('.execution-event').count(), 1);
         await page.locator('#execution-filter').selectOption('all');
@@ -79,10 +103,12 @@ const root = path.resolve(__dirname, '../..');
         await page.waitForFunction(() => !document.getElementById('execution-events').textContent.includes('<img'));
         if (folder) {
             fs.mkdirSync(folder, { recursive: true });
+            await page.setViewportSize({ width: 1440, height: 1600 });
             for (const theme of ['light', 'dark']) {
+                await page.locator('#execution-tab-board').click();
                 await page.evaluate(value => document.documentElement.dataset.theme = value, theme);
                 await page.evaluate(() => document.getElementById('page-execution-view').scrollTop = 0);
-                await page.screenshot({ path: path.join(folder, theme + '.png'), fullPage: false });
+                await page.locator('#execution-board').screenshot({ path: path.join(folder, theme + '.png') });
             }
         }
         await page.setViewportSize({ width: 375, height: 812 });
@@ -91,6 +117,7 @@ const root = path.resolve(__dirname, '../..');
         await page.evaluate(() => document.getElementById('page-execution-view').scrollTop = 0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile page overflow');
         if (folder) await page.screenshot({ path: path.join(folder, 'mobile.png'), fullPage: false });
+        await page.locator('#execution-tab-timeline').click();
         await page.setViewportSize({ width: 1280, height: 720 });
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'desktop page overflow');
 
