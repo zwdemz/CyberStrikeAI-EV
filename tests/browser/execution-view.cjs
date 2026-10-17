@@ -27,6 +27,7 @@ const root = path.resolve(__dirname, '../..');
             window.navigateToConversation = id => { window.openedConversation = id; };
             window.activeReads = 0; window.peakReads = 0; window.calls = []; window.failReads = false;
             window.running = false; window.slowConversation = ''; window.responseStatus = 200;
+            window.evidenceLinks = []; window.partialBoard = false; window.latestTurn = '';
             const timestamp = new Date('2026-10-17T04:00:00Z').toISOString();
             window.apiFetch = async (url, options) => {
                 calls.push(url); activeReads++; peakReads = Math.max(peakReads, activeReads);
@@ -42,18 +43,26 @@ const root = path.resolve(__dirname, '../..');
                     const params = new URLSearchParams(url.split('?')[1]);
                     let value;
                     if (url.startsWith('/api/conversations?')) value = { conversations: [{ id: 'first', title: '授权站点评估 · 执行记录' }, { id: 'second', title: '第二会话' }], total: 2 };
-                    else if (url.includes('/plan-tasks?')) value = { total: 3, running, tasks: [
-                        { id: '1', subject: '核对授权范围与已有事实', description: '只读取已授权项目的任务记录。', status: 'pending', blockedBy: ['2'] },
+                    else if (url.includes('/evidence-sources')) value = {items:[{sourceId:'fact-fixture',label:'人工核对的项目事实'}]};
+                    else if (url.includes('/evidence')) {
+                        if (options.method === 'POST') {
+                            const body = JSON.parse(options.body);
+                            evidenceLinks = [{id:'link-1',kind:body.kind,sourceId:body.sourceId,label:'已关联的执行结果',messageId:'turn-first'}]; value = {id:'link-1'};
+                        } else if (options.method === 'DELETE') { evidenceLinks = []; value = {removed:true}; }
+                        else value = { items:evidenceLinks };
+                    }
+                    else if (url.includes('/plan-tasks?')) value = { total: 3, running, incomplete:partialBoard, tasks: partialBoard ? [] : [
+                        { id: '1', identity:'task-one', subject: '核对授权范围与已有事实', description: '只读取已授权项目的任务记录。', status: 'pending', blockedBy: ['2'] },
                         { id: '2', subject: '整理资产与工具执行结果', description: '汇总已记录的动作与结果，不重复执行。', status: window.taskFinished ? 'completed' : 'in_progress', owner: 'cyberstrike-eino-single' },
                         { id: '3', subject: '核对证据与实际影响', description: '完成执行后，等待人工独立核对证据。', status: 'completed' },
                         { id: '4', subject: '已删除的计划', status: 'deleted' }
                     ] };
-                    else if (url.startsWith('/api/conversations/')) value = { messages: [{ id: url.includes('second') ? 'turn-second' : 'turn-first', role: 'assistant', createdAt: timestamp, content: 'SECRET-CONTENT', reasoningContent: 'SECRET-REASONING' }], messagePage: { hasMore: false } };
+                    else if (url.startsWith('/api/conversations/')) value = { projectId:'project-fixture', messages: [{ id: url.includes('second') ? 'turn-second' : latestTurn || 'turn-first', role: 'assistant', createdAt: timestamp, content: 'SECRET-CONTENT', reasoningContent: 'SECRET-REASONING' }], messagePage: { hasMore: false } };
                     else if (params.has('summary')) value = { summary: { status: running ? 'running' : 'completed', iterationCount: 4, toolCount: 3, durationMs: 12500,
                         toolExecutions: [{ processDetailId: 'event-0', status: 'completed' }, { processDetailId: 'event-1', status: 'failed' }] } };
                     else {
-                        const offset = Number(params.get('offset')); const length = offset ? 5 : 50;
-                        value = { total: 55, processDetails: Array.from({ length }, (_, i) => ({ id: 'event-' + (offset + i), eventType: i < 2 ? 'tool_call' : i === 2 ? 'hitl_interrupt' : i % 4 === 0 ? 'iteration' : 'tool_result',
+                        const offset = params.get('anchorId') === 'event-52' ? 50 : Number(params.get('offset')); const length = offset ? 5 : 50;
+                        value = { total: 55, offset, processDetails: Array.from({ length }, (_, i) => ({ id: 'event-' + (offset + i), eventType: i < 2 ? 'tool_call' : i === 2 ? 'hitl_interrupt' : i % 4 === 0 ? 'iteration' : 'tool_result',
                             createdAt: timestamp, message: 'SECRET-MESSAGE', data: { toolName: i === 0 && !window.safeScreenshot ? '<img src=x onerror=alert(1)>' : i < 2 ? 'query_assets' : ['query_assets', 'search_knowledge_base', 'get_project_fact', 'http-framework-test'][i % 4], einoAgent: i < 2 ? 'cyberstrike-eino-single' : ['cyberstrike-eino-single', 'recon-agent', 'evidence-agent'][i % 3], success: true, arguments: 'SECRET-ARGUMENT', resultPreview: 'SECRET-OUTPUT' } })) };
                     }
                     return { ok: true, json: async () => value };
@@ -61,10 +70,15 @@ const root = path.resolve(__dirname, '../..');
             };
         }, JSON.parse(fs.readFileSync(root + '/web/static/i18n/zh-CN.json', 'utf8')).executionView);
         await page.addScriptTag({ path: root + '/web/static/js/execution-swarm.js' });
+        await page.addScriptTag({ path: root + '/web/static/js/execution-evidence.js' });
         await page.addScriptTag({ path: root + '/web/static/js/execution-view.js' });
         await page.evaluate(() => window.initExecutionView());
         await page.waitForFunction(() => document.querySelectorAll('.execution-event').length === 50);
         assert.equal(await page.locator('#execution-board').isVisible(), true);
+        assert.equal(await page.locator('#execution-swarm-toggle').getAttribute('open'), null);
+        assert.equal(await page.locator('.execution-swarm-canvas').count(), 0, 'collapsed swarm allocated GPU');
+        assert.ok((await page.locator('#execution-issues').innerText()).includes('异常'));
+        await page.locator('#execution-swarm-toggle > summary').click();
         await page.waitForFunction(() => !document.getElementById('execution-replay').disabled);
         assert.equal(await page.locator('.execution-swarm-canvas').count(), 1, 'actual WebGL layer unavailable');
         const staticCanvas = await page.locator('.execution-swarm-canvas').screenshot();
@@ -88,6 +102,33 @@ const root = path.resolve(__dirname, '../..');
         await page.locator('#execution-feed-reset').click();
         assert.equal(await page.locator('[data-lane="plan"] .execution-task-card').count(), 1);
         assert.equal(await page.locator('[data-lane="execute"] .execution-task-card').count(), 1);
+        await page.locator('[data-task="1"] summary').click();
+        await page.locator('[data-evidence-task="1"]').click();
+        await page.waitForFunction(() => !document.querySelector('[data-evidence="save"]').disabled);
+        await page.locator('[data-evidence="save"]').click();
+        await page.waitForFunction(() => document.querySelector('[data-evidence="items"]').textContent.includes('已关联'));
+        assert.equal(await page.evaluate(() => evidenceLinks.length), 1);
+        if (process.env.EXECUTION_VIEW_SCREENSHOTS) {
+            fs.mkdirSync(process.env.EXECUTION_VIEW_SCREENSHOTS,{recursive:true});
+            await page.locator('#execution-evidence').screenshot({path:path.join(process.env.EXECUTION_VIEW_SCREENSHOTS,'evidence.png')});
+        }
+        await page.locator('[data-evidence="kind"]').selectOption('project_fact');
+        await page.waitForFunction(() => document.querySelector('[data-evidence="source"]').value === 'fact-fixture');
+        assert.equal(await page.locator('[data-evidence="source"]').innerText(), '人工核对的项目事实');
+        await page.locator('[data-evidence="search"]').fill('人工');
+        await page.locator('[data-evidence="search"]').press('Enter');
+        await page.waitForFunction(() => calls.some(url => url.includes('/evidence-sources?') && url.includes('search=%E4%BA%BA%E5%B7%A5')));
+        assert.equal(await page.evaluate(() => evidenceLinks[0].kind), 'tool_result', 'search Enter linked an unintended source');
+        await page.locator('[data-evidence="items"] [data-remove]').click();
+        await page.waitForFunction(() => document.querySelector('[data-evidence="items"]').textContent.includes('暂无'));
+        await page.locator('[data-evidence="close"]').click();
+        await page.evaluate(() => { partialBoard = true; });
+        await page.locator('#execution-board-refresh').click();
+        await page.waitForFunction(() => document.getElementById('execution-board-runtime').textContent.includes('正在更新'));
+        assert.equal(await page.locator('.execution-task-card').count(), 3, 'partial write erased last complete board');
+        assert.equal(await page.locator('[data-task="1"]').getAttribute('open'), '');
+        await page.evaluate(() => { partialBoard = false; });
+        await page.locator('#execution-board-refresh').click();
         assert.equal(await page.locator('[data-lane="verify"] .execution-task-card').count(), 1);
         assert.ok((await page.locator('[data-lane="verify"]').innerText()).includes('待核验'));
         assert.ok((await page.locator('[data-lane="execute"]').innerText()).includes('当前已停止'));
@@ -131,12 +172,15 @@ const root = path.resolve(__dirname, '../..');
         if (folder) {
             fs.mkdirSync(folder, { recursive: true });
             await page.setViewportSize({ width: 1440, height: 1600 });
+            await page.locator('#execution-tab-board').click();
+            if (await page.locator('#execution-swarm-toggle').getAttribute('open') !== null) await page.locator('#execution-swarm-toggle > summary').click();
             for (const theme of ['light', 'dark']) {
                 await page.locator('#execution-tab-board').click();
                 await page.evaluate(value => document.documentElement.dataset.theme = value, theme);
                 await page.evaluate(() => document.getElementById('page-execution-view').scrollTop = 0);
                 await page.locator('#execution-board').screenshot({ path: path.join(folder, theme + '.png') });
             }
+            await page.locator('#execution-swarm-toggle > summary').click();
         }
         await page.setViewportSize({ width: 375, height: 812 });
         await page.locator('#execution-tab-board').click();
@@ -161,10 +205,23 @@ const root = path.resolve(__dirname, '../..');
         await page.evaluate(() => {
             const original = window.setTimeout;
             window.setTimeout = (callback, delay, ...args) => original(callback, delay >= 10000 ? 20 : delay, ...args);
-            running = true;
+            running = false;
         });
         await page.locator('#execution-refresh').click();
+        await page.waitForFunction(() => !document.getElementById('execution-content').matches('[aria-busy="true"]'));
+        await page.evaluate(() => { latestTurn = 'turn-after-idle'; });
+        await page.waitForFunction(() => document.getElementById('execution-turn').value === 'turn-after-idle');
+        await page.evaluate(() => { running = true; });
+        await page.locator('#execution-refresh').click();
         await page.waitForFunction(() => document.querySelector('#execution-stats [data-status="running"]'));
+        await page.evaluate(() => { latestTurn = 'turn-new-run'; });
+        await page.waitForFunction(() => document.getElementById('execution-turn').value === 'turn-new-run');
+        await page.locator('#execution-turn').selectOption('turn-new-run');
+        await page.evaluate(() => { latestTurn = 'turn-later'; });
+        await page.waitForTimeout(100);
+        assert.equal(await page.locator('#execution-turn').inputValue(), 'turn-new-run', 'polling replaced deliberately selected history');
+        await page.locator('#execution-latest-turns').click();
+        await page.waitForFunction(() => document.getElementById('execution-turn').value === 'turn-later');
         await page.evaluate(() => { failReads = true; });
         await page.waitForFunction(() => document.getElementById('execution-notice').textContent.includes('连续三次'));
         const stoppedCount = await page.evaluate(() => calls.length);

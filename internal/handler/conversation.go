@@ -316,6 +316,7 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 	if h.taskState != nil {
 		running, startedAt = h.taskState.ConversationTaskRuntimeState(id)
 	}
+	runStartedAt := startedAt
 	if !running && snapshot == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"tasks": []database.ConversationPlanTask{}, "total": 0,
@@ -328,11 +329,30 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 		// stops. Its running flag is still derived from the real runtime state.
 		startedAt = time.Time{}
 	}
-	tasks, err := h.db.ListConversationPlanTasksSince(id, startedAt)
+	board, err := h.db.ReadConversationPlanTasksSince(id, startedAt)
 	if err != nil {
 		h.logger.Error("获取对话任务列表失败", zap.String("conversationId", id), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取任务列表失败"})
 		return
+	}
+	tasks := board.Tasks
+	for i := range tasks {
+		task := &tasks[i]
+		switch strings.ToLower(strings.TrimSpace(task.Status)) {
+		case "completed":
+			task.RuntimeStatus = "awaiting_verification"
+		case "in_progress":
+			task.RuntimeStatus = "in_progress"
+			if !running {
+				task.RuntimeStatus = "paused"
+			} else if !runStartedAt.IsZero() && task.UpdatedAt.Before(runStartedAt) {
+				task.RuntimeStatus = "previous_run"
+			}
+		case "pending":
+			task.RuntimeStatus = "pending"
+		default:
+			task.RuntimeStatus = "unknown"
+		}
 	}
 
 	completed := 0
@@ -365,14 +385,17 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"tasks":      tasks,
-		"total":      total,
-		"completed":  completed,
-		"activeStep": activeStep,
-		"running":    running,
-		"snapshot":   snapshot,
-		"limit":      limit,
-		"offset":     offset,
+		"tasks":        tasks,
+		"total":        total,
+		"completed":    completed,
+		"activeStep":   activeStep,
+		"running":      running,
+		"snapshot":     snapshot,
+		"limit":        limit,
+		"offset":       offset,
+		"incomplete":   board.Incomplete,
+		"observedAt":   time.Now().UTC(),
+		"runStartedAt": runStartedAt,
 	})
 }
 

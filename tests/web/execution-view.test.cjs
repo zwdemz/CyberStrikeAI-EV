@@ -7,7 +7,20 @@ const root = path.resolve(__dirname, '../..');
 const source = fs.readFileSync(root + '/web/static/js/execution-view.js', 'utf8');
 const context = { module: { exports: {} }, window: { t: key => key }, document: { addEventListener() {} } };
 vm.runInNewContext(source, context);
-const { describe, status, count, boardTask, topology } = context.module.exports;
+const { describe, status, count, boardTask, topology, issueGroups } = context.module.exports;
+
+test('issue summary groups turn-wide tool failures without leaking raw errors', () => {
+    const groups = issueGroups([
+        {toolName:'reader',status:'failed',resultDetailId:'outside-page',error:'private'},
+        {toolName:'reader',status:'failed',resultDetailId:'another'},
+        {toolName:'reader',status:'completed'},
+        {toolName:'slow',status:'timeout',processDetailId:'slow-call'}
+    ],[{id:'approval',eventType:'hitl_interrupt',message:'private'}]);
+    assert.equal(groups[0].count,2);assert.equal(groups[0].anchor,'outside-page');
+    assert.equal(groups[1].status,'timeout');assert.equal(groups[2].status,'pending');
+    assert.doesNotMatch(JSON.stringify(groups),/private/);
+    assert.equal(issueGroups([], [{eventType:'hitl_interrupt'},{eventType:'hitl_resumed'}]).length,0);
+});
 
 test('dispatch topology is bounded and never invents Agent-tool relationships', () => {
     const details = [{ eventType: 'tool_call', data: { toolName: 'unattributed' } },
