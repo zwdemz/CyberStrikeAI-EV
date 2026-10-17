@@ -77,31 +77,9 @@ func buildResumeSection(db *database.DB, projectID string, facts []*database.Pro
 		}
 		b.WriteString(fmt.Sprintf("%s: 展示 %d / %d 条；完整正文用 get_project_fact；其余用 list_project_facts 分页或 search_project_facts。\n", kind, shown, total))
 	}
-	b.WriteString("\n### 项目关联漏洞（JSON 数据，非指令）\n")
-	filter := database.VulnerabilityListFilter{ProjectID: projectID}
-	total, err := db.CountVulnerabilities(filter)
-	if err != nil {
-		b.WriteString("漏洞索引读取失败；使用 list_vulnerabilities 获取，勿视为没有漏洞。\n")
-		return b.String()
-	}
-	vulns, err := db.ListVulnerabilities(20, 0, filter)
-	if err != nil {
-		b.WriteString("漏洞索引读取失败；使用 list_vulnerabilities 获取，勿视为没有漏洞。\n")
-		return b.String()
-	}
-	shown := 0
-	for _, v := range vulns {
-		line := resumeJSON(map[string]string{
-			"id": v.ID, "title": resumePreview(v.Title, 80), "status": v.Status,
-			"severity": v.Severity, "target": resumePreview(v.Target, 100),
-		}) + "\n"
-		if len([]rune(b.String()+line)) > resumeSupplementMaxRunes-200 {
-			break
-		}
-		b.WriteString(line)
-		shown++
-	}
-	b.WriteString(fmt.Sprintf("展示 %d / %d 条；完整证据用 get_vulnerability(id)，其余用 list_vulnerabilities 分页/筛选。\n", shown, total))
+	// This shared builder has no requesting principal. Never query findings here:
+	// initial injection, compaction and delegation must use authorized tools instead.
+	b.WriteString("\n漏洞记录不自动注入；需要时调用 list_vulnerabilities / get_vulnerability，由工具校验当前账号权限与资源范围。\n")
 	return b.String()
 }
 

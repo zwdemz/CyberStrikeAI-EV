@@ -65,12 +65,12 @@ func TestProjectResumeSurvivesRestartAndStaysProjectScoped(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"artifacts/parser.py", "python parser.py", "POST /login", "版本变化再测", "known finding", "fixed", conv.ID, "先恢复成果", "默认跳过"} {
+		for _, want := range []string{"artifacts/parser.py", "python parser.py", "POST /login", "版本变化再测", conv.ID, "先恢复成果", "默认跳过"} {
 			if !strings.Contains(block, want) {
 				t.Errorf("missing %q in %s", want, block)
 			}
 		}
-		for _, secret := range []string{"other-project-secret", "private-body", "private-vulnerability", "obsolete-body"} {
+		for _, secret := range []string{"other-project-secret", "private-body", "private-vulnerability", "obsolete-body", "known finding"} {
 			if strings.Contains(block, secret) {
 				t.Errorf("unexpected %q", secret)
 			}
@@ -105,7 +105,7 @@ func TestResumeSupplementBudgetAndIndependentResultQuotas(t *testing.T) {
 	}
 }
 
-func TestProjectResumeWithoutFactsStillListsVulnerabilities(t *testing.T) {
+func TestProjectResumeWithoutPrincipalOmitsVulnerabilities(t *testing.T) {
 	db, err := database.NewDB(filepath.Join(t.TempDir(), "empty.db"), zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
@@ -115,15 +115,18 @@ func TestProjectResumeWithoutFactsStillListsVulnerabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.CreateVulnerability(&database.Vulnerability{ProjectID: p.ID, Title: "finding-without-facts", Severity: "low"}); err != nil {
-		t.Fatal(err)
-	}
-	block, err := BuildFactIndexBlock(db, p.ID, config.ProjectConfig{Enabled: true})
+	finding, err := db.CreateVulnerability(&database.Vulnerability{ProjectID: p.ID, Title: "finding-without-facts", Severity: "critical", Target: "https://restricted.invalid/private"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(block, "finding-without-facts") {
-		t.Fatal(block)
+	block, err := BuildFactIndexBlock(db, p.ID, config.ProjectConfig{Enabled: true, FactIndexMaxRunes: 20000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{finding.ID, "finding-without-facts", "restricted.invalid", "critical"} {
+		if strings.Contains(block, secret) {
+			t.Fatalf("unprivileged context contains %q", secret)
+		}
 	}
 	disabled, err := BuildFactIndexBlock(db, p.ID, config.ProjectConfig{})
 	if err != nil || disabled != "" {

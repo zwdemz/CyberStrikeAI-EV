@@ -147,11 +147,11 @@ func (h *UpdateHandler) sourceView() gin.H {
 func (h *UpdateHandler) GetStatus(c *gin.Context) {
 	snap, err := update.Status(c.Request.Context(), h.options())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		h.respond(c, http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	needsRestart, binaryBuiltAt := h.restartPending()
-	c.JSON(http.StatusOK, gin.H{
+	h.respond(c, http.StatusOK, gin.H{
 		"status":        snap,
 		"job":           h.latest(),
 		"canRestart":    h.restart != nil,
@@ -168,13 +168,13 @@ func (h *UpdateHandler) GetStatus(c *gin.Context) {
 func (h *UpdateHandler) Check(c *gin.Context) {
 	snap, err := update.Check(c.Request.Context(), h.options())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		h.respond(c, http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	h.record(c, "update.check", resultOf(snap.CheckError), fmt.Sprintf("检查更新：%s（默认分支 %s）", snap.Repo, snap.TargetBranch), map[string]interface{}{
 		"commit": snap.Commit, "remote_commit": snap.RemoteCommit, "behind": snap.Behind, "error": snap.CheckError,
 	})
-	c.JSON(http.StatusOK, gin.H{"status": snap})
+	h.respond(c, http.StatusOK, gin.H{"status": snap})
 }
 
 // SaveSource answers POST /api/system/update/source: the operator picks which repository
@@ -186,31 +186,31 @@ func (h *UpdateHandler) SaveSource(c *gin.Context) {
 		Repo string `json:"repo"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体不是合法 JSON"})
+		h.respond(c, http.StatusBadRequest, gin.H{"error": "请求体不是合法 JSON"})
 		return
 	}
 	body.Repo = strings.TrimSpace(body.Repo)
 	if body.Repo != "" && !update.ValidRemoteURL(body.Repo) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "仓库地址不合法（只允许 https/http/ssh/git/file:// 或本机绝对路径）"})
+		h.respond(c, http.StatusBadRequest, gin.H{"error": "仓库地址不合法（只允许 https/http/ssh/git/file:// 或本机绝对路径）"})
 		return
 	}
 	if h.saveSource == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "本次启动没有接入配置保存，更新源改不了"})
+		h.respond(c, http.StatusInternalServerError, gin.H{"error": "本次启动没有接入配置保存，更新源改不了"})
 		return
 	}
 	release, err := update.LockInstall(h.options())
 	if err != nil {
-		c.JSON(statusForError(err), errorBody(err))
+		h.respond(c, statusForError(err), errorBody(err))
 		return
 	}
 	defer release()
 	if busy := h.activeJob(); busy != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "更新进行中，不能切换更新源", "job": busy})
+		h.respond(c, http.StatusConflict, gin.H{"error": "更新进行中，不能切换更新源", "job": busy})
 		return
 	}
 	if err := h.saveSource(body.Repo); err != nil {
-		h.record(c, "update.source", "failure", "保存更新源失败: "+err.Error(), map[string]interface{}{"error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败：" + err.Error()})
+		h.record(c, "update.source", "failure", "保存更新源失败: "+update.RedactSourceText(err.Error(), body.Repo), map[string]interface{}{"error": update.RedactSourceText(err.Error(), body.Repo)})
+		h.respond(c, http.StatusInternalServerError, gin.H{"error": "保存失败：" + update.RedactSourceText(err.Error(), body.Repo)})
 		return
 	}
 	message := "更新源已保存：" + body.Repo
@@ -218,7 +218,7 @@ func (h *UpdateHandler) SaveSource(c *gin.Context) {
 		message = "已恢复默认更新源（官方仓库）"
 	}
 	h.record(c, "update.source", "success", message, map[string]interface{}{"repo": body.Repo})
-	c.JSON(http.StatusOK, gin.H{"source": h.sourceView()})
+	h.respond(c, http.StatusOK, gin.H{"source": h.sourceView()})
 }
 
 // Adopt answers POST /api/system/update/adopt. Without confirm it is a side-effect-free
@@ -231,31 +231,31 @@ func (h *UpdateHandler) Adopt(c *gin.Context) {
 	}
 	if c.Request.ContentLength > 0 {
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体不是合法 JSON"})
+			h.respond(c, http.StatusBadRequest, gin.H{"error": "请求体不是合法 JSON"})
 			return
 		}
 	}
 	if body.Confirm && body.Restart && h.restart == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "本次启动没有提供重启钩子，接入完成后请由外部进程管理器重启服务"})
+		h.respond(c, http.StatusBadRequest, gin.H{"error": "本次启动没有提供重启钩子，接入完成后请由外部进程管理器重启服务"})
 		return
 	}
 	if !body.Confirm {
 		plan, err := update.Preview(c.Request.Context(), h.options())
 		if err != nil {
 			h.record(c, "update.adopt", "failure", "接入预览失败: "+err.Error(), map[string]interface{}{"error": errMessage(err)})
-			c.JSON(statusForError(err), errorBody(err))
+			h.respond(c, statusForError(err), errorBody(err))
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"plan": plan})
+		h.respond(c, http.StatusOK, gin.H{"plan": plan})
 		return
 	}
 	job, started := h.startJob("adopt", body.Restart)
 	if !started {
-		c.JSON(http.StatusConflict, gin.H{"error": "已有一次更新在进行中", "job": job})
+		h.respond(c, http.StatusConflict, gin.H{"error": "已有一次更新在进行中", "job": job})
 		return
 	}
 	h.record(c, "update.adopt", "started", "开始把目录接入更新源", map[string]interface{}{"job": job.ID, "restart": body.Restart})
-	c.JSON(http.StatusAccepted, gin.H{"job_id": job.ID, "state": job.State})
+	h.respond(c, http.StatusAccepted, gin.H{"job_id": job.ID, "state": job.State})
 }
 
 // Apply answers POST /api/system/update/apply. It starts one job and returns immediately;
@@ -267,23 +267,23 @@ func (h *UpdateHandler) Apply(c *gin.Context) {
 	}
 	if c.Request.ContentLength > 0 {
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体不是合法 JSON"})
+			h.respond(c, http.StatusBadRequest, gin.H{"error": "请求体不是合法 JSON"})
 			return
 		}
 	}
 	if body.Restart && h.restart == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "本次启动没有提供重启钩子，更新完成后请由外部进程管理器重启服务"})
+		h.respond(c, http.StatusBadRequest, gin.H{"error": "本次启动没有提供重启钩子，更新完成后请由外部进程管理器重启服务"})
 		return
 	}
 
 	job, started := h.startJob("apply", body.Restart)
 	if !started {
-		c.JSON(http.StatusConflict, gin.H{"error": "已有一次更新在进行中", "job": job})
+		h.respond(c, http.StatusConflict, gin.H{"error": "已有一次更新在进行中", "job": job})
 		return
 	}
 	h.record(c, "update.apply", "started", "开始一键更新源码并重编译", map[string]interface{}{"job": job.ID, "restart": body.Restart})
 
-	c.JSON(http.StatusAccepted, gin.H{"job_id": job.ID, "state": job.State})
+	h.respond(c, http.StatusAccepted, gin.H{"job_id": job.ID, "state": job.State})
 }
 
 // Restart answers POST /api/system/update/restart: stand this process down so the binary
@@ -293,7 +293,7 @@ func (h *UpdateHandler) Apply(c *gin.Context) {
 func (h *UpdateHandler) Restart(c *gin.Context) {
 	release, err := update.LockInstall(h.options())
 	if err != nil {
-		c.JSON(statusForError(err), errorBody(err))
+		h.respond(c, statusForError(err), errorBody(err))
 		return
 	}
 	scheduled := false
@@ -303,23 +303,23 @@ func (h *UpdateHandler) Restart(c *gin.Context) {
 		}
 	}()
 	if busy := h.activeJob(); busy != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "更新进行中，等它结束再重启", "job": busy})
+		h.respond(c, http.StatusConflict, gin.H{"error": "更新进行中，等它结束再重启", "job": busy})
 		return
 	}
 	if h.restart == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "本次启动没有提供重启钩子，请由外部进程管理器重启服务"})
+		h.respond(c, http.StatusBadRequest, gin.H{"error": "本次启动没有提供重启钩子，请由外部进程管理器重启服务"})
 		return
 	}
 	if needsRestart, _ := h.restartPending(); !needsRestart {
-		c.JSON(http.StatusConflict, gin.H{"error": "磁盘上的二进制与当前进程一致，没有待生效的版本", "reason": "nothing_pending"})
+		h.respond(c, http.StatusConflict, gin.H{"error": "磁盘上的二进制与当前进程一致，没有待生效的版本", "reason": "nothing_pending"})
 		return
 	}
 	if !update.StampBinary(h.root, h.options()).Exists {
-		c.JSON(http.StatusConflict, gin.H{"error": "磁盘上的二进制不存在，无法重启", "reason": "no_binary"})
+		h.respond(c, http.StatusConflict, gin.H{"error": "磁盘上的二进制不存在，无法重启", "reason": "no_binary"})
 		return
 	}
 	h.record(c, "update.restart", "started", "重启安装以运行磁盘上的新二进制", nil)
-	c.JSON(http.StatusAccepted, gin.H{"restarting": true})
+	h.respond(c, http.StatusAccepted, gin.H{"restarting": true})
 	scheduled = true
 	time.AfterFunc(updateRestartDelay, func() { defer release(); h.restart() })
 }
@@ -327,7 +327,7 @@ func (h *UpdateHandler) Restart(c *gin.Context) {
 // Job answers GET /api/system/update/job: the running job, or the most recent one, with
 // every progress line so far.
 func (h *UpdateHandler) Job(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"job": h.latest()})
+	h.respond(c, http.StatusOK, gin.H{"job": h.latest()})
 }
 
 // Rollback answers POST /api/system/update/rollback: back to the commit the last update
@@ -335,19 +335,19 @@ func (h *UpdateHandler) Job(c *gin.Context) {
 // that update, rather than resetting away work nobody asked it to touch.
 func (h *UpdateHandler) Rollback(c *gin.Context) {
 	if busy := h.activeJob(); busy != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "更新进行中，不能同时回滚", "job": busy})
+		h.respond(c, http.StatusConflict, gin.H{"error": "更新进行中，不能同时回滚", "job": busy})
 		return
 	}
 	res, err := update.Rollback(c.Request.Context(), h.options())
 	if err != nil {
 		h.record(c, "update.rollback", "failure", "回滚失败: "+err.Error(), map[string]interface{}{"error": errMessage(err)})
-		c.JSON(statusForError(err), errorBody(err))
+		h.respond(c, statusForError(err), errorBody(err))
 		return
 	}
 	h.record(c, "update.rollback", "success", fmt.Sprintf("已回滚到 %s", res.ToCommit), map[string]interface{}{
 		"from": res.FromCommit, "to": res.ToCommit,
 	})
-	c.JSON(http.StatusOK, gin.H{"result": res})
+	h.respond(c, http.StatusOK, gin.H{"result": res})
 }
 
 func (h *UpdateHandler) startJob(kind string, restart bool) (*updateJob, bool) {
@@ -385,6 +385,7 @@ func (h *UpdateHandler) startJob(kind string, restart bool) (*updateJob, bool) {
 		defer cancel()
 
 		onStep := func(s update.Step) {
+			s.Message = update.RedactSourceText(s.Message, opts.Repo)
 			h.mu.Lock()
 			job.Steps = append(job.Steps, s)
 			h.mu.Unlock()
@@ -405,9 +406,15 @@ func (h *UpdateHandler) startJob(kind string, restart bool) (*updateJob, bool) {
 		h.mu.Lock()
 		job.Result = res
 		if ue, ok := asUpdateError(err); ok {
-			job.Failure = ue
+			safeFailure := *ue
+			safeFailure.Message = update.RedactSourceText(ue.Message, opts.Repo)
+			safeFailure.Items = append([]string(nil), ue.Items...)
+			for i := range safeFailure.Items {
+				safeFailure.Items[i] = update.RedactSourceText(safeFailure.Items[i], opts.Repo)
+			}
+			job.Failure = &safeFailure
 		} else if err != nil {
-			job.Failure = &update.Error{Reason: "error", Message: err.Error()}
+			job.Failure = &update.Error{Reason: "error", Message: update.RedactSourceText(err.Error(), opts.Repo)}
 		}
 		job.State = finish
 		job.Finished = time.Now().Format(time.RFC3339)
@@ -461,15 +468,16 @@ func (h *UpdateHandler) record(c *gin.Context, action, result, message string, d
 	if h.audit == nil {
 		return
 	}
+	safeDetail, _ := safeUpdateOutput(detail, h.options().Repo).(map[string]any)
 	h.audit.Record(c, audit.Entry{
 		Level:        auditLevelFor(result),
 		Category:     "update",
 		Action:       action,
 		Result:       result,
-		Message:      message,
+		Message:      update.RedactSourceText(message, h.options().Repo),
 		ResourceType: "system",
 		ResourceID:   h.root,
-		Detail:       detail,
+		Detail:       safeDetail,
 	})
 }
 

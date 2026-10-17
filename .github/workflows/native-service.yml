@@ -41,6 +41,8 @@ jobs:
         run: go test -p 2 ./internal/config ./internal/database ./internal/knowledge ./internal/processguard -count=1 -timeout 5m
       - name: Test storage permissions and policy updates
         run: go test -p 2 ./internal/security ./tests/internal/handler -run 'TestStorage|TestRBAC' -count=1 -timeout 3m
+      - name: Test context and update output security
+        run: go test -p 2 ./internal/project ./internal/update ./internal/handler -run 'Resume|UpdateCredential|UpdateRedaction|RedactSource' -count=1 -timeout 3m
       - name: Test native Windows execution and terminal
         if: runner.os == 'Windows'
         run: |
