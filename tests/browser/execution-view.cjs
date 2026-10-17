@@ -5,13 +5,21 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../..');
 (async () => {
-    const browser = await chromium.launch({ headless: true, ...(process.env.EXECUTION_BROWSER_CHANNEL ? { channel: process.env.EXECUTION_BROWSER_CHANNEL } : {}) });
+    const browser = await chromium.launch({ headless: true, args: ['--enable-unsafe-swiftshader'], ...(process.env.EXECUTION_BROWSER_CHANNEL ? { channel: process.env.EXECUTION_BROWSER_CHANNEL } : {}) });
     try {
         const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
         const errors = []; page.on('pageerror', error => errors.push(error.message));
         const template = fs.readFileSync(root + '/web/templates/index.html', 'utf8');
         const markup = template.match(/<div id="page-execution-view"[^>]*><\/div>/)[0];
-        await page.setContent('<html lang="zh-CN"><body><main style="height:100vh;display:flex;min-width:0">' + markup.replace('class="page"', 'class="page active"') + '</main></body></html>');
+        await page.route('http://execution.test/**', route => {
+            const url = new URL(route.request().url());
+            if (url.pathname.startsWith('/static/vendor/swarm/')) {
+                const name = path.basename(url.pathname);
+                return route.fulfill({ contentType: 'application/javascript', body: fs.readFileSync(root + '/web/static/vendor/swarm/' + name) });
+            }
+            return route.fulfill({ contentType: 'text/html', body: '<html lang="zh-CN"><body><main style="height:100vh;display:flex;min-width:0">' + markup.replace('class="page"', 'class="page active"') + '</main></body></html>' });
+        });
+        await page.goto('http://execution.test/');
         for (const file of ['style.css', 'execution-view.css']) await page.addStyleTag({ path: root + '/web/static/css/' + file });
         await page.evaluate(strings => {
             window.t = key => strings[key.split('.').pop()] || key;
@@ -52,10 +60,28 @@ const root = path.resolve(__dirname, '../..');
                 } finally { activeReads--; }
             };
         }, JSON.parse(fs.readFileSync(root + '/web/static/i18n/zh-CN.json', 'utf8')).executionView);
+        await page.addScriptTag({ path: root + '/web/static/js/execution-swarm.js' });
         await page.addScriptTag({ path: root + '/web/static/js/execution-view.js' });
         await page.evaluate(() => window.initExecutionView());
         await page.waitForFunction(() => document.querySelectorAll('.execution-event').length === 50);
         assert.equal(await page.locator('#execution-board').isVisible(), true);
+        await page.waitForFunction(() => !document.getElementById('execution-replay').disabled);
+        assert.equal(await page.locator('.execution-swarm-canvas').count(), 1, 'actual WebGL layer unavailable');
+        const staticCanvas = await page.locator('.execution-swarm-canvas').screenshot();
+        await page.locator('#execution-replay').click();
+        assert.equal(await page.locator('#execution-replay').getAttribute('aria-pressed'), 'true');
+        await page.waitForTimeout(500);
+        assert.notDeepEqual(await page.locator('.execution-swarm-canvas').screenshot(), staticCanvas, 'recorded-event particles did not render');
+        await page.locator('#execution-replay').click();
+        assert.equal(await page.locator('#execution-replay').getAttribute('aria-pressed'), 'false');
+        await page.evaluate(() => {
+            window.savedAnimationFrame = requestAnimationFrame;
+            let simulatedTime = 0;
+            window.requestAnimationFrame = callback => savedAnimationFrame(() => callback(simulatedTime += 4000));
+        });
+        await page.locator('#execution-replay').click();
+        await page.waitForFunction(() => document.getElementById('execution-replay').getAttribute('aria-pressed') === 'false');
+        await page.evaluate(() => { window.requestAnimationFrame = savedAnimationFrame; });
         assert.equal(await page.locator('#execution-graph img').count(), 0);
         await page.locator('#execution-graph button[data-kind="agent"]').first().click();
         assert.equal(await page.locator('#execution-feed-title').innerText(), 'cyberstrike-eino-single');
@@ -73,6 +99,7 @@ const root = path.resolve(__dirname, '../..');
         await page.locator('#execution-board-refresh').click();
         await page.waitForFunction(() => document.querySelectorAll('[data-lane="execute"] .execution-task-card').length === 1);
         await page.locator('#execution-tab-timeline').click();
+        assert.equal(await page.locator('.execution-swarm-canvas').count(), 0, 'hidden board retained GPU canvas');
         assert.equal(await page.locator('#execution-events img').count(), 0);
         assert.ok((await page.locator('#execution-events').innerText()).includes('<img src=x'));
         assert.ok(!(await page.locator('#page-execution-view').innerText()).includes('SECRET-'));
@@ -112,7 +139,11 @@ const root = path.resolve(__dirname, '../..');
             }
         }
         await page.setViewportSize({ width: 375, height: 812 });
+        await page.locator('#execution-tab-board').click();
         await page.emulateMedia({ reducedMotion: 'reduce' });
+        await page.waitForFunction(() => document.getElementById('execution-replay').disabled);
+        assert.equal(await page.locator('#execution-replay').isDisabled(), true);
+        assert.equal(await page.locator('#execution-replay').getAttribute('aria-pressed'), 'false');
         await page.addStyleTag({ content: '.execution-shell {font-size:20px}' });
         await page.evaluate(() => document.getElementById('page-execution-view').scrollTop = 0);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile page overflow');
@@ -166,6 +197,24 @@ const root = path.resolve(__dirname, '../..');
         const before = await page.evaluate(() => calls.length);
         await page.waitForTimeout(50);
         assert.equal(await page.evaluate(() => calls.length), before, 'read-only permission denied user triggered API reads');
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        const fallback = await page.evaluate(async () => {
+            const host = document.createElement('div'); document.body.append(host);
+            const original = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+                return type.startsWith('webgl') ? null : original.call(this, type, ...args);
+            };
+            let ready = true;
+            let dispose;
+            try {
+                dispose = ExecutionSwarm.mount(host, { agents: ['fallback-agent'], tools: ['fallback-tool'], links: [{ agent: 'fallback-agent', tool: 'fallback-tool', events: [{ type: 'tool_call' }] }] }, {
+                    text: key => key, onReplay() {}, setReplay() {}, onReady: value => { ready = value; }
+                });
+                await new Promise(resolve => setTimeout(resolve, 50));
+                return { ready, nodes: host.querySelectorAll('button').length, canvases: host.querySelectorAll('canvas').length };
+            } finally { if (dispose) dispose(); host.remove(); HTMLCanvasElement.prototype.getContext = original; }
+        });
+        assert.deepEqual(fallback, { ready: false, nodes: 2, canvases: 0 }, 'WebGL failure lost accessible graph fallback');
         assert.equal(errors.length, 0, errors.join('\n'));
         console.log('PASS: execution view paging, status reconciliation, safe text, cancellation, failure circuit, permissions and themes');
     } finally { await browser.close(); }

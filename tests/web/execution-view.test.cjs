@@ -20,6 +20,16 @@ test('dispatch topology is bounded and never invents Agent-tool relationships', 
     assert.equal(topology([{ eventType: 'iteration', data: {} }]).links.length, 0);
 });
 
+test('swarm particles carry only recorded tool directions without synthesizing Agent messages', () => {
+    const graph = topology([
+        { eventType: 'tool_call', data: { einoAgent: 'A', toolName: 'T', arguments: 'private' } },
+        { eventType: 'tool_result', data: { einoAgent: 'A', toolName: 'T', output: 'private' } },
+        { eventType: 'thinking', data: { einoAgent: 'A', toolName: 'T' } }
+    ]);
+    assert.deepEqual(JSON.parse(JSON.stringify(graph.links)), [{ agent: 'A', tool: 'T', events: [{ type: 'tool_call' }, { type: 'tool_result' }] }]);
+    assert.doesNotMatch(JSON.stringify(graph), /private|thinking/);
+});
+
 test('board lanes reflect recorded task states without inventing verification', () => {
     assert.equal(boardTask({ status: 'pending' }).lane, 'plan');
     assert.equal(boardTask({ status: 'in_progress' }).lane, 'execute');

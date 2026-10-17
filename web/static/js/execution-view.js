@@ -2,6 +2,7 @@
 (function () {
     'use strict';
     const PAGE_SIZE = 50;
+    let disposeSwarm = null, replaySwarm = null;
     const state = { conversations: [], conversation: '', turns: [], turn: '', details: [], summary: {},
         listOffset: 0, listTotal: 0, offset: 0, total: 0, before: '', filter: 'all', auto: true,
         failures: 0, updated: null, controller: null, timer: null, epoch: 0, active: false,
@@ -86,7 +87,13 @@
             const tool = typeof data.toolName === 'string' ? data.toolName.trim().slice(0, 100) : '';
             if (!tool) return;
             tools.add(tool);
-            if (agent) links.set(JSON.stringify([agent, tool]), { agent, tool });
+            if (agent) {
+                const key = JSON.stringify([agent, tool]);
+                if (!links.has(key)) links.set(key, { agent, tool, events: [] });
+                if (links.get(key).events.length < PAGE_SIZE && ['tool_call', 'tool_result'].includes(detail.eventType)) {
+                    links.get(key).events.push({ type: detail.eventType });
+                }
+            }
         });
         const visibleAgents = [...agents].slice(0, 5), visibleTools = [...tools].slice(0, 5);
         return { agents: visibleAgents, tools: visibleTools,
@@ -95,6 +102,7 @@
     }
 
     function renderDispatch(executions) {
+        if (disposeSwarm) { disposeSwarm(); disposeSwarm = null; }
         const graph = topology(state.details);
         const y = (index, length) => 30 + (index + 1) * 300 / (length + 1);
         const positions = { agent: new Map(graph.agents.map((name, index) => [name, y(index, graph.agents.length)])),
@@ -108,6 +116,14 @@
             '</g></svg><div class="execution-graph-core"><small>CyberStrikeAI-EV</small><strong>' + escape(text('graphContext')) + '</strong><span>' + escape(state.conversation ? text('selected') : text('select')) + '</span></div>' +
             graph.agents.map((name, index) => node('agent', name, index)).join('') + graph.tools.map((name, index) => node('tool', name, index)).join('') +
             (!graph.agents.length && !graph.tools.length ? '<p class="execution-graph-empty">' + escape(text('graphEmpty')) + '</p>' : '');
+        if (state.view === 'board' && window.ExecutionSwarm) {
+            disposeSwarm = window.ExecutionSwarm.mount(el('graph'), graph, {
+                text, focus: state.focus,
+                setReplay: replay => { replaySwarm = replay; },
+                onReplay: playing => { el('replay').textContent = text(playing ? 'pauseReplay' : 'replay'); el('replay').setAttribute('aria-pressed', String(playing)); },
+                onReady: ready => { el('replay').disabled = !ready; el('renderer-status').textContent = text(ready ? 'swarmReady' : 'swarmStatic'); }
+            });
+        }
         el('graph-note').textContent = text('graphScope') + (graph.omitted ? ' · +' + graph.omitted + ' ' + text('graphOmitted') : '');
         const records = state.details.map(detail => ({ detail, view: describe(detail, executions) }));
         const filtered = state.focus ? records.filter(item => state.focus.kind === 'agent' ? item.view.agent === state.focus.name : item.view.group === 'tools' && item.view.title === state.focus.name) : records;
@@ -300,7 +316,7 @@
             '<section id="execution-stats" class="execution-stats" aria-label="' + escape(text('overview')) + '"></section>' +
             '<div class="execution-tabs" role="tablist" aria-label="' + escape(text('viewMode')) + '"><button id="execution-tab-board" type="button" role="tab" aria-controls="execution-board">' + escape(text('board')) + '</button><button id="execution-tab-timeline" type="button" role="tab" aria-controls="execution-timeline">' + escape(text('timeline')) + '</button></div>' +
             '<section id="execution-board" role="tabpanel" aria-labelledby="execution-tab-board" tabindex="0" class="execution-panel"><div class="execution-toolbar"><div><h2>' + escape(text('dispatchTitle')) + '</h2><p id="execution-board-runtime" class="execution-lane-hint"></p></div><label class="execution-auto"><input id="execution-board-auto" type="checkbox">' + escape(text('auto')) + '</label><button id="execution-board-refresh" type="button">' + escape(text('refresh')) + '</button></div>' +
-            '<div class="execution-dispatch"><figure class="execution-graph-panel"><figcaption><span>' + escape(text('graphTitle')) + '</span><span id="execution-dispatch-status"></span></figcaption><div id="execution-graph" class="execution-graph" role="group" aria-label="' + escape(text('graphTitle')) + '"></div><p id="execution-graph-note"></p></figure><aside class="execution-feed-panel" aria-label="' + escape(text('feedTitle')) + '"><div><h3 id="execution-feed-title"></h3><button id="execution-feed-reset" type="button">' + escape(text('all')) + '</button></div><ol id="execution-feed"></ol></aside></div>' +
+            '<div class="execution-dispatch"><figure class="execution-graph-panel"><figcaption><span>' + escape(text('graphTitle')) + '</span><span id="execution-dispatch-status"></span></figcaption><div class="execution-swarm-toolbar"><span id="execution-renderer-status">' + escape(text('swarmStatic')) + '</span><button id="execution-replay" type="button" aria-pressed="false" disabled>' + escape(text('replay')) + '</button></div><div id="execution-graph" class="execution-graph" role="group" aria-label="' + escape(text('graphTitle')) + '"></div><p id="execution-graph-note"></p></figure><aside class="execution-feed-panel" aria-label="' + escape(text('feedTitle')) + '"><div><h3 id="execution-feed-title"></h3><button id="execution-feed-reset" type="button">' + escape(text('all')) + '</button></div><ol id="execution-feed"></ol></aside></div>' +
             '<h2 class="execution-board-heading">' + escape(text('boardTitle')) + '</h2><p class="execution-board-scope">' + escape(text('boardScope')) + '</p><div id="execution-board-columns" class="execution-board-columns"></div><footer class="execution-pagination"><button id="execution-board-prev" type="button">' + escape(text('previous')) + '</button><span id="execution-board-range"></span><button id="execution-board-next" type="button">' + escape(text('next')) + '</button></footer></section>' +
             '<section id="execution-timeline" role="tabpanel" aria-labelledby="execution-tab-timeline" tabindex="0" class="execution-panel" hidden><div class="execution-toolbar"><h2>' + escape(text('timeline')) + '</h2><label>' + escape(text('filter')) +
             '<select id="execution-filter">' + ['all', 'model', 'tools', 'issues', 'control'].map(key => '<option value="' + key + '">' + escape(text(key)) + '</option>').join('') +
@@ -334,6 +350,7 @@
             }
         });
         el('feed-reset').addEventListener('click', () => { state.focus = null; render(); });
+        el('replay').addEventListener('click', () => { if (replaySwarm) replaySwarm(); });
         ['board', 'timeline'].forEach((name, index) => {
             const select = () => { state.view = name; render(); };
             el('tab-' + name).addEventListener('click', select);
@@ -371,6 +388,7 @@
         run(async controller => { const selected = state.conversation; await loadConversations(controller); if (selected) await loadTurns(controller); });
     };
     window.stopExecutionView = function () {
+        if (disposeSwarm) { disposeSwarm(); disposeSwarm = null; }
         state.active = false; cancel(); clearRecords();
         const root = document.getElementById('page-execution-view');
         if (root) root.replaceChildren();

@@ -1,12 +1,16 @@
 {
   "executionView": {
+    "swarmStatic": "Static graph · action feed available",
+    "swarmReady": "D3 radial layout · Three.js replay",
+    "pauseReplay": "Stop replay",
+    "replay": "Replay page actions",
     "dispatchTitle": "CyberStrikeAI-EV · Agent operations",
-    "graphTitle": "Conversation → Agent → tools",
+    "graphTitle": "Agent Swarm · execution graph",
     "graphContext": "Conversation",
     "graphAgent": "Recorded Agent",
     "graphTool": "Recorded tool",
     "graphEmpty": "No Agent/tool relationship metadata on the selected event page.",
-    "graphScope": "Selected turn and event page only; at most five Agents and five tools. Click a node to filter the action feed.",
+    "graphScope": "Current event page: Agents on the inner ring, tools on the outer ring. Solid links are recorded tool relationships, not inferred inter-agent communication. Particles replay history, not live traffic. Up to five Agents and five tools.",
     "graphOmitted": "additional nodes omitted",
     "feedTitle": "Recent recorded actions",
     "dispatchActive": "Active · persisted snapshot",

@@ -1,12 +1,16 @@
 {
   "executionView": {
+    "swarmStatic": "静态关系图 · 动作列表可用",
+    "swarmReady": "D3 环形布局 · Three.js 回放",
+    "pauseReplay": "停止回放",
+    "replay": "回放本页动作",
     "dispatchTitle": "CyberStrikeAI-EV · Agent 作业调度",
-    "graphTitle": "会话 → Agent → 工具关系",
+    "graphTitle": "Agent Swarm · 执行动作图",
     "graphContext": "当前会话",
     "graphAgent": "已记录 Agent",
     "graphTool": "已记录工具",
     "graphEmpty": "所选事件页暂无 Agent／工具关系记录。",
-    "graphScope": "仅展示所选轮次当前事件页，最多 5 个 Agent 和 5 个工具；点击节点筛选右侧动作流。",
+    "graphScope": "当前事件页：内环 Agent、外环工具，实线表示已记录的工具关系；不推断 Agent 间通信。粒子为有限历史回放，不表示实时流量。最多 5 个 Agent、5 个工具。",
     "graphOmitted": "个节点未展开",
     "feedTitle": "最近记录的动作",
     "dispatchActive": "活动中 · 已落库快照",

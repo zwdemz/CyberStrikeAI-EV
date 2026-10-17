@@ -1,7 +1,7 @@
 name: Proxy UI
 on:
   pull_request:
-    paths: ['web/static/js/test-proxy.js', 'web/static/js/execution-view.js', 'web/static/css/execution-view.css', 'tests/browser/execution-view.cjs', 'tests/web/execution-view.test.cjs', 'web/static/js/router.js', 'web/static/js/auth.js', 'web/static/i18n/**', 'web/static/css/style.css', 'web/static/js/settings.js', 'web/templates/index.html', 'tests/browser/test-proxy.cjs', 'tests/browser/chat-reading.cjs', 'web/static/css/chat-history.css', '.github/workflows/proxy-ui.yml']
+    paths: ['web/static/js/test-proxy.js', 'web/static/js/execution-view.js', 'web/static/js/execution-swarm.js', 'web/static/vendor/swarm/**', 'web/static/css/execution-view.css', 'tests/browser/execution-view.cjs', 'tests/web/execution-swarm.test.cjs', 'tests/web/execution-view.test.cjs', 'web/static/js/router.js', 'web/static/js/auth.js', 'web/static/i18n/**', 'web/static/css/style.css', 'web/static/js/settings.js', 'web/templates/index.html', 'tests/browser/test-proxy.cjs', 'tests/browser/chat-reading.cjs', 'web/static/css/chat-history.css', '.github/workflows/proxy-ui.yml']
 permissions:
   contents: read
 jobs:
