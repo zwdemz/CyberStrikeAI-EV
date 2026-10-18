@@ -22,6 +22,21 @@ type planEvidenceView struct {
 	FactKey   string `json:"factKey,omitempty"`
 }
 
+// latestConversationPlanState shares the actual run boundary between board and
+// evidence operations. Legacy sessions retain a zero boundary; storage failures
+// fail the request instead of silently exposing an unscoped historical plan.
+func (h *ConversationHandler) latestConversationPlanState(id string) (bool, time.Time, error) {
+	running, startedAt := false, time.Time{}
+	if h.taskState != nil {
+		running, startedAt = h.taskState.ConversationTaskRuntimeState(id)
+	}
+	if running && !startedAt.IsZero() {
+		return running, startedAt, nil
+	}
+	boundary, err := h.db.GetConversationPlanRunStart(id)
+	return running, boundary, err
+}
+
 // GetPlanTaskEvidenceSources returns up to 25 safe source labels in the task's
 // project/conversation. Search is bounded; every candidate passes source read RBAC.
 func (h *ConversationHandler) GetPlanTaskEvidenceSources(c *gin.Context) {
@@ -36,7 +51,14 @@ func (h *ConversationHandler) GetPlanTaskEvidenceSources(c *gin.Context) {
 	}
 	refs := []database.PlanTaskEvidence{}
 	if kind == "project_fact" && conv.ProjectID != "" && session.Permissions["project:read"] && h.db.UserCanAccessResource(session.UserID, session.ScopeFor("project:read"), "project", conv.ProjectID) {
-		facts, err := h.db.ListProjectFacts(conv.ProjectID, database.ProjectFactListFilter{Search: search}, 25, 0)
+		access := database.ProjectFactEvidenceAccess{Project: database.RBACListAccess{UserID: session.UserID, Scope: session.ScopeFor("project:read")}}
+		if session.Permissions["chat:read"] {
+			access.Conversation = &database.RBACListAccess{UserID: session.UserID, Scope: session.ScopeFor("chat:read")}
+		}
+		if session.Permissions["vulnerability:read"] {
+			access.Vulnerability = &database.RBACListAccess{UserID: session.UserID, Scope: session.ScopeFor("vulnerability:read")}
+		}
+		facts, err := h.db.ListProjectFactsForEvidence(conv.ProjectID, search, access)
 		if err != nil {
 			h.planEvidenceFailure(c, err)
 			return
@@ -89,7 +111,12 @@ func (h *ConversationHandler) planEvidenceTask(c *gin.Context) (*database.Conver
 		c.JSON(http.StatusNotFound, gin.H{"error": "Conversation unavailable"})
 		return nil, nil, session, false
 	}
-	snapshot, err := h.db.ReadConversationPlanTasksSince(id, time.Time{})
+	_, startedAt, err := h.latestConversationPlanState(id)
+	if err != nil {
+		h.planEvidenceFailure(c, err)
+		return nil, nil, session, false
+	}
+	snapshot, err := h.db.ReadConversationPlanTasksSince(id, startedAt)
 	if err != nil {
 		h.planEvidenceFailure(c, err)
 		return nil, nil, session, false

@@ -313,7 +313,15 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 	}
 	running := false
 	startedAt := time.Time{}
-	if h.taskState != nil {
+	if snapshot == "latest" {
+		var boundaryErr error
+		running, startedAt, boundaryErr = h.latestConversationPlanState(id)
+		if boundaryErr != nil {
+			h.logger.Error("读取任务边界失败", zap.Error(boundaryErr))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to read task boundary"})
+			return
+		}
+	} else if h.taskState != nil {
 		running, startedAt = h.taskState.ConversationTaskRuntimeState(id)
 	}
 	runStartedAt := startedAt
@@ -323,20 +331,6 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 			"completed": 0, "activeStep": 0, "running": false,
 		})
 		return
-	}
-	if snapshot == "latest" {
-		// Preserve the latest real run boundary across stop/restart. Legacy
-		// boards without a recorded boundary are explicitly marked as unscoped.
-		if !running || startedAt.IsZero() {
-			var boundaryErr error
-			startedAt, boundaryErr = h.db.GetConversationPlanRunStart(id)
-			if boundaryErr != nil {
-				h.logger.Error("读取任务边界失败", zap.Error(boundaryErr))
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to read task boundary"})
-				return
-			}
-		}
-		runStartedAt = startedAt
 	}
 	board, err := h.db.ReadConversationPlanTasksSince(id, startedAt)
 	if err != nil {

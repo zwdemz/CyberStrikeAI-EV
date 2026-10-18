@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -85,5 +86,54 @@ func TestPlanTaskBoundarySurvivesRestart(t *testing.T) {
 	}
 	if response.Total != 1 || len(response.Tasks) != 1 || response.Tasks[0].ID != "2" || !response.BoundaryKnown || response.Running {
 		t.Fatal(w.Body.String())
+	}
+	message, err := db.AddMessage(conv.ID, "assistant", "fixture", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := db.AddProcessDetailWithID(message.ID, conv.ID, "tool_result", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := database.PlanTaskIdentity(database.ConversationPlanTask{ID: "1", Subject: "Old run"})
+	link, err := db.AddPlanTaskEvidence(conv.ID, "1", identity, "tool_result", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readEvidence := func(method, taskID, endpoint string) int {
+		t.Helper()
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		body, _ := json.Marshal(map[string]string{"kind": "tool_result", "sourceId": source, "taskIdentity": identity})
+		c.Request = httptest.NewRequest(method, "/?kind=project_fact", bytes.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Params = gin.Params{{Key: "id", Value: conv.ID}, {Key: "taskId", Value: taskID}, {Key: "linkId", Value: link}}
+		c.Set(security.ContextSessionKey, security.Session{UserID: user.ID, Scope: database.RBACScopeAll, Permissions: map[string]bool{"chat:read": true, "chat:write": true, "chat:delete": true}})
+		switch endpoint {
+		case "search":
+			h.GetPlanTaskEvidenceSources(c)
+		case "add":
+			h.AddPlanTaskEvidence(c)
+		case "delete":
+			h.DeletePlanTaskEvidence(c)
+		default:
+			h.GetPlanTaskEvidence(c)
+		}
+		return w.Code
+	}
+	for _, endpoint := range []struct{ method, name string }{{http.MethodGet, "list"}, {http.MethodGet, "search"}, {http.MethodPost, "add"}, {http.MethodDelete, "delete"}} {
+		if got := readEvidence(endpoint.method, "1", endpoint.name); got != http.StatusNotFound {
+			t.Fatalf("archived task %s returned %d", endpoint.name, got)
+		}
+	}
+	if refs, err := db.ListPlanTaskEvidence(conv.ID, "1", identity); err != nil || len(refs) != 1 {
+		t.Fatal("archived evidence was mutated", refs, err)
+	}
+	if got := readEvidence(http.MethodGet, "2", "list"); got != http.StatusOK {
+		t.Fatalf("latest saved task unavailable: %d", got)
+	}
+	h.SetTaskStateProvider(&boardRuntime{running: true, started: time.Now().Add(time.Minute)})
+	if got := readEvidence(http.MethodGet, "2", "list"); got != http.StatusNotFound {
+		t.Fatalf("evidence lookup ignored active run boundary: %d", got)
 	}
 }

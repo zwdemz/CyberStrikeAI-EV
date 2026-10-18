@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -132,6 +133,75 @@ func TestPlanTaskEvidence(t *testing.T) {
 	if got := request(http.MethodGet, strings.TrimSuffix(url, "/evidence")+"/evidence-sources?kind=project_fact", nil); got.Code != 200 || !strings.Contains(got.Body.String(), fact.ID) || strings.Contains(got.Body.String(), "PRIVATE BODY") || strings.Contains(got.Body.String(), foreignFact.ID) {
 		t.Fatal("source picker scope/payload failure", got.Body.String())
 	}
+	t.Run("fact visibility precedes result cap", func(t *testing.T) {
+		if err := db.SetResourceOwner("conversation", conv.ID, user.ID); err != nil {
+			t.Fatal(err)
+		}
+		hiddenVuln, err := db.CreateVulnerability(&database.Vulnerability{ProjectID: other.ID, ConversationID: foreign.ID, Title: "Hidden source", Severity: "low"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidates := []*database.ProjectFact{fact}
+		for index := 0; index < 30; index++ {
+			hidden := &database.ProjectFact{ProjectID: project.ID, FactKey: fmt.Sprintf("evidence/hidden-%d", index), Summary: "PRIVATE HIDDEN", Pinned: true}
+			if index%2 == 0 {
+				hidden.SourceConversationID = foreign.ID
+			} else {
+				hidden.RelatedVulnerabilityID = hiddenVuln.ID
+			}
+			saved, err := db.UpsertProjectFact(hidden)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if index < 2 {
+				candidates = append(candidates, saved)
+			}
+		}
+		session.PermissionScopes = map[string]string{"chat:read": database.RBACScopeOwn, "project:read": database.RBACScopeAll, "vulnerability:read": database.RBACScopeAssigned}
+		defer func() { session.PermissionScopes = nil }()
+		for _, search := range []string{"", "&search=evidence"} {
+			got := request(http.MethodGet, strings.TrimSuffix(url, "/evidence")+"/evidence-sources?kind=project_fact"+search, nil)
+			if got.Code != 200 || !strings.Contains(got.Body.String(), fact.ID) || strings.Contains(got.Body.String(), "PRIVATE HIDDEN") {
+				t.Fatal("hidden sources consumed the readable page", got.Body.String())
+			}
+		}
+		if err := db.SetResourceOwner("project", project.ID, user.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.AssignResourceToUser(user.ID, "vulnerability", hiddenVuln.ID); err != nil {
+			t.Fatal(err)
+		}
+		inherited, err := db.UpsertProjectFact(&database.ProjectFact{ProjectID: project.ID, FactKey: "evidence/inherited", Summary: "Inherited", SourceConversationID: conv.ID, RelatedVulnerabilityID: vuln.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidates = append(candidates, inherited)
+		// SQL paging predicates must retain the exact independent RBAC scopes,
+		// including direct assignment and project/conversation inheritance.
+		for _, scope := range []string{database.RBACScopeAll, database.RBACScopeOwn, database.RBACScopeAssigned} {
+			read := database.RBACListAccess{UserID: user.ID, Scope: scope}
+			access := database.ProjectFactEvidenceAccess{Project: database.RBACListAccess{UserID: user.ID, Scope: database.RBACScopeAll}, Conversation: &read, Vulnerability: &read}
+			for _, candidate := range candidates {
+				rows, err := db.ListProjectFactsForEvidence(project.ID, candidate.FactKey, access)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, row := range rows {
+					found = found || row.ID == candidate.ID
+				}
+				want := (candidate.SourceConversationID == "" || db.UserCanAccessResource(user.ID, scope, "conversation", candidate.SourceConversationID)) &&
+					(candidate.RelatedVulnerabilityID == "" || db.UserCanAccessResource(user.ID, scope, "vulnerability", candidate.RelatedVulnerabilityID))
+				if found != want {
+					t.Fatalf("scope %s fact %s visibility=%v want=%v", scope, candidate.FactKey, found, want)
+				}
+			}
+		}
+		rows, err := db.ListProjectFactsForEvidence(project.ID, "evidence/inherited", database.ProjectFactEvidenceAccess{Project: database.RBACListAccess{UserID: user.ID, Scope: database.RBACScopeAll}})
+		if err != nil || len(rows) != 0 {
+			t.Fatal("missing provenance read permissions exposed a source", rows, err)
+		}
+	})
 	for _, tc := range []struct {
 		kind, id string
 		code     int
