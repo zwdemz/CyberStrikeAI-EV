@@ -8,6 +8,8 @@ Open **AI execution** in the sidebar. Issues and the Plan → Execute → Verify
 
 The visible page refreshes active conversations every 10 seconds and idle conversations every 30 seconds, detecting subsequent runs. Latest-turn following is the default; selecting historical turns pins the selection. **Latest turns** resumes following. Disabling auto sync pauses polling. Hidden pages and navigation cancel reads, and three consecutive failures pause polling until manual refresh.
 
+If a refreshed history page contains no assistant turns, turn events, summary, graph focus and previous-turn source choices are cleared together. The independently saved task board remains available and continues synchronizing.
+
 Task status remains Agent-authored. Agent completion goes to Verify with **awaiting verification**, never independently verified. The task manager records the real run boundary before execution; latest boards exclude older task files both while running and after stop/restart. Unfinished tasks in a stopped latest run retain a paused label. Legacy conversations without a recorded boundary are explicitly marked unscoped instead of claiming a latest-run snapshot. Timestamps and a partial-read warning expose synchronization state. Partial file writes retain the last complete board; expanded cards stay expanded. No timestamp heuristic changes the actual runtime state.
 
 ## Evidence workflow

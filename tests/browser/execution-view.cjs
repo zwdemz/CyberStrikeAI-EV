@@ -27,7 +27,7 @@ const root = path.resolve(__dirname, '../..');
             window.navigateToConversation = id => { window.openedConversation = id; };
             window.activeReads = 0; window.peakReads = 0; window.calls = []; window.failReads = false;
             window.running = false; window.slowConversation = ''; window.responseStatus = 200;
-            window.evidenceLinks = []; window.partialBoard = false; window.latestTurn = '';
+            window.evidenceLinks = []; window.partialBoard = false; window.latestTurn = ''; window.emptyAssistantHistory = false;
             const timestamp = new Date('2026-10-17T04:00:00Z').toISOString();
             window.apiFetch = async (url, options) => {
                 calls.push(url); activeReads++; peakReads = Math.max(peakReads, activeReads);
@@ -57,7 +57,7 @@ const root = path.resolve(__dirname, '../..');
                         { id: '3', subject: '核对证据与实际影响', description: '完成执行后，等待人工独立核对证据。', status: 'completed' },
                         { id: '4', subject: '已删除的计划', status: 'deleted' }
                     ] };
-                    else if (url.startsWith('/api/conversations/')) value = { projectId:'project-fixture', messages: [{ id: url.includes('second') ? 'turn-second' : latestTurn || 'turn-first', role: 'assistant', createdAt: timestamp, content: 'SECRET-CONTENT', reasoningContent: 'SECRET-REASONING' }], messagePage: { hasMore: false } };
+                    else if (url.startsWith('/api/conversations/')) value = { projectId:'project-fixture', messages: emptyAssistantHistory ? [] : [{ id: url.includes('second') ? 'turn-second' : latestTurn || 'turn-first', role: 'assistant', createdAt: timestamp, content: 'SECRET-CONTENT', reasoningContent: 'SECRET-REASONING' }], messagePage: { hasMore: false } };
                     else if (params.has('summary')) value = { summary: { status: running ? 'running' : 'completed', iterationCount: 4, toolCount: 3, durationMs: 12500,
                         toolExecutions: [{ processDetailId: 'event-0', status: 'completed' }, { processDetailId: 'event-1', status: 'failed' }] } };
                     else {
@@ -316,6 +316,28 @@ const root = path.resolve(__dirname, '../..');
         const firstEvent = await page.locator('.execution-event').first().elementHandle();
         await page.evaluate(() => refreshAppData());
         assert.ok(await firstEvent.evaluate(node => node.isConnected), 'auth refresh unnecessarily remounted an active view');
+        await page.locator('#execution-tab-board').click();
+        if (await page.locator('#execution-swarm-toggle').getAttribute('open') === null) await page.locator('#execution-swarm-toggle > summary').click();
+        await page.waitForFunction(() => document.getElementById('execution-graph').textContent.includes('query_assets'), null, { timeout: 5000 });
+        const retainedBoardCard = page.locator('[data-task="1"]');
+        if (await retainedBoardCard.getAttribute('open') === null) await retainedBoardCard.locator('summary').click();
+        await retainedBoardCard.locator('[data-evidence-task]').click();
+        await page.waitForFunction(() => !document.getElementById('execution-evidence').hidden);
+        await page.evaluate(() => { emptyAssistantHistory = true; });
+        await page.locator('#execution-latest-turns').click();
+        await page.waitForFunction(() => document.getElementById('execution-turn').value === '');
+        assert.equal(await page.locator('.execution-event').count(), 0, 'deleted assistant history retained turn events');
+        assert.equal(await page.locator('#execution-range').innerText(), '0 / 0');
+        assert.doesNotMatch(await page.locator('#execution-graph').innerText(), /cyberstrike-eino-single|query_assets/);
+        assert.equal(await page.locator('#execution-evidence').isVisible(), false, 'deleted turn retained source choices');
+        assert.equal(await page.locator('.execution-task-card').count(), 3, 'empty assistant history removed the current task board');
+        await page.locator('[data-task="1"] [data-evidence-task]').click();
+        await page.locator('#execution-latest-turns').click();
+        await page.waitForFunction(() => activeReads === 0);
+        assert.equal(await page.locator('#execution-evidence').isVisible(), true, 'repeated empty polling closed independent board evidence');
+        await page.evaluate(() => { emptyAssistantHistory = false; });
+        await page.locator('#execution-latest-turns').click();
+        await page.waitForFunction(() => document.querySelectorAll('.execution-event').length === 50);
         await page.evaluate(() => window.stopExecutionView());
         assert.equal(errors.length, 0, errors.join('\n'));
         console.log('PASS: execution view paging, status reconciliation, safe text, cancellation, failure circuit, permissions and themes');

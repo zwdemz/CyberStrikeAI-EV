@@ -54,15 +54,21 @@
         state.epoch++;
     }
 
+    /** Clear selected-turn metadata and source choices while retaining the
+     * conversation's independently saved task board and polling preferences. */
+    function clearTurnRecords() {
+        state.details = []; state.summary = {}; state.total = 0; state.offset = 0;
+        state.focus = null; closeEvidence();
+    }
+
     function clearRecords() {
-        state.conversations = []; state.turns = []; state.details = []; state.summary = {};
-        state.conversation = ''; state.turn = ''; state.total = 0; state.before = '';
-        state.listOffset = 0; state.listTotal = 0; state.offset = 0;
+        clearTurnRecords();
+        state.conversations = []; state.turns = [];
+        state.conversation = ''; state.turn = ''; state.before = '';
+        state.listOffset = 0; state.listTotal = 0;
         state.tasks = []; state.taskOffset = 0; state.taskTotal = 0; state.boardRunning = false;
         state.boundaryKnown = false;
-        state.focus = null; state.boardPartial = false; state.project = ''; state.evidenceTask = '';
-        if (window.ExecutionEvidence) window.ExecutionEvidence.stop();
-        if (el('evidence')) { el('evidence').replaceChildren(); el('evidence').hidden = true; }
+        state.boardPartial = false; state.project = '';
     }
 
     /** Map saved task states to board lanes. Completed is awaiting independent
@@ -285,7 +291,14 @@
         state.turns = state.turns.map(message => ({ id: message.id, createdAt: message.createdAt }));
         state.turn = state.turns.length ? state.turns[0].id : '';
         state.offset = !older && previousTurn === state.turn ? previousOffset : 0;
-        if (state.turn) await loadTurn(controller); else await loadBoard(controller);
+        if (state.turn) {
+            await loadTurn(controller);
+        } else {
+            // Later empty polls must not close independently opened board evidence.
+            if (previousTurn || state.details.length || Object.keys(state.summary).length) clearTurnRecords();
+            render();
+            await loadBoard(controller);
+        }
     }
 
     async function loadBoard(controller, offset = state.taskOffset) {
@@ -434,7 +447,7 @@
             state.focus = null; state.followLatest = true; closeEvidence();
             render(); if (state.conversation) run(loadTurns); else cancel();
         });
-        el('turn').addEventListener('change', () => { state.followLatest = false; state.turn = el('turn').value; state.offset = 0; state.details = []; state.summary = {}; state.total = 0; render(); run(state.turn ? loadTurn : loadBoard); });
+        el('turn').addEventListener('change', () => { state.followLatest = false; state.turn = el('turn').value; clearTurnRecords(); render(); run(state.turn ? loadTurn : loadBoard); });
         el('older-turns').addEventListener('click', () => { state.followLatest = false; run(controller => loadTurns(controller, true)); });
         el('latest-turns').addEventListener('click', () => { state.followLatest = true; run(loadTurns); });
         el('filter').addEventListener('change', () => { state.filter = el('filter').value; render(); });
@@ -497,7 +510,7 @@
     };
     window.stopExecutionView = function () {
         if (disposeSwarm) { disposeSwarm(); disposeSwarm = null; }
-        state.active = false; cancel(); closeEvidence(); clearRecords();
+        state.active = false; cancel(); clearRecords();
         const root = document.getElementById('page-execution-view');
         if (root) root.replaceChildren();
     };
