@@ -296,6 +296,26 @@ const root = path.resolve(__dirname, '../..');
             await refreshAppData();
         });
         await page.waitForFunction(() => document.querySelectorAll('.execution-event').length===50);
+        // A delayed router mount can leave a populated denial shell after logout.
+        await page.evaluate(async () => {
+            clearAuthStorage(); window.initExecutionView(); await refreshAppData();
+        });
+        assert.ok(await page.locator('#page-execution-view').evaluate(node => node.hasChildNodes()), 'denial-shell fixture did not mount');
+        assert.equal(await page.locator('.execution-event').count(), 0);
+        const deniedReads = await page.evaluate(() => calls.length);
+        await page.evaluate(async () => {
+            authToken='fixture'; authTokenExpiry=new Date(Date.now()+60000); authPermissions=new Set();
+            await refreshAppData();
+        });
+        assert.equal(await page.evaluate(() => calls.length), deniedReads, 'login without permission read execution data');
+        await page.evaluate(async () => {
+            authPermissions=new Set(['chat:read']); await refreshAppData();
+        });
+        await page.waitForFunction(() => document.querySelectorAll('.execution-event').length===50, null, { timeout: 5000 });
+        // Refreshing an authorized active page must preserve a pinned turn/DOM.
+        const firstEvent = await page.locator('.execution-event').first().elementHandle();
+        await page.evaluate(() => refreshAppData());
+        assert.ok(await firstEvent.evaluate(node => node.isConnected), 'auth refresh unnecessarily remounted an active view');
         await page.evaluate(() => window.stopExecutionView());
         assert.equal(errors.length, 0, errors.join('\n'));
         console.log('PASS: execution view paging, status reconciliation, safe text, cancellation, failure circuit, permissions and themes');

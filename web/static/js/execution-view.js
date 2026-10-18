@@ -473,6 +473,10 @@
         el('list-next').setAttribute('aria-label', text('next'));
     }
 
+    /** Report an authorized mounted lifecycle, including loading/error states;
+     * a populated pre-auth denial shell is inactive and must be remounted. */
+    window.isExecutionViewActive = function () { return state.active; };
+
     /** Initialize the read-only page. Existing API middleware remains the access authority. */
     window.initExecutionView = function () {
         cancel();
