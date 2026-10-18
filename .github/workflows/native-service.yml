@@ -41,8 +41,8 @@ jobs:
         run: go test -p 2 ./internal/config ./internal/database ./internal/knowledge ./internal/processguard -count=1 -timeout 5m
       - name: Test storage permissions and policy updates
         run: go test -p 2 ./internal/security ./tests/internal/handler -run 'TestStorage|TestRBAC' -count=1 -timeout 3m
-      - name: Test rejected TLS request delivery
-        run: go test ./internal/security -run 'TestAuthTLSClosingBody|TestRejectedTLSBodyBounds' -count=3 -timeout 1m
+      - name: Test rejected HTTP and TLS request delivery
+        run: go test ./internal/security -run 'TestAuthClosingBody|TestRejectedBodyBounds' -count=3 -timeout 1m
       - name: Test saved conversation board access
         run: go test -p 2 ./tests/internal/handler ./internal/handler ./internal/security -run 'TestPlanTask|TestTaskPlan|TestConversationBoardSnapshot|TestGetConversationPlanTasks|TestEveryProtectedRouteHasCatalogPermission' -count=1 -timeout 2m
       - name: Test context and update output security
