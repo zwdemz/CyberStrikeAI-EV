@@ -171,6 +171,9 @@ func TestPlanTaskEvidence(t *testing.T) {
 		if err := db.AssignResourceToUser(user.ID, "vulnerability", hiddenVuln.ID); err != nil {
 			t.Fatal(err)
 		}
+		if err := db.SetResourceOwner("vulnerability", vuln.ID, user.ID); err != nil {
+			t.Fatal(err)
+		}
 		inherited, err := db.UpsertProjectFact(&database.ProjectFact{ProjectID: project.ID, FactKey: "evidence/inherited", Summary: "Inherited", SourceConversationID: conv.ID, RelatedVulnerabilityID: vuln.ID})
 		if err != nil {
 			t.Fatal(err)
@@ -194,6 +197,19 @@ func TestPlanTaskEvidence(t *testing.T) {
 					(candidate.RelatedVulnerabilityID == "" || db.UserCanAccessResource(user.ID, scope, "vulnerability", candidate.RelatedVulnerabilityID))
 				if found != want {
 					t.Fatalf("scope %s fact %s visibility=%v want=%v", scope, candidate.FactKey, found, want)
+				}
+			}
+			for _, candidate := range []*database.Vulnerability{vuln, hiddenVuln} {
+				rows, err := db.ListVulnerabilitiesForEvidence(candidate.ProjectID, conv.ID, candidate.Title, read)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, row := range rows {
+					found = found || row.ID == candidate.ID
+				}
+				if want := db.UserCanAccessResource(user.ID, scope, "vulnerability", candidate.ID); found != want {
+					t.Fatalf("vulnerability scope %s visibility=%v want=%v", scope, found, want)
 				}
 			}
 		}

@@ -3,10 +3,12 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,17 +102,20 @@ func TestPlanTaskBoundarySurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readEvidence := func(method, taskID, endpoint string) int {
+	readEvidence := func(method, taskID, endpoint string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		body, _ := json.Marshal(map[string]string{"kind": "tool_result", "sourceId": source, "taskIdentity": identity})
 		c.Request = httptest.NewRequest(method, "/?kind=project_fact", bytes.NewReader(body))
+		if endpoint == "vulnerability_search" {
+			c.Request = httptest.NewRequest(method, "/?kind=vulnerability", nil)
+		}
 		c.Request.Header.Set("Content-Type", "application/json")
 		c.Params = gin.Params{{Key: "id", Value: conv.ID}, {Key: "taskId", Value: taskID}, {Key: "linkId", Value: link}}
-		c.Set(security.ContextSessionKey, security.Session{UserID: user.ID, Scope: database.RBACScopeAll, Permissions: map[string]bool{"chat:read": true, "chat:write": true, "chat:delete": true}})
+		c.Set(security.ContextSessionKey, security.Session{UserID: user.ID, Scope: database.RBACScopeAll, Permissions: map[string]bool{"chat:read": true, "chat:write": true, "chat:delete": true, "vulnerability:read": true}})
 		switch endpoint {
-		case "search":
+		case "search", "vulnerability_search":
 			h.GetPlanTaskEvidenceSources(c)
 		case "add":
 			h.AddPlanTaskEvidence(c)
@@ -119,21 +124,46 @@ func TestPlanTaskBoundarySurvivesRestart(t *testing.T) {
 		default:
 			h.GetPlanTaskEvidence(c)
 		}
-		return w.Code
+		return w
 	}
 	for _, endpoint := range []struct{ method, name string }{{http.MethodGet, "list"}, {http.MethodGet, "search"}, {http.MethodPost, "add"}, {http.MethodDelete, "delete"}} {
-		if got := readEvidence(endpoint.method, "1", endpoint.name); got != http.StatusNotFound {
+		if got := readEvidence(endpoint.method, "1", endpoint.name).Code; got != http.StatusNotFound {
 			t.Fatalf("archived task %s returned %d", endpoint.name, got)
 		}
 	}
 	if refs, err := db.ListPlanTaskEvidence(conv.ID, "1", identity); err != nil || len(refs) != 1 {
 		t.Fatal("archived evidence was mutated", refs, err)
 	}
-	if got := readEvidence(http.MethodGet, "2", "list"); got != http.StatusOK {
+	if got := readEvidence(http.MethodGet, "2", "list").Code; got != http.StatusOK {
 		t.Fatalf("latest saved task unavailable: %d", got)
 	}
+	foreign, err := db.CreateConversation("observation source", database.ConversationCreateMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := db.CreateVulnerability(&database.Vulnerability{ConversationID: conv.ID, Title: "Direct finding", Severity: "low", CreatedAt: time.Now().Add(-time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 30; index++ {
+		observed, err := db.CreateVulnerability(&database.Vulnerability{ConversationID: foreign.ID, Title: fmt.Sprintf("Observation only %d", index), Severity: "low"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO vulnerability_observations(vulnerability_id,conversation_id,observed_at,report) VALUES(?,?,?,?)`, observed.ID, conv.ID, time.Now(), "{}"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := readEvidence(http.MethodGet, "2", "vulnerability_search")
+	if got.Code != 200 || !strings.Contains(got.Body.String(), direct.ID) || strings.Contains(got.Body.String(), "Observation only") {
+		t.Fatal("observation-only findings consumed evidence page", got.Body.String())
+	}
+	ordinary, err := db.ListVulnerabilitiesForAccess(25, 0, database.VulnerabilityListFilter{ConversationID: conv.ID}, database.RBACListAccess{UserID: user.ID, Scope: database.RBACScopeAll})
+	if err != nil || len(ordinary) != 25 || ordinary[0].ConversationID != foreign.ID {
+		t.Fatal("ordinary observation-inclusive list changed", ordinary, err)
+	}
 	h.SetTaskStateProvider(&boardRuntime{running: true, started: time.Now().Add(time.Minute)})
-	if got := readEvidence(http.MethodGet, "2", "list"); got != http.StatusNotFound {
+	if got := readEvidence(http.MethodGet, "2", "list").Code; got != http.StatusNotFound {
 		t.Fatalf("evidence lookup ignored active run boundary: %d", got)
 	}
 }

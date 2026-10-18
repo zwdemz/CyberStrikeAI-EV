@@ -68,11 +68,7 @@ func (h *ConversationHandler) GetPlanTaskEvidenceSources(c *gin.Context) {
 		}
 	}
 	if kind == "vulnerability" && session.Permissions["vulnerability:read"] {
-		filter := database.VulnerabilityListFilter{ProjectID: conv.ProjectID, Search: search}
-		if conv.ProjectID == "" {
-			filter.ConversationID = conv.ID
-		}
-		items, err := h.db.ListVulnerabilitiesForAccess(25, 0, filter, database.RBACListAccess{UserID: session.UserID, Scope: session.ScopeFor("vulnerability:read")})
+		items, err := h.db.ListVulnerabilitiesForEvidence(conv.ProjectID, conv.ID, search, database.RBACListAccess{UserID: session.UserID, Scope: session.ScopeFor("vulnerability:read")})
 		if err != nil {
 			h.planEvidenceFailure(c, err)
 			return

@@ -18,6 +18,8 @@ Source permission and resource scope are rechecked during search and link reads/
 
 Fact provenance permissions are applied in SQL before the 25-row search limit, so hidden recent facts cannot displace older readable results. Every evidence endpoint resolves the same active/persisted run boundary as the latest board. Tasks excluded by that boundary return 404 for listing, searching, adding or unlinking; existing historical references remain stored.
 
+Vulnerability candidates also apply exact source read scope before the limit. Without a bound project, only records whose primary conversation is selected are eligible; observation-only records remain available in ordinary vulnerability lists but do not consume evidence-picker capacity.
+
 Before enforcing capacity for a new link, the same transaction removes references whose source is confirmed deleted. Existing sources hidden by a user's permissions are retained; lack of permission never triggers source cleanup.
 
 ## APIs
