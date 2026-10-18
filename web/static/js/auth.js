@@ -387,6 +387,13 @@ async function refreshAppData(showTaskErrors = false) {
             console.warn('刷新项目侧栏失败:', error);
         }
     }
+    // Logout clears account-specific execution DOM. Restore it after successful
+    // authentication even when the current route has not changed.
+    const executionPage = document.getElementById('page-execution-view');
+    if (isTokenValid() && hasPermission('chat:read') && executionPage && executionPage.classList.contains('active') &&
+        !executionPage.hasChildNodes() && typeof window.initExecutionView === 'function') {
+        window.initExecutionView();
+    }
 }
 
 async function bootstrapApp() {

@@ -10,7 +10,7 @@ Below the lanes, the collapsed **Agent Swarm** auxiliary view shows Agents on th
 
 Pinned D3 7.9.0 and Three.js 0.186.1 assets, licenses and a SHA-256 manifest are included under `web/static/vendor/swarm/` and loaded only when a populated desktop graph needs them. There is no CDN or new Python/model service. This remains an Eino application: [AutoGen messages](https://microsoft.github.io/autogen/stable/reference/python/autogen_agentchat.messages.html) distinguish observable events from messages, while [MASFactory](https://github.com/BUPT-GAMMA/MASFactory) supplies its own graph runtime. Neither runtime is required to project Eino's existing persisted events. Unrecorded Agent-to-Agent messages are not synthesized.
 
-The board reads the conversation's latest saved plan, independently of the selected assistant turn used by the relationship graph and timeline. Plans remain visible when a conversation stops; an in-progress card from a stopped conversation is explicitly marked stopped. This is not a historical plan snapshot for a selected turn. Task pages contain at most 50 cards, and lane counts describe that page.
+The board reads the conversation's latest recorded run plan (legacy boards without a boundary are labeled), independently of the selected assistant turn used by the relationship graph and timeline. Plans remain visible when a conversation stops; an in-progress card from a stopped conversation is explicitly marked stopped. This is not a historical plan snapshot for a selected turn. Task pages contain at most 50 cards, and lane counts describe that page.
 
 Switch to **Action timeline** to choose an assistant turn and see persisted status, iteration count, tool count, tool issues and recorded duration.
 

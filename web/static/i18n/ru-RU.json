@@ -1,5 +1,6 @@
 {
   "executionView": {
+    "legacyBoard": "Legacy saved tasks: run boundary unavailable",
     "evidenceSaved": "Reference saved. Original evidence is unchanged.",
     "evidenceError": "Unable to read or save references. Refresh the board and check access before retrying.",
     "noSources": "No selectable sources here. Change event pages or search.",

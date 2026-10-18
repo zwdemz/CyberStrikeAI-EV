@@ -317,8 +317,11 @@ func TestPlanTaskSnapshotSync(t *testing.T) {
 		}
 		return w.Body.String()
 	}
-	if got := read(); !strings.Contains(got, `"runtimeStatus":"previous_run"`) {
+	if got := read(); !strings.Contains(got, `"tasks":[]`) {
 		t.Fatal(got)
+	}
+	if err := db.RecordConversationPlanRun(conv.ID, "run-current", time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	runtime.running = false
 	if got := read(); !strings.Contains(got, `"runtimeStatus":"paused"`) || strings.Contains(got, `"status":"completed"`) {

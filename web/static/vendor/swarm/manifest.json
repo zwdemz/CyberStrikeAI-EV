@@ -21,7 +21,9 @@
     "version": "0.186.1",
     "source": "https://registry.npmjs.org/three/-/three-0.186.1.tgz",
     "integrity": "sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA==",
-    "sha256": "9052042d676cb0fdc1ddfefe193053f34b7ac0513a616fdac4535d49987812ea"
+    "sha256": "f34b2458acda5ce8b5e68a1b35a718f14617736a4cf818a82dc58e878f9d17eb",
+    "upstreamSha256": "9052042d676cb0fdc1ddfefe193053f34b7ac0513a616fdac4535d49987812ea",
+    "patch": "three-csprng-uuid.patch"
   },
   {
     "file": "three.core.js",
@@ -29,7 +31,9 @@
     "version": "0.186.1",
     "source": "https://registry.npmjs.org/three/-/three-0.186.1.tgz",
     "integrity": "sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA==",
-    "sha256": "9edde002b066a9a05676a6127f67735b62baf399bdea529f2f7e31657da769e6"
+    "sha256": "480901ddc1bebf28bb2a129f11d9b493f5a45b2470db233dd17b31b8f3f087af",
+    "upstreamSha256": "9edde002b066a9a05676a6127f67735b62baf399bdea529f2f7e31657da769e6",
+    "patch": "three-csprng-uuid.patch"
   },
   {
     "file": "THREE-LICENSE",

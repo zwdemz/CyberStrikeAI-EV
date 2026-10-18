@@ -30,7 +30,40 @@ func (db *DB) initPlanTaskEvidenceTable() error {
 		UNIQUE(conversation_id,task_id,task_identity,kind,source_id),
 		FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 	)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS conversation_plan_runs (
+		conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+		run_id TEXT NOT NULL, started_at TEXT NOT NULL
+	)`)
 	return err
+}
+
+// RecordConversationPlanRun persists the authoritative task-manager boundary
+// before Agent execution. Monotonic updates prevent an older run replacing it.
+func (db *DB) RecordConversationPlanRun(conversationID, runID string, startedAt time.Time) error {
+	if conversationID == "" || runID == "" || startedAt.IsZero() {
+		return fmt.Errorf("invalid plan run boundary")
+	}
+	_, err := db.Exec(`INSERT INTO conversation_plan_runs(conversation_id,run_id,started_at) VALUES(?,?,?)
+		ON CONFLICT(conversation_id) DO UPDATE SET run_id=excluded.run_id,started_at=excluded.started_at
+		WHERE excluded.started_at>=conversation_plan_runs.started_at`, conversationID, runID, startedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+	return err
+}
+
+// GetConversationPlanRunStart recovers the last recorded boundary after stop or
+// restart. Legacy conversations without a boundary return zero, never a guess.
+func (db *DB) GetConversationPlanRunStart(conversationID string) (time.Time, error) {
+	var value string
+	err := db.QueryRow(`SELECT started_at FROM conversation_plan_runs WHERE conversation_id=?`, conversationID).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339Nano, value)
 }
 
 // ListPlanTaskEvidence returns at most 20 references for the exact task identity.

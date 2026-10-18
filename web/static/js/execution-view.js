@@ -7,7 +7,7 @@
         listOffset: 0, listTotal: 0, offset: 0, total: 0, before: '', filter: 'all', auto: true,
         failures: 0, updated: null, controller: null, timer: null, epoch: 0, active: false,
         tasks: [], taskOffset: 0, taskTotal: 0, boardRunning: false, view: 'board', focus: null,
-        swarmOpen: false, boardPartial: false, followLatest: true, project: '', evidenceTask: '', evidenceIdentity: '' };
+        swarmOpen: false, boardPartial: false, boundaryKnown: false, followLatest: true, project: '', evidenceTask: '', evidenceIdentity: '' };
     const statusKeys = new Set(['completed', 'failed', 'cancelled', 'timeout', 'running', 'pending', 'queued',
         'blocked', 'result_missing', 'background_running', 'hard_timeout', 'orphaned']);
     const modelEvents = new Set(['iteration', 'thinking', 'reasoning_chain', 'planning', 'model_output_rejected']);
@@ -59,6 +59,7 @@
         state.conversation = ''; state.turn = ''; state.total = 0; state.before = '';
         state.listOffset = 0; state.listTotal = 0; state.offset = 0;
         state.tasks = []; state.taskOffset = 0; state.taskTotal = 0; state.boardRunning = false;
+        state.boundaryKnown = false;
         state.focus = null; state.boardPartial = false; state.project = ''; state.evidenceTask = '';
         if (window.ExecutionEvidence) window.ExecutionEvidence.stop();
         if (el('evidence')) { el('evidence').replaceChildren(); el('evidence').hidden = true; }
@@ -292,6 +293,7 @@
         const params = new URLSearchParams({ snapshot: 'latest', limit: String(PAGE_SIZE), offset: String(offset) });
         const result = await read('/api/conversations/' + encodeURIComponent(state.conversation) + '/plan-tasks?' + params, controller);
         state.boardRunning = result.running === true; state.boardPartial = result.incomplete === true;
+        state.boundaryKnown = result.boundaryKnown === true;
         if (!state.boardPartial || !state.tasks.length) {
             state.tasks = (Array.isArray(result.tasks) ? result.tasks : []).map(boardTask).filter(task => task.status !== 'deleted');
             state.taskOffset = offset; state.taskTotal = count(result.total);
@@ -347,7 +349,7 @@
         el('board-prev').disabled = state.taskOffset === 0;
         el('board-next').disabled = state.taskOffset + PAGE_SIZE >= state.taskTotal;
         el('board-range').textContent = state.taskTotal ? (state.taskOffset + 1) + '–' + Math.min(state.taskOffset + PAGE_SIZE, state.taskTotal) + ' / ' + state.taskTotal : '0 / 0';
-        el('board-runtime').textContent = text(state.boardRunning ? 'boardLive' : 'boardSaved') + ' · ' + text(state.followLatest ? 'followingLatest' : 'historySelected') + (state.boardPartial ? ' · ' + text('partialBoard') : '');
+        el('board-runtime').textContent = text(state.boardRunning ? 'boardLive' : 'boardSaved') + ' · ' + text(state.followLatest ? 'followingLatest' : 'historySelected') + (state.conversation && !state.boundaryKnown ? ' · ' + text('legacyBoard') : '') + (state.boardPartial ? ' · ' + text('partialBoard') : '');
         const openCards = new Set([...el('board-columns').querySelectorAll('details[open]')].map(card => card.dataset.task));
         const focusedCard = document.activeElement && document.activeElement.closest('[data-task]');
         const focusedTask = focusedCard && focusedCard.dataset.task;
@@ -432,7 +434,7 @@
             state.focus = null; state.followLatest = true; closeEvidence();
             render(); if (state.conversation) run(loadTurns); else cancel();
         });
-        el('turn').addEventListener('change', () => { state.followLatest = false; state.turn = el('turn').value; state.offset = 0; state.details = []; state.summary = {}; state.total = 0; render(); if (state.turn) run(loadTurn); else cancel(); });
+        el('turn').addEventListener('change', () => { state.followLatest = false; state.turn = el('turn').value; state.offset = 0; state.details = []; state.summary = {}; state.total = 0; render(); run(state.turn ? loadTurn : loadBoard); });
         el('older-turns').addEventListener('click', () => { state.followLatest = false; run(controller => loadTurns(controller, true)); });
         el('latest-turns').addEventListener('click', () => { state.followLatest = true; run(loadTurns); });
         el('filter').addEventListener('change', () => { state.filter = el('filter').value; render(); });

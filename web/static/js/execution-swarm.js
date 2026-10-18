@@ -30,7 +30,7 @@
                 script.onerror = () => { script.remove(); reject(new Error('Visualization dependency unavailable')); };
                 document.head.append(script);
             });
-            dependencies = Promise.all([d3, import('/static/vendor/swarm/three.module.js')]);
+            dependencies = Promise.all([d3, import('/static/vendor/swarm/three.module.js?v=ev-csprng-1')]);
         }
         return dependencies;
     }

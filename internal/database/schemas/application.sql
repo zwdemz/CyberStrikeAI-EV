@@ -867,6 +867,12 @@ CREATE TABLE plan_task_evidence (
     UNIQUE(conversation_id,task_id,task_identity,kind,source_id)
 );
 
+CREATE TABLE conversation_plan_runs (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    started_at TEXT NOT NULL
+);
+
 CREATE INDEX idx_workflow_runs_workflow ON workflow_runs(workflow_id);
 
 CREATE UNIQUE INDEX uq_workflow_package_imports_actor_key ON workflow_package_imports(actor_user_id, idempotency_key);

@@ -51,7 +51,7 @@ const root = path.resolve(__dirname, '../..');
                         } else if (options.method === 'DELETE') { evidenceLinks = []; value = {removed:true}; }
                         else value = { items:evidenceLinks };
                     }
-                    else if (url.includes('/plan-tasks?')) value = { total: 3, running, incomplete:partialBoard, tasks: partialBoard ? [] : [
+                    else if (url.includes('/plan-tasks?')) value = { total: 3, running, boundaryKnown:true, incomplete:partialBoard, tasks: partialBoard ? [] : [
                         { id: '1', identity:'task-one', subject: '核对授权范围与已有事实', description: '只读取已授权项目的任务记录。', status: 'pending', blockedBy: ['2'] },
                         { id: '2', subject: '整理资产与工具执行结果', description: '汇总已记录的动作与结果，不重复执行。', status: window.taskFinished ? 'completed' : 'in_progress', owner: 'cyberstrike-eino-single' },
                         { id: '3', subject: '核对证据与实际影响', description: '完成执行后，等待人工独立核对证据。', status: 'completed' },
@@ -222,6 +222,13 @@ const root = path.resolve(__dirname, '../..');
         assert.equal(await page.locator('#execution-turn').inputValue(), 'turn-new-run', 'polling replaced deliberately selected history');
         await page.locator('#execution-latest-turns').click();
         await page.waitForFunction(() => document.getElementById('execution-turn').value === 'turn-later');
+        await page.locator('#execution-turn').selectOption('');
+        await page.waitForFunction(() => !document.getElementById('execution-content').matches('[aria-busy="true"]'));
+        const boardReads = await page.evaluate(() => calls.filter(url => url.includes('/plan-tasks?')).length);
+        await page.waitForFunction(before => calls.filter(url => url.includes('/plan-tasks?')).length > before,boardReads);
+        assert.equal(await page.locator('#execution-turn').inputValue(),'','cleared turn did not retain board-only mode');
+        await page.locator('#execution-latest-turns').click();
+        await page.waitForFunction(() => document.getElementById('execution-turn').value === 'turn-later');
         await page.evaluate(() => { failReads = true; });
         await page.waitForFunction(() => document.getElementById('execution-notice').textContent.includes('连续三次'));
         const stoppedCount = await page.evaluate(() => calls.length);
@@ -272,6 +279,24 @@ const root = path.resolve(__dirname, '../..');
             } finally { if (dispose) dispose(); host.remove(); HTMLCanvasElement.prototype.getContext = original; }
         });
         assert.deepEqual(fallback, { ready: false, nodes: 2, canvases: 0 }, 'WebGL failure lost accessible graph fallback');
+        // Exercise the real auth refresh hook after logout clears this unchanged route.
+        await page.evaluate(()=>{window.executionFixtureFetch=window.apiFetch;});
+        await page.addScriptTag({path:root+'/web/static/js/auth.js'});
+        await page.evaluate(async () => {
+            window.apiFetch=window.executionFixtureFetch;
+            window.loadConversations=async()=>{};window.loadActiveTasks=async()=>{};
+            window.renderUserMenuProfile=()=>{};window.applyRBACToUI=()=>{};
+            window.refreshChatProjectSelector=undefined;
+            window.stopExecutionView();clearAuthStorage();await refreshAppData();
+        });
+        assert.equal(await page.locator('#page-execution-view').innerHTML(),'','unauthenticated refresh mounted private view');
+        await page.evaluate(async () => {
+            responseStatus=200;
+            authToken='fixture';authTokenExpiry=new Date(Date.now()+60000);authPermissions=new Set(['chat:read']);
+            await refreshAppData();
+        });
+        await page.waitForFunction(() => document.querySelectorAll('.execution-event').length===50);
+        await page.evaluate(() => window.stopExecutionView());
         assert.equal(errors.length, 0, errors.join('\n'));
         console.log('PASS: execution view paging, status reconciliation, safe text, cancellation, failure circuit, permissions and themes');
     } finally { await browser.close(); }

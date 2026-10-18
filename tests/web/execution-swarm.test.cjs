@@ -34,3 +34,20 @@ test('vendored visualization files match pinned source manifest and retain licen
     assert.ok(fs.readFileSync(folder + 'THREE-LICENSE', 'utf8').includes('MIT License'));
     assert.ok(fs.readFileSync(folder + 'D3-LICENSE', 'utf8').includes('Copyright'));
 });
+
+test('Three UUIDs use Web Crypto entropy and fail without an entropy source', () => {
+    const source = fs.readFileSync(root + '/web/static/vendor/swarm/three.core.js','utf8');
+    const start = source.indexOf('function generateUUID() {');
+    const end = source.indexOf('\n}',start) + 2;
+    const lut = Array.from({length:256},(_,index) => index.toString(16).padStart(2,'0'));
+    const fixture = vm.createContext({_lut:lut,crypto:crypto.webcrypto,Uint32Array});
+    vm.runInContext(source.slice(start,end),fixture);
+    const uuids = new Set(Array.from({length:128},() => vm.runInContext('generateUUID()',fixture)));
+    assert.equal(uuids.size,128);
+    for (const uuid of uuids) assert.match(uuid,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    fixture.crypto=undefined;
+    assert.throws(() => vm.runInContext('generateUUID()',fixture));
+    const patched=JSON.parse(fs.readFileSync(root+'/web/static/vendor/swarm/manifest.json')).find(item=>item.file==='three.core.js');
+    assert.match(patched.upstreamSha256,/^[0-9a-f]{64}$/);
+    assert.ok(fs.existsSync(root+'/web/static/vendor/swarm/'+patched.patch));
+});

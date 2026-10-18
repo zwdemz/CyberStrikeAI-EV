@@ -1,5 +1,6 @@
 {
   "executionView": {
+    "legacyBoard": "历史任务：未记录运行边界，无法确认属于哪次执行",
     "evidenceSaved": "关联已保存，原始证据保留不变。",
     "evidenceError": "无法读取或保存关联。请刷新看板并检查权限，勿重复盲目提交。",
     "noSources": "当前范围没有可选来源；可切换事件页或搜索。",

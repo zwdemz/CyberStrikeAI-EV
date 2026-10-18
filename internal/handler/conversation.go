@@ -325,9 +325,18 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 		return
 	}
 	if snapshot == "latest" {
-		// An explicit saved-board view must not hide the final plan after a run
-		// stops. Its running flag is still derived from the real runtime state.
-		startedAt = time.Time{}
+		// Preserve the latest real run boundary across stop/restart. Legacy
+		// boards without a recorded boundary are explicitly marked as unscoped.
+		if !running || startedAt.IsZero() {
+			var boundaryErr error
+			startedAt, boundaryErr = h.db.GetConversationPlanRunStart(id)
+			if boundaryErr != nil {
+				h.logger.Error("读取任务边界失败", zap.Error(boundaryErr))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to read task boundary"})
+				return
+			}
+		}
+		runStartedAt = startedAt
 	}
 	board, err := h.db.ReadConversationPlanTasksSince(id, startedAt)
 	if err != nil {
@@ -385,17 +394,18 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"tasks":        tasks,
-		"total":        total,
-		"completed":    completed,
-		"activeStep":   activeStep,
-		"running":      running,
-		"snapshot":     snapshot,
-		"limit":        limit,
-		"offset":       offset,
-		"incomplete":   board.Incomplete,
-		"observedAt":   time.Now().UTC(),
-		"runStartedAt": runStartedAt,
+		"tasks":         tasks,
+		"total":         total,
+		"completed":     completed,
+		"activeStep":    activeStep,
+		"running":       running,
+		"snapshot":      snapshot,
+		"limit":         limit,
+		"offset":        offset,
+		"incomplete":    board.Incomplete,
+		"observedAt":    time.Now().UTC(),
+		"runStartedAt":  runStartedAt,
+		"boundaryKnown": !runStartedAt.IsZero(),
 	})
 }
 
