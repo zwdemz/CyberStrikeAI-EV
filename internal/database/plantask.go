@@ -84,6 +84,9 @@ func (db *DB) ReadConversationPlanTaskSince(conversationID, taskID string, since
 	if err != nil || number < 1 || strconv.Itoa(number) != taskID {
 		return result, fmt.Errorf("invalid task ID")
 	}
+	// Construct the filename from the parsed integer, never from request text.
+	// The equality check above also rejects alternate spellings of the same ID.
+	taskID = strconv.Itoa(number)
 	base := strings.TrimSpace(db.einoPlantaskBaseDir)
 	if base == "" {
 		return result, nil
