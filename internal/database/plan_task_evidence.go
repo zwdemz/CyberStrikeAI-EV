@@ -41,15 +41,27 @@ func (db *DB) initPlanTaskEvidenceTable() error {
 }
 
 // RecordConversationPlanRun persists the authoritative task-manager boundary
-// before Agent execution. Monotonic updates prevent an older run replacing it.
+// before Agent execution. Monotonic updates prevent an older run replacing it;
+// clock rollback/stale writes return an error so execution cannot silently start
+// with a boundary that the database did not actually record.
 func (db *DB) RecordConversationPlanRun(conversationID, runID string, startedAt time.Time) error {
 	if conversationID == "" || runID == "" || startedAt.IsZero() {
 		return fmt.Errorf("invalid plan run boundary")
 	}
-	_, err := db.Exec(`INSERT INTO conversation_plan_runs(conversation_id,run_id,started_at) VALUES(?,?,?)
+	result, err := db.Exec(`INSERT INTO conversation_plan_runs(conversation_id,run_id,started_at) VALUES(?,?,?)
 		ON CONFLICT(conversation_id) DO UPDATE SET run_id=excluded.run_id,started_at=excluded.started_at
 		WHERE excluded.started_at>=conversation_plan_runs.started_at`, conversationID, runID, startedAt.UTC().Format("2006-01-02T15:04:05.000000000Z"))
-	return err
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("plan run boundary was not recorded: stale start time")
+	}
+	return nil
 }
 
 // GetConversationPlanRunStart recovers the last recorded boundary after stop or

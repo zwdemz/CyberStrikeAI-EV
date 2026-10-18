@@ -43,6 +43,8 @@ The latest-board API adds `incomplete`, `observedAt`, `runStartedAt`, `boundaryK
 
 An additive SQLite table `plan_task_evidence` stores `id`, `conversation_id`, `task_id`, `task_identity` (SHA-256 of task ID/subject), `kind`, `source_id`, `created_at`. A composite unique index on conversation/task/identity/kind/source deduplicates references and supports scoped lookup. The conversation foreign key cascades deletes. Source tables and task files are not modified by linking; no raw source payload is stored. An additional `conversation_plan_runs` table stores the latest `conversation_id` (primary key / cascading foreign key), `run_id` and UTC `started_at`. Run recording happens outside the manager mutex; persistence failure prevents that run from executing, rather than losing its boundary.
 
+A stale boundary update that changes no rows also prevents execution; correct a regressed host clock before retrying. Board and evidence operations fetch only the conversation header, without loading message history.
+
 Windows/Linux use the same Go, SQLite and static browser implementation. Back up the database before upgrade, wait for active work before restart, and update the server/HTML/scripts/styles/locales together. The table is created automatically; no new runtime setting or model request is required. Older binaries ignore the additional table; preserve the database on rollback.
 
 Validation: `go test ./tests/internal/handler -run 'TestPlanTask|TestConversationBoardSnapshot' -count=1`, the normal frontend tests, and `node tests/browser/execution-view.cjs`. Fixtures use temporary databases and synthetic sources, with no real model/target traffic.

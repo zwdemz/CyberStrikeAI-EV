@@ -56,8 +56,8 @@ func TestPlanTaskBoundarySurvivesRestart(t *testing.T) {
 	if err = db.RecordConversationPlanRun(conv.ID, "latest", start); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.RecordConversationPlanRun(conv.ID, "old", start.Add(-time.Hour)); err != nil {
-		t.Fatal(err)
+	if err = db.RecordConversationPlanRun(conv.ID, "old", start.Add(-time.Hour)); err == nil {
+		t.Fatal("stale/clock-regressed boundary was reported as persisted")
 	}
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
@@ -162,6 +162,61 @@ func TestPlanTaskBoundarySurvivesRestart(t *testing.T) {
 	if err != nil || len(ordinary) != 25 || ordinary[0].ConversationID != foreign.ID {
 		t.Fatal("ordinary observation-inclusive list changed", ordinary, err)
 	}
+	t.Run("metadata paths do not read message history", func(t *testing.T) {
+		if _, err := db.Exec(`ALTER TABLE messages RENAME TO fixture_message_history`); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := db.Exec(`DROP VIEW IF EXISTS messages`); err != nil {
+				t.Error(err)
+			}
+			if _, err := db.Exec(`ALTER TABLE fixture_message_history RENAME TO messages`); err != nil {
+				t.Error(err)
+			}
+		}()
+		// Any accidental messages SELECT now fails deterministically, without
+		// constructing an enormous history or relying on allocation thresholds.
+		if _, err := db.Exec(`CREATE VIEW messages AS SELECT * FROM fixture_missing_history`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.GetConversationLite(conv.ID); err == nil {
+			t.Fatal("history-read failure fixture was not effective")
+		}
+		if header, err := db.GetConversationMetadata(conv.ID); err != nil || header.Messages != nil {
+			t.Fatal("metadata read attempted history", header, err)
+		}
+		boardWriter := httptest.NewRecorder()
+		boardContext, _ := gin.CreateTestContext(boardWriter)
+		boardContext.Request = httptest.NewRequest(http.MethodGet, "/?snapshot=latest", nil)
+		boardContext.Params = gin.Params{{Key: "id", Value: conv.ID}}
+		boardContext.Set(security.ContextSessionKey, security.Session{UserID: user.ID, Scope: database.RBACScopeAll})
+		h.GetConversationPlanTasks(boardContext)
+		if boardWriter.Code != 200 {
+			t.Fatal("board read message history", boardWriter.Body.String())
+		}
+		oldIdentity, oldLink := identity, link
+		defer func() { identity, link = oldIdentity, oldLink }()
+		identity = database.PlanTaskIdentity(database.ConversationPlanTask{ID: "2", Subject: "Latest run"})
+		added := readEvidence(http.MethodPost, "2", "add")
+		if added.Code != 200 {
+			t.Fatal("evidence add read message history", added.Body.String())
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(added.Body.Bytes(), &created); err != nil {
+			t.Fatal(err)
+		}
+		link = created.ID
+		for _, endpoint := range []string{"list", "vulnerability_search"} {
+			if got := readEvidence(http.MethodGet, "2", endpoint); got.Code != 200 {
+				t.Fatal("evidence read loaded message history", endpoint, got.Body.String())
+			}
+		}
+		if got := readEvidence(http.MethodDelete, "2", "delete"); got.Code != 200 {
+			t.Fatal("evidence unlink loaded message history", got.Body.String())
+		}
+	})
 	h.SetTaskStateProvider(&boardRuntime{running: true, started: time.Now().Add(time.Minute)})
 	if got := readEvidence(http.MethodGet, "2", "list").Code; got != http.StatusNotFound {
 		t.Fatalf("evidence lookup ignored active run boundary: %d", got)

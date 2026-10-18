@@ -288,7 +288,7 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该对话"})
 		return
 	}
-	if _, err := h.db.GetConversationLite(id); err != nil {
+	if _, err := h.db.GetConversationMetadata(id); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "对话不存在"})
 		return
 	}

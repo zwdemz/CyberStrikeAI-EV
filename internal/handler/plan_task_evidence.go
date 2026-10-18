@@ -102,7 +102,7 @@ func (h *ConversationHandler) planEvidenceTask(c *gin.Context) (*database.Conver
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task ID"})
 		return nil, nil, session, false
 	}
-	conversation, err := h.db.GetConversationLite(id)
+	conversation, err := h.db.GetConversationMetadata(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Conversation unavailable"})
 		return nil, nil, session, false
