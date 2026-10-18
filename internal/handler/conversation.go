@@ -332,7 +332,18 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 		})
 		return
 	}
-	board, err := h.db.ReadConversationPlanTasksSince(id, startedAt)
+	var board database.PlanTaskSnapshot
+	var err error
+	total, completed, activeStep := 0, 0, 0
+	indexing := false
+	if snapshot == "latest" {
+		var page database.PlanTaskPage
+		page, err = h.db.ReadConversationPlanTaskPage(c.Request.Context(), id, startedAt, limit, offset)
+		board = page.PlanTaskSnapshot
+		total, completed, activeStep, indexing = page.Total, page.Completed, page.ActiveStep, page.Indexing
+	} else {
+		board, err = h.db.ReadConversationPlanTasksSince(id, startedAt)
+	}
 	if err != nil {
 		h.logger.Error("获取对话任务列表失败", zap.String("conversationId", id), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取任务列表失败"})
@@ -358,33 +369,28 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 		}
 	}
 
-	completed := 0
-	activeStep := 0
-	for i, task := range tasks {
-		status := strings.ToLower(strings.TrimSpace(task.Status))
-		if status == "completed" {
-			completed++
-		}
-		if activeStep == 0 && status == "in_progress" {
-			activeStep = i + 1
-		}
-	}
-	if activeStep == 0 {
+	if snapshot != "latest" {
 		for i, task := range tasks {
-			if strings.ToLower(strings.TrimSpace(task.Status)) != "completed" {
+			status := strings.ToLower(strings.TrimSpace(task.Status))
+			if status == "completed" {
+				completed++
+			}
+			if activeStep == 0 && status == "in_progress" {
 				activeStep = i + 1
-				break
 			}
 		}
-	}
-	if activeStep == 0 && len(tasks) > 0 {
-		activeStep = len(tasks)
-	}
-	total := len(tasks)
-	if snapshot == "latest" {
-		start := min(offset, total)
-		end := start + min(limit, total-start)
-		tasks = tasks[start:end]
+		if activeStep == 0 {
+			for i, task := range tasks {
+				if strings.ToLower(strings.TrimSpace(task.Status)) != "completed" {
+					activeStep = i + 1
+					break
+				}
+			}
+		}
+		if activeStep == 0 && len(tasks) > 0 {
+			activeStep = len(tasks)
+		}
+		total = len(tasks)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -397,6 +403,7 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 		"limit":         limit,
 		"offset":        offset,
 		"incomplete":    board.Incomplete,
+		"indexing":      indexing,
 		"observedAt":    time.Now().UTC(),
 		"runStartedAt":  runStartedAt,
 		"boundaryKnown": !runStartedAt.IsZero(),

@@ -69,6 +69,9 @@ type DB struct {
 	closeOnce                sync.Once
 	closeErr                 error
 	vulnerabilityCreatedHook func(*Vulnerability)
+	planIndexMu              sync.Mutex
+	planIndex                *planTaskIndex
+	planIndexClosed          bool
 }
 
 // startPassiveCheckpointLoop 启动后台 PASSIVE checkpoint 循环。
@@ -1708,6 +1711,13 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closeOnce.Do(func() {
+		db.planIndexMu.Lock()
+		db.planIndexClosed = true
+		index := db.planIndex
+		db.planIndexMu.Unlock()
+		if index != nil {
+			index.close()
+		}
 		if db.checkpointStop != nil {
 			close(db.checkpointStop)
 			if db.checkpointDone != nil {

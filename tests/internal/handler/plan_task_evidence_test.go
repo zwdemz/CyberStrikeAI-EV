@@ -385,9 +385,9 @@ func TestPlanTaskEvidenceCapacity(t *testing.T) {
 	}
 }
 
-// TestPlanTaskEvidencePrunesOnlyMissingSources covers fact/vulnerability deletion
-// while retaining live sources regardless of the requesting user's permissions.
-func TestPlanTaskEvidencePrunesOnlyMissingSources(t *testing.T) {
+// TestPlanTaskEvidencePrunesInvalidSources covers deletion and source moves,
+// while retaining in-scope sources regardless of the requesting user's permissions.
+func TestPlanTaskEvidencePrunesInvalidSources(t *testing.T) {
 	db, err := database.NewDB(filepath.Join(t.TempDir(), "prune.db"), zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
@@ -430,6 +430,32 @@ func TestPlanTaskEvidencePrunesOnlyMissingSources(t *testing.T) {
 	refs, err := db.ListPlanTaskEvidence(conv.ID, "1", "identity")
 	if err != nil || len(refs) != 1 || refs[0].SourceID != fact.ID {
 		t.Fatalf("pruned a live source or retained a missing source: %#v %v", refs, err)
+	}
+	other, err := db.CreateProject(&database.Project{Name: "moved sources"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 20; index++ {
+		moved, err := db.CreateVulnerability(&database.Vulnerability{ProjectID: project.ID, ConversationID: conv.ID, Title: fmt.Sprintf("Moved %d", index), Severity: "low"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.AddPlanTaskEvidence(conv.ID, "2", "moved", "vulnerability", moved.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE vulnerabilities SET project_id=? WHERE project_id=?`, other.ID, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AddPlanTaskEvidence(conv.ID, "2", "moved", "project_fact", fact.ID); err != nil {
+		t.Fatal("moved findings kept consuming all capacity", err)
+	}
+	if refs, err := db.ListPlanTaskEvidence(conv.ID, "2", "moved"); err != nil || len(refs) != 1 || refs[0].SourceID != fact.ID {
+		t.Fatal("structurally out-of-scope references were retained", refs, err)
+	}
+	var preserved int
+	if err := db.QueryRow(`SELECT count(*) FROM vulnerabilities WHERE project_id=?`, other.ID).Scan(&preserved); err != nil || preserved != 20 {
+		t.Fatal("cleanup modified source findings", preserved, err)
 	}
 }
 

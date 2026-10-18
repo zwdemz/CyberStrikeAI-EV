@@ -37,7 +37,10 @@ func (db *DB) initPlanTaskEvidenceTable() error {
 		conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
 		run_id TEXT NOT NULL, started_at TEXT NOT NULL
 	)`)
-	return err
+	if err != nil {
+		return err
+	}
+	return db.initPlanTaskIndexTable()
 }
 
 // RecordConversationPlanRun persists the authoritative task-manager boundary
@@ -109,12 +112,13 @@ func (db *DB) AddPlanTaskEvidence(conversationID, taskID, identity, kind, source
 	}
 	defer tx.Rollback()
 	// Polymorphic sources cannot use one foreign key. Reclaim only references
-	// whose source no longer exists, never a source hidden by the caller's RBAC.
+	// whose source is missing or structurally outside this conversation/project,
+	// never a source hidden only by the caller's RBAC.
 	if _, err = tx.Exec(`DELETE FROM plan_task_evidence
 		WHERE conversation_id=? AND task_id=? AND task_identity=? AND (
-			(kind='tool_result' AND NOT EXISTS (SELECT 1 FROM process_details WHERE id=plan_task_evidence.source_id)) OR
-			(kind='project_fact' AND NOT EXISTS (SELECT 1 FROM project_facts WHERE id=plan_task_evidence.source_id)) OR
-			(kind='vulnerability' AND NOT EXISTS (SELECT 1 FROM vulnerabilities WHERE id=plan_task_evidence.source_id))
+			(kind='tool_result' AND NOT EXISTS (SELECT 1 FROM process_details p WHERE p.id=plan_task_evidence.source_id AND p.conversation_id=plan_task_evidence.conversation_id AND p.event_type='tool_result')) OR
+			(kind='project_fact' AND NOT EXISTS (SELECT 1 FROM project_facts f JOIN conversations c ON c.id=plan_task_evidence.conversation_id WHERE f.id=plan_task_evidence.source_id AND COALESCE(c.project_id,'')<>'' AND f.project_id=c.project_id)) OR
+			(kind='vulnerability' AND NOT EXISTS (SELECT 1 FROM vulnerabilities v JOIN conversations c ON c.id=plan_task_evidence.conversation_id WHERE v.id=plan_task_evidence.source_id AND ((COALESCE(c.project_id,'')<>'' AND v.project_id=c.project_id) OR (COALESCE(c.project_id,'')='' AND v.conversation_id=c.id))))
 		)`, conversationID, taskID, identity); err != nil {
 		return "", err
 	}

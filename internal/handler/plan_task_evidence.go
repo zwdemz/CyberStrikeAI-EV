@@ -112,7 +112,7 @@ func (h *ConversationHandler) planEvidenceTask(c *gin.Context) (*database.Conver
 		h.planEvidenceFailure(c, err)
 		return nil, nil, session, false
 	}
-	snapshot, err := h.db.ReadConversationPlanTasksSince(id, startedAt)
+	snapshot, err := h.db.ReadConversationPlanTaskSince(id, taskID, startedAt)
 	if err != nil {
 		h.planEvidenceFailure(c, err)
 		return nil, nil, session, false

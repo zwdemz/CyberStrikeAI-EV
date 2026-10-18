@@ -44,6 +44,72 @@ type PlanTaskSnapshot struct {
 	Incomplete bool
 }
 
+// readPlanTaskFile parses one regular file and rejects a concurrent rewrite.
+// It retains all task fields; the source remains the authoritative Eino file.
+func readPlanTaskFile(path, id string, info os.FileInfo) (ConversationPlanTask, error) {
+	var task ConversationPlanTask
+	if !info.Mode().IsRegular() {
+		return task, fmt.Errorf("task is not a regular file")
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return task, err
+	}
+	if err := json.Unmarshal(content, &task); err != nil {
+		return task, err
+	}
+	if strings.TrimSpace(task.ID) == "" {
+		task.ID = id
+	}
+	if task.ID != id {
+		return task, fmt.Errorf("task ID does not match filename")
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return task, err
+	}
+	if after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
+		return task, fmt.Errorf("task changed during read")
+	}
+	task.UpdatedAt = info.ModTime().UTC()
+	task.Identity = PlanTaskIdentity(task)
+	return task, nil
+}
+
+// ReadConversationPlanTaskSince reads one canonical task filename for evidence
+// authorization. Missing/older tasks are absent; partial files report Incomplete.
+func (db *DB) ReadConversationPlanTaskSince(conversationID, taskID string, since time.Time) (PlanTaskSnapshot, error) {
+	result := PlanTaskSnapshot{Tasks: []ConversationPlanTask{}}
+	number, err := strconv.Atoi(taskID)
+	if err != nil || number < 1 || strconv.Itoa(number) != taskID {
+		return result, fmt.Errorf("invalid task ID")
+	}
+	base := strings.TrimSpace(db.einoPlantaskBaseDir)
+	if base == "" {
+		return result, nil
+	}
+	path := filepath.Join(base, sanitizeConversationPathSegment(conversationID), taskID+".json")
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	if !since.IsZero() && info.ModTime().Before(since) {
+		return result, nil
+	}
+	task, err := readPlanTaskFile(path, taskID, info)
+	if err != nil {
+		result.Incomplete = true
+		return result, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(task.Status), "deleted") {
+		result.Tasks = append(result.Tasks, task)
+	}
+	return result, nil
+}
+
 // ListConversationPlanTasks returns the live Eino task board for one
 // conversation. A missing task directory is the normal state for short or
 // legacy conversations and therefore returns an empty list.
@@ -109,7 +175,7 @@ func (db *DB) ReadConversationPlanTasksSince(conversationID string, since time.T
 				continue
 			}
 		}
-		content, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
+		task, readErr := readPlanTaskFile(filepath.Join(dir, entry.Name()), idText, info)
 		if readErr != nil {
 			result.Incomplete = true
 			if db.logger != nil {
@@ -120,28 +186,6 @@ func (db *DB) ReadConversationPlanTasksSince(conversationID string, since time.T
 			}
 			continue
 		}
-		var task ConversationPlanTask
-		if decodeErr := json.Unmarshal(content, &task); decodeErr != nil {
-			result.Incomplete = true
-			// TaskUpdate writes files concurrently with this read. A partial read
-			// is transient, so skip it and let the next poll recover.
-			if db.logger != nil {
-				db.logger.Debug("解析 Eino 任务文件失败",
-					zap.String("conversationId", conversationID),
-					zap.String("file", entry.Name()),
-					zap.Error(decodeErr))
-			}
-			continue
-		}
-		if strings.TrimSpace(task.ID) == "" {
-			task.ID = idText
-		}
-		if task.ID != idText {
-			result.Incomplete = true
-			continue
-		}
-		task.UpdatedAt = info.ModTime().UTC()
-		task.Identity = PlanTaskIdentity(task)
 		if strings.EqualFold(strings.TrimSpace(task.Status), "deleted") {
 			continue
 		}

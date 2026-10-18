@@ -7,7 +7,7 @@
         listOffset: 0, listTotal: 0, offset: 0, total: 0, before: '', filter: 'all', auto: true,
         failures: 0, updated: null, controller: null, timer: null, epoch: 0, active: false,
         tasks: [], taskOffset: 0, taskTotal: 0, boardRunning: false, view: 'board', focus: null,
-        swarmOpen: false, boardPartial: false, boundaryKnown: false, followLatest: true, project: '', evidenceTask: '', evidenceIdentity: '' };
+        swarmOpen: false, boardPartial: false, boardIndexing: false, boundaryKnown: false, followLatest: true, project: '', evidenceTask: '', evidenceIdentity: '' };
     const statusKeys = new Set(['completed', 'failed', 'cancelled', 'timeout', 'running', 'pending', 'queued',
         'blocked', 'result_missing', 'background_running', 'hard_timeout', 'orphaned']);
     const modelEvents = new Set(['iteration', 'thinking', 'reasoning_chain', 'planning', 'model_output_rejected']);
@@ -68,7 +68,7 @@
         state.listOffset = 0; state.listTotal = 0;
         state.tasks = []; state.taskOffset = 0; state.taskTotal = 0; state.boardRunning = false;
         state.boundaryKnown = false;
-        state.boardPartial = false; state.project = '';
+        state.boardPartial = false; state.boardIndexing = false; state.project = '';
     }
 
     /** Map saved task states to board lanes. Completed is awaiting independent
@@ -305,7 +305,8 @@
         if (!state.conversation) return;
         const params = new URLSearchParams({ snapshot: 'latest', limit: String(PAGE_SIZE), offset: String(offset) });
         const result = await read('/api/conversations/' + encodeURIComponent(state.conversation) + '/plan-tasks?' + params, controller);
-        state.boardRunning = result.running === true; state.boardPartial = result.incomplete === true;
+        state.boardRunning = result.running === true; state.boardIndexing = result.indexing === true;
+        state.boardPartial = result.incomplete === true || state.boardIndexing;
         state.boundaryKnown = result.boundaryKnown === true;
         if (!state.boardPartial || !state.tasks.length) {
             state.tasks = (Array.isArray(result.tasks) ? result.tasks : []).map(boardTask).filter(task => task.status !== 'deleted');
@@ -362,7 +363,7 @@
         el('board-prev').disabled = state.taskOffset === 0;
         el('board-next').disabled = state.taskOffset + PAGE_SIZE >= state.taskTotal;
         el('board-range').textContent = state.taskTotal ? (state.taskOffset + 1) + '–' + Math.min(state.taskOffset + PAGE_SIZE, state.taskTotal) + ' / ' + state.taskTotal : '0 / 0';
-        el('board-runtime').textContent = text(state.boardRunning ? 'boardLive' : 'boardSaved') + ' · ' + text(state.followLatest ? 'followingLatest' : 'historySelected') + (state.conversation && !state.boundaryKnown ? ' · ' + text('legacyBoard') : '') + (state.boardPartial ? ' · ' + text('partialBoard') : '');
+        el('board-runtime').textContent = text(state.boardRunning ? 'boardLive' : 'boardSaved') + ' · ' + text(state.followLatest ? 'followingLatest' : 'historySelected') + (state.conversation && !state.boundaryKnown ? ' · ' + text('legacyBoard') : '') + (state.boardPartial ? ' · ' + text(state.boardIndexing ? 'indexingBoard' : 'partialBoard') : '');
         const openCards = new Set([...el('board-columns').querySelectorAll('details[open]')].map(card => card.dataset.task));
         const focusedCard = document.activeElement && document.activeElement.closest('[data-task]');
         const focusedTask = focusedCard && focusedCard.dataset.task;
@@ -444,6 +445,7 @@
         el('conversation').addEventListener('change', () => {
             state.conversation = el('conversation').value; state.turn = ''; state.turns = []; state.details = []; state.summary = {}; state.total = 0; state.before = '';
             state.tasks = []; state.taskTotal = 0; state.taskOffset = 0; state.boardRunning = false;
+            state.boardPartial = false; state.boardIndexing = false; state.boundaryKnown = false;
             state.focus = null; state.followLatest = true; closeEvidence();
             render(); if (state.conversation) run(loadTurns); else cancel();
         });
@@ -504,6 +506,7 @@
         if (linked && linked !== state.conversation) {
             state.conversation = linked; state.turn = ''; state.turns = []; state.details = []; state.summary = {};
             state.tasks = []; state.taskOffset = 0; state.taskTotal = 0; state.boardRunning = false;
+            state.boardPartial = false; state.boardIndexing = false; state.boundaryKnown = false;
         }
         render();
         run(async controller => { const selected = state.conversation; await loadConversations(controller); if (selected) await loadTurns(controller); });

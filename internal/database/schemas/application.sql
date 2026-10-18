@@ -873,6 +873,22 @@ CREATE TABLE conversation_plan_runs (
     started_at TEXT NOT NULL
 );
 
+CREATE TABLE plan_task_file_index (
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    generation TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    task_number INTEGER NOT NULL,
+    modified_at TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    valid INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY(conversation_id,generation,task_id)
+);
+
+CREATE INDEX idx_plan_task_file_page ON plan_task_file_index
+    (conversation_id,generation,valid,task_number,task_id,status,modified_at);
+
 CREATE INDEX idx_workflow_runs_workflow ON workflow_runs(workflow_id);
 
 CREATE UNIQUE INDEX uq_workflow_package_imports_actor_key ON workflow_package_imports(actor_user_id, idempotency_key);

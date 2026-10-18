@@ -21,6 +21,7 @@
     "taskUpdated": "Task updated",
     "previousRun": "Previous-run task, not updated in this run",
     "partialBoard": "Task files updating; retaining the last complete board",
+    "indexingBoard": "Synchronizing task index; retaining the last complete board",
     "historySelected": "Viewing historical turn",
     "followingLatest": "Following latest turn",
     "swarmOptional": "Agent Swarm auxiliary view (expand)",

@@ -27,7 +27,7 @@ const root = path.resolve(__dirname, '../..');
             window.navigateToConversation = id => { window.openedConversation = id; };
             window.activeReads = 0; window.peakReads = 0; window.calls = []; window.failReads = false;
             window.running = false; window.slowConversation = ''; window.responseStatus = 200;
-            window.evidenceLinks = []; window.partialBoard = false; window.latestTurn = ''; window.emptyAssistantHistory = false;
+            window.evidenceLinks = []; window.partialBoard = false; window.indexingBoard = false; window.latestTurn = ''; window.emptyAssistantHistory = false;
             const timestamp = new Date('2026-10-17T04:00:00Z').toISOString();
             window.apiFetch = async (url, options) => {
                 calls.push(url); activeReads++; peakReads = Math.max(peakReads, activeReads);
@@ -51,7 +51,7 @@ const root = path.resolve(__dirname, '../..');
                         } else if (options.method === 'DELETE') { evidenceLinks = []; value = {removed:true}; }
                         else value = { items:evidenceLinks };
                     }
-                    else if (url.includes('/plan-tasks?')) value = { total: 3, running, boundaryKnown:true, incomplete:partialBoard, tasks: partialBoard ? [] : [
+                    else if (url.includes('/plan-tasks?')) value = { total: 3, running, boundaryKnown:true, indexing:indexingBoard, incomplete:partialBoard, tasks: partialBoard || indexingBoard ? [] : [
                         { id: '1', identity:'task-one', subject: '核对授权范围与已有事实', description: '只读取已授权项目的任务记录。', status: 'pending', blockedBy: ['2'] },
                         { id: '2', subject: '整理资产与工具执行结果', description: '汇总已记录的动作与结果，不重复执行。', status: window.taskFinished ? 'completed' : 'in_progress', owner: 'cyberstrike-eino-single' },
                         { id: '3', subject: '核对证据与实际影响', description: '完成执行后，等待人工独立核对证据。', status: 'completed' },
@@ -127,8 +127,14 @@ const root = path.resolve(__dirname, '../..');
         await page.waitForFunction(() => document.getElementById('execution-board-runtime').textContent.includes('正在更新'));
         assert.equal(await page.locator('.execution-task-card').count(), 3, 'partial write erased last complete board');
         assert.equal(await page.locator('[data-task="1"]').getAttribute('open'), '');
-        await page.evaluate(() => { partialBoard = false; });
+        await page.evaluate(() => { partialBoard = false; indexingBoard = true; });
         await page.locator('#execution-board-refresh').click();
+        await page.waitForFunction(() => document.getElementById('execution-board-runtime').textContent.includes('正在同步任务索引'));
+        assert.equal(await page.locator('.execution-task-card').count(), 3, 'index rebuild erased last complete board');
+        assert.equal(await page.locator('[data-task="1"]').getAttribute('open'), '');
+        await page.evaluate(() => { indexingBoard = false; });
+        await page.locator('#execution-board-refresh').click();
+        await page.waitForFunction(() => !document.getElementById('execution-board-runtime').textContent.includes('正在同步任务索引'));
         assert.equal(await page.locator('[data-lane="verify"] .execution-task-card').count(), 1);
         assert.ok((await page.locator('[data-lane="verify"]').innerText()).includes('待核验'));
         assert.ok((await page.locator('[data-lane="execute"]').innerText()).includes('当前已停止'));

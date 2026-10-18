@@ -21,6 +21,7 @@
     "taskUpdated": "任务更新时间",
     "previousRun": "上次运行的任务，当前尚未更新",
     "partialBoard": "任务文件正在更新，暂保留上次完整看板",
+    "indexingBoard": "正在同步任务索引，暂保留上次完整看板",
     "historySelected": "正在查看历史轮次",
     "followingLatest": "跟随最新轮次",
     "swarmOptional": "Agent Swarm 辅助视图（展开查看）",
