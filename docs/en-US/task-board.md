@@ -16,6 +16,8 @@ Expand a task and choose **Linked evidence**. Select a tool result from the curr
 
 Source permission and resource scope are rechecked during search and link reads/writes. Reading links requires `chat:read`; adding requires `chat:write` plus source read access; unlinking requires `chat:delete`. Tool results must belong to this conversation. Facts/vulnerabilities must belong to the same project, or vulnerabilities to the same conversation when no project is bound. Facts additionally require access to their recorded source conversation and any related vulnerability. Inaccessible/deleted sources disclose no label, ID or hidden-reference count.
 
+Before enforcing capacity for a new link, the same transaction removes references whose source is confirmed deleted. Existing sources hidden by a user's permissions are retained; lack of permission never triggers source cleanup.
+
 ## APIs
 
 All endpoints use normal authenticated API middleware and conversation resource checks. IDs in examples are placeholders.

@@ -96,6 +96,16 @@ func (db *DB) AddPlanTaskEvidence(conversationID, taskID, identity, kind, source
 		return "", err
 	}
 	defer tx.Rollback()
+	// Polymorphic sources cannot use one foreign key. Reclaim only references
+	// whose source no longer exists, never a source hidden by the caller's RBAC.
+	if _, err = tx.Exec(`DELETE FROM plan_task_evidence
+		WHERE conversation_id=? AND task_id=? AND task_identity=? AND (
+			(kind='tool_result' AND NOT EXISTS (SELECT 1 FROM process_details WHERE id=plan_task_evidence.source_id)) OR
+			(kind='project_fact' AND NOT EXISTS (SELECT 1 FROM project_facts WHERE id=plan_task_evidence.source_id)) OR
+			(kind='vulnerability' AND NOT EXISTS (SELECT 1 FROM vulnerabilities WHERE id=plan_task_evidence.source_id))
+		)`, conversationID, taskID, identity); err != nil {
+		return "", err
+	}
 	var existing string
 	err = tx.QueryRow(`SELECT id FROM plan_task_evidence WHERE conversation_id=? AND task_id=? AND task_identity=? AND kind=? AND source_id=?`, conversationID, taskID, identity, kind, sourceID).Scan(&existing)
 	if err == nil {

@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -240,13 +239,24 @@ func TestPlanTaskEvidenceCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	message, err := db.AddMessage(conv.ID, "assistant", "done", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := make([]string, 40)
+	for index := range sources {
+		sources[index], err = db.AddProcessDetailWithID(message.ID, conv.ID, "tool_result", "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	var workers sync.WaitGroup
 	results := make(chan error, 40)
 	for index := 0; index < 40; index++ {
 		workers.Add(1)
 		go func(index int) {
 			defer workers.Done()
-			_, err := db.AddPlanTaskEvidence(conv.ID, "1", "identity", "tool_result", strconv.Itoa(index))
+			_, err := db.AddPlanTaskEvidence(conv.ID, "1", "identity", "tool_result", sources[index])
 			results <- err
 		}(index)
 	}
@@ -272,6 +282,68 @@ func TestPlanTaskEvidenceCapacity(t *testing.T) {
 	}
 	if _, err := db.AddPlanTaskEvidence(conv.ID, "1", "identity", "tool_result", "overflow"); !errors.Is(err, database.ErrPlanTaskEvidenceLimit) {
 		t.Fatal("unbounded references", err)
+	}
+	if _, err = db.Exec(`DELETE FROM process_details WHERE id=?`, refs[0].SourceID); err != nil {
+		t.Fatal(err)
+	}
+	extra, err := db.AddProcessDetailWithID(message.ID, conv.ID, "tool_result", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AddPlanTaskEvidence(conv.ID, "1", "identity", "tool_result", extra); err != nil {
+		t.Fatal("deleted source kept consuming capacity", err)
+	}
+	refs, err = db.ListPlanTaskEvidence(conv.ID, "1", "identity")
+	if err != nil || len(refs) != 20 {
+		t.Fatal(refs, err)
+	}
+}
+
+// TestPlanTaskEvidencePrunesOnlyMissingSources covers fact/vulnerability deletion
+// while retaining live sources regardless of the requesting user's permissions.
+func TestPlanTaskEvidencePrunesOnlyMissingSources(t *testing.T) {
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "prune.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	project, err := db.CreateProject(&database.Project{Name: "prune"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := db.CreateConversation("prune", database.ConversationCreateMeta{ProjectID: project.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact, err := db.UpsertProjectFact(&database.ProjectFact{ProjectID: project.ID, FactKey: "evidence/live", Summary: "Live"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := db.UpsertProjectFact(&database.ProjectFact{ProjectID: project.ID, FactKey: "evidence/deleted", Summary: "Deleted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vuln, err := db.CreateVulnerability(&database.Vulnerability{ProjectID: project.ID, ConversationID: conv.ID, Title: "Deleted", Severity: "low"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []database.PlanTaskEvidence{{Kind: "project_fact", SourceID: fact.ID}, {Kind: "project_fact", SourceID: removed.ID}, {Kind: "vulnerability", SourceID: vuln.ID}} {
+		if _, err = db.AddPlanTaskEvidence(conv.ID, "1", "identity", ref.Kind, ref.SourceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = db.Exec(`DELETE FROM project_facts WHERE id=?`, removed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`DELETE FROM vulnerabilities WHERE id=?`, vuln.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AddPlanTaskEvidence(conv.ID, "1", "identity", "project_fact", fact.ID); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := db.ListPlanTaskEvidence(conv.ID, "1", "identity")
+	if err != nil || len(refs) != 1 || refs[0].SourceID != fact.ID {
+		t.Fatalf("pruned a live source or retained a missing source: %#v %v", refs, err)
 	}
 }
 
