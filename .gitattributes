@@ -13,3 +13,5 @@ roles/*.yml text eol=lf
 # Preserve upstream vendor bytes for cross-platform integrity verification.
 web/static/vendor/swarm/*.js -text -whitespace
 web/static/vendor/swarm/*-LICENSE -text
+# Unified diff context whitespace is part of the reproducible vendor patch.
+web/static/vendor/swarm/*.patch -text -whitespace
