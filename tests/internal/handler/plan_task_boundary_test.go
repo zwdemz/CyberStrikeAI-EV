@@ -68,23 +68,37 @@ func TestPlanTaskBoundarySurvivesRestart(t *testing.T) {
 	}
 	db.SetEinoConversationDirs(base, "", "", "")
 	h := handlerimpl.NewConversationHandler(db, zap.NewNop())
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/?snapshot=latest&limit=1", nil)
-	c.Params = gin.Params{{Key: "id", Value: conv.ID}}
-	c.Set(security.ContextSessionKey, security.Session{UserID: user.ID, Scope: database.RBACScopeAll})
-	h.GetConversationPlanTasks(c)
-	var response struct {
+	type planTasksResponse struct {
 		Tasks         []database.ConversationPlanTask `json:"tasks"`
 		Total         int                             `json:"total"`
 		BoundaryKnown bool                            `json:"boundaryKnown"`
 		Running       bool                            `json:"running"`
+		Indexing      bool                            `json:"indexing"`
 	}
-	if w.Code != 200 {
-		t.Fatal(w.Body.String())
-	}
-	if err = json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
+	var response planTasksResponse
+	var w *httptest.ResponseRecorder
+	indexDeadline := time.Now().Add(5 * time.Second)
+	for {
+		w = httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/?snapshot=latest&limit=1", nil)
+		c.Params = gin.Params{{Key: "id", Value: conv.ID}}
+		c.Set(security.ContextSessionKey, security.Session{UserID: user.ID, Scope: database.RBACScopeAll})
+		h.GetConversationPlanTasks(c)
+		if w.Code != http.StatusOK {
+			t.Fatal(w.Body.String())
+		}
+		response = planTasksResponse{}
+		if err = json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if !response.Indexing {
+			break
+		}
+		if time.Now().After(indexDeadline) {
+			t.Fatal("task index did not become ready", w.Body.String())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if response.Total != 1 || len(response.Tasks) != 1 || response.Tasks[0].ID != "2" || !response.BoundaryKnown || response.Running {
 		t.Fatal(w.Body.String())
