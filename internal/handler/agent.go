@@ -279,6 +279,15 @@ func NewAgentHandler(agent *agent.Agent, db *database.DB, cfg *config.Config, lo
 	bus := NewTaskEventBus()
 	tm := NewAgentTaskManager()
 	tm.SetTaskEventBus(bus)
+	if db != nil {
+		tm.runStartRecorder = func(conversationID, runID string, startedAt time.Time) error {
+			err := db.RecordConversationPlanRun(conversationID, runID, startedAt)
+			if err != nil {
+				logger.Error("保存任务运行边界失败", zap.Error(err))
+			}
+			return err
+		}
+	}
 	llmHTTP := &http.Client{Timeout: 2 * time.Minute}
 	var llmCfg *config.OpenAIConfig
 	if cfg != nil {

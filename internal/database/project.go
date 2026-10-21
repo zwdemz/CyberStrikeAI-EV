@@ -422,6 +422,12 @@ func (db *DB) ListProjectFactsForIndex(projectID string, includeDeprecated bool,
 
 // ListProjectFacts 分页列出项目事实。
 func (db *DB) ListProjectFacts(projectID string, filter ProjectFactListFilter, limit, offset int) ([]*ProjectFact, error) {
+	return db.listProjectFacts(projectID, filter, limit, offset, nil)
+}
+
+// listProjectFacts applies optional provenance RBAC before the shared filters'
+// final page limit, retaining the legacy query when access is nil.
+func (db *DB) listProjectFacts(projectID string, filter ProjectFactListFilter, limit, offset int, access *ProjectFactEvidenceAccess) ([]*ProjectFact, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -458,6 +464,11 @@ func (db *DB) ListProjectFacts(projectID string, filter ProjectFactListFilter, l
 		pat := "%" + s + "%"
 		query += " AND (fact_key LIKE ? OR summary LIKE ? OR body LIKE ?)"
 		args = append(args, pat, pat, pat)
+	}
+	if access != nil {
+		clause, values := projectFactEvidenceAccessSQL(*access)
+		query += clause
+		args = append(args, values...)
 	}
 	query += " ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)

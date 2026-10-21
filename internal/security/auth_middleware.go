@@ -27,7 +27,7 @@ func AuthMiddleware(manager *AuthManager) gin.HandlerFunc {
 		token := extractTokenFromRequest(c)
 		session, ok := manager.ValidateToken(token)
 		if !ok {
-			drainRejectedTLSBody(c.Writer, c.Request)
+			drainRejectedClosingBody(c.Writer, c.Request)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "未授权访问，请先登录",
 			})
@@ -49,15 +49,15 @@ func AuthMiddleware(manager *AuthManager) gin.HandlerFunc {
 	}
 }
 
-// drainRejectedTLSBody discards a small, known-length body before rejecting a
-// closing TLS request. Otherwise unread TLS records can reset the connection
+// drainRejectedClosingBody discards a small, known-length body before rejecting a
+// closing HTTP/1 request. Otherwise unread request data can reset the connection
 // before Windows clients receive the 401 response. It never parses the body or
 // authorizes execution; oversized, streaming and Expect requests are skipped.
 // A short read deadline bounds stalled clients; unsupported deadlines skip the
 // drain, and read failures still leave the request unauthorized.
-func drainRejectedTLSBody(writer http.ResponseWriter, request *http.Request) {
+func drainRejectedClosingBody(writer http.ResponseWriter, request *http.Request) {
 	const maxDrainBytes = 8 * 1024
-	if request.TLS == nil || request.ProtoMajor != 1 || !request.Close ||
+	if request.ProtoMajor != 1 || !request.Close ||
 		request.Body == nil || request.ContentLength <= 0 || request.ContentLength > maxDrainBytes ||
 		request.Header.Get("Expect") != "" {
 		return

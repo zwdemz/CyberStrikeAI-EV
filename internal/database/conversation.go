@@ -344,6 +344,12 @@ func (db *DB) GetConversationLite(id string) (*Conversation, error) {
 	return conv, nil
 }
 
+// GetConversationMetadata reads one conversation header without messages or
+// process details. Missing IDs and database failures return an error.
+func (db *DB) GetConversationMetadata(id string) (*Conversation, error) {
+	return db.getConversationMetadata(id)
+}
+
 // getConversationMetadata reads only the conversation header, without its history.
 func (db *DB) getConversationMetadata(id string) (*Conversation, error) {
 	var conv Conversation

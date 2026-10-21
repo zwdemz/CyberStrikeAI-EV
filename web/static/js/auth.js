@@ -44,6 +44,7 @@ function saveAuth(token, expiresAt, meta = {}) {
 }
 
 function clearAuthStorage() {
+    if (typeof window !== 'undefined' && typeof window.stopExecutionView === 'function') window.stopExecutionView();
     if (typeof window.invalidateConversationLiteCache === 'function') window.invalidateConversationLiteCache();
     if (typeof cancelPendingConversationLoad === 'function') cancelPendingConversationLoad();
     authToken = null;
@@ -386,6 +387,14 @@ async function refreshAppData(showTaskErrors = false) {
             console.warn('刷新项目侧栏失败:', error);
         }
     }
+    // Restore a cleared page or a delayed pre-auth denial shell after login.
+    // Do not reset an authorized active view's selections on ordinary refresh.
+    const executionPage = document.getElementById('page-execution-view');
+    if (isTokenValid() && hasPermission('chat:read') && executionPage && executionPage.classList.contains('active') &&
+        (!executionPage.hasChildNodes() || (typeof window.isExecutionViewActive === 'function' && !window.isExecutionViewActive())) &&
+        typeof window.initExecutionView === 'function') {
+        window.initExecutionView();
+    }
 }
 
 async function bootstrapApp() {
@@ -405,6 +414,7 @@ async function bootstrapApp() {
 const PAGE_PERMISSION_MAP = {
     dashboard: 'dashboard:read',
     chat: 'chat:read',
+    'execution-view': 'chat:read',
     hitl: 'hitl:read',
     'tool-guard': 'config:read',
     'info-collect': 'fofa:execute',

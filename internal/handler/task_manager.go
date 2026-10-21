@@ -334,6 +334,9 @@ type AgentTaskManager struct {
 	shuttingDown bool
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
+	// runStartRecorder saves a run boundary before execution, outside the manager
+	// mutex so a busy database cannot block other conversations' state reads.
+	runStartRecorder func(string, string, time.Time) error
 }
 
 const (
@@ -439,15 +442,18 @@ func (m *AgentTaskManager) cleanupStuckCancelling() {
 	}
 }
 
-// StartTask 注册并开始一个新的任务
+// StartTask reserves a conversation run and records its boundary before returning
+// it to execution. Duplicate/shutdown requests fail; storage failure removes the
+// reservation and cancels its scope. Recorder I/O never holds the manager mutex.
 func (m *AgentTaskManager) StartTask(conversationID, message string, cancel context.CancelCauseFunc) (*AgentTask, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if m.shuttingDown {
+		m.mu.Unlock()
 		return nil, errors.New("task manager is shutting down")
 	}
 	if _, exists := m.tasks[conversationID]; exists {
+		m.mu.Unlock()
 		return nil, ErrTaskAlreadyRunning
 	}
 
@@ -467,6 +473,21 @@ func (m *AgentTaskManager) StartTask(conversationID, message string, cancel cont
 
 	m.tasks[conversationID] = task
 	task.hitlCognition = &hitlCognitionState{UserMessage: strings.TrimSpace(message)}
+	recorder := m.runStartRecorder
+	m.mu.Unlock()
+	if recorder != nil {
+		if err := recorder(conversationID, task.RunID, task.StartedAt); err != nil {
+			m.mu.Lock()
+			if m.tasks[conversationID] == task {
+				delete(m.tasks, conversationID)
+			}
+			m.mu.Unlock()
+			task.cancel(err)
+			task.workers.Seal()
+			_ = task.processes.Close()
+			return nil, errors.New("unable to persist task run boundary")
+		}
+	}
 	return task, nil
 }
 

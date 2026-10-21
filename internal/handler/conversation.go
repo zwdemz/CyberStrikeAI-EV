@@ -277,6 +277,10 @@ func (h *ConversationHandler) GetConversation(c *gin.Context) {
 
 // GetConversationPlanTasks returns the task list maintained by the agent's
 // TaskCreate/TaskUpdate tools for this conversation.
+// snapshot=latest explicitly reads the last saved conversation board, including
+// stopped runs; limit/offset bound that view. It is not a per-turn historical
+// snapshot. Invalid snapshot pagination returns 400; existing live-chat behavior
+// remains unchanged when snapshot is omitted. All paths require conversation access.
 func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	session, ok := security.CurrentSession(c)
@@ -284,58 +288,125 @@ func (h *ConversationHandler) GetConversationPlanTasks(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该对话"})
 		return
 	}
-	if _, err := h.db.GetConversationLite(id); err != nil {
+	if _, err := h.db.GetConversationMetadata(id); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "对话不存在"})
 		return
 	}
+	snapshot := c.Query("snapshot")
+	if snapshot != "" && snapshot != "latest" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task snapshot"})
+		return
+	}
+	limit, offset := 50, 0
+	if snapshot == "latest" {
+		var parseErr error
+		limit, parseErr = strconv.Atoi(c.DefaultQuery("limit", "50"))
+		if parseErr != nil || limit < 1 || limit > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task page limit"})
+			return
+		}
+		offset, parseErr = strconv.Atoi(c.DefaultQuery("offset", "0"))
+		if parseErr != nil || offset < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid task page offset"})
+			return
+		}
+	}
 	running := false
 	startedAt := time.Time{}
-	if h.taskState != nil {
+	if snapshot == "latest" {
+		var boundaryErr error
+		running, startedAt, boundaryErr = h.latestConversationPlanState(id)
+		if boundaryErr != nil {
+			h.logger.Error("读取任务边界失败", zap.Error(boundaryErr))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to read task boundary"})
+			return
+		}
+	} else if h.taskState != nil {
 		running, startedAt = h.taskState.ConversationTaskRuntimeState(id)
 	}
-	if !running {
+	runStartedAt := startedAt
+	if !running && snapshot == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"tasks": []database.ConversationPlanTask{}, "total": 0,
 			"completed": 0, "activeStep": 0, "running": false,
 		})
 		return
 	}
-	tasks, err := h.db.ListConversationPlanTasksSince(id, startedAt)
+	var board database.PlanTaskSnapshot
+	var err error
+	total, completed, activeStep := 0, 0, 0
+	indexing := false
+	if snapshot == "latest" {
+		var page database.PlanTaskPage
+		page, err = h.db.ReadConversationPlanTaskPage(c.Request.Context(), id, startedAt, limit, offset)
+		board = page.PlanTaskSnapshot
+		total, completed, activeStep, indexing = page.Total, page.Completed, page.ActiveStep, page.Indexing
+	} else {
+		board, err = h.db.ReadConversationPlanTasksSince(id, startedAt)
+	}
 	if err != nil {
 		h.logger.Error("获取对话任务列表失败", zap.String("conversationId", id), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取任务列表失败"})
 		return
 	}
-
-	completed := 0
-	activeStep := 0
-	for i, task := range tasks {
-		status := strings.ToLower(strings.TrimSpace(task.Status))
-		if status == "completed" {
-			completed++
-		}
-		if activeStep == 0 && status == "in_progress" {
-			activeStep = i + 1
+	tasks := board.Tasks
+	for i := range tasks {
+		task := &tasks[i]
+		switch strings.ToLower(strings.TrimSpace(task.Status)) {
+		case "completed":
+			task.RuntimeStatus = "awaiting_verification"
+		case "in_progress":
+			task.RuntimeStatus = "in_progress"
+			if !running {
+				task.RuntimeStatus = "paused"
+			} else if !runStartedAt.IsZero() && task.UpdatedAt.Before(runStartedAt) {
+				task.RuntimeStatus = "previous_run"
+			}
+		case "pending":
+			task.RuntimeStatus = "pending"
+		default:
+			task.RuntimeStatus = "unknown"
 		}
 	}
-	if activeStep == 0 {
+
+	if snapshot != "latest" {
 		for i, task := range tasks {
-			if strings.ToLower(strings.TrimSpace(task.Status)) != "completed" {
+			status := strings.ToLower(strings.TrimSpace(task.Status))
+			if status == "completed" {
+				completed++
+			}
+			if activeStep == 0 && status == "in_progress" {
 				activeStep = i + 1
-				break
 			}
 		}
-	}
-	if activeStep == 0 && len(tasks) > 0 {
-		activeStep = len(tasks)
+		if activeStep == 0 {
+			for i, task := range tasks {
+				if strings.ToLower(strings.TrimSpace(task.Status)) != "completed" {
+					activeStep = i + 1
+					break
+				}
+			}
+		}
+		if activeStep == 0 && len(tasks) > 0 {
+			activeStep = len(tasks)
+		}
+		total = len(tasks)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"tasks":      tasks,
-		"total":      len(tasks),
-		"completed":  completed,
-		"activeStep": activeStep,
-		"running":    true,
+		"tasks":         tasks,
+		"total":         total,
+		"completed":     completed,
+		"activeStep":    activeStep,
+		"running":       running,
+		"snapshot":      snapshot,
+		"limit":         limit,
+		"offset":        offset,
+		"incomplete":    board.Incomplete,
+		"indexing":      indexing,
+		"observedAt":    time.Now().UTC(),
+		"runStartedAt":  runStartedAt,
+		"boundaryKnown": !runStartedAt.IsZero(),
 	})
 }
 

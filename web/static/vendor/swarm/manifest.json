@@ -1,0 +1,46 @@
+[
+  {
+    "file": "d3-7.9.0.min.js",
+    "package": "d3",
+    "version": "7.9.0",
+    "source": "https://registry.npmjs.org/d3/-/d3-7.9.0.tgz",
+    "integrity": "sha512-e1U46jVP+w7Iut8Jt8ri1YsPOvFpg46k+K8TpCb0P+zjCkjkPnV7WzfDJzMHy1LnA+wj5pLT1wjO901gLXeEhA==",
+    "sha256": "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539"
+  },
+  {
+    "file": "D3-LICENSE",
+    "package": "d3",
+    "version": "7.9.0",
+    "source": "https://registry.npmjs.org/d3/-/d3-7.9.0.tgz",
+    "integrity": "sha512-e1U46jVP+w7Iut8Jt8ri1YsPOvFpg46k+K8TpCb0P+zjCkjkPnV7WzfDJzMHy1LnA+wj5pLT1wjO901gLXeEhA==",
+    "sha256": "3e6849627f74ff73c257a3ae1efb574015d94fc1035c05ec3c15805165efcbc4"
+  },
+  {
+    "file": "three.module.js",
+    "package": "three",
+    "version": "0.186.1",
+    "source": "https://registry.npmjs.org/three/-/three-0.186.1.tgz",
+    "integrity": "sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA==",
+    "sha256": "f34b2458acda5ce8b5e68a1b35a718f14617736a4cf818a82dc58e878f9d17eb",
+    "upstreamSha256": "9052042d676cb0fdc1ddfefe193053f34b7ac0513a616fdac4535d49987812ea",
+    "patch": "three-csprng-uuid.patch"
+  },
+  {
+    "file": "three.core.js",
+    "package": "three",
+    "version": "0.186.1",
+    "source": "https://registry.npmjs.org/three/-/three-0.186.1.tgz",
+    "integrity": "sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA==",
+    "sha256": "480901ddc1bebf28bb2a129f11d9b493f5a45b2470db233dd17b31b8f3f087af",
+    "upstreamSha256": "9edde002b066a9a05676a6127f67735b62baf399bdea529f2f7e31657da769e6",
+    "patch": "three-csprng-uuid.patch"
+  },
+  {
+    "file": "THREE-LICENSE",
+    "package": "three",
+    "version": "0.186.1",
+    "source": "https://registry.npmjs.org/three/-/three-0.186.1.tgz",
+    "integrity": "sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA==",
+    "sha256": "8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc"
+  }
+]

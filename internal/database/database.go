@@ -69,6 +69,9 @@ type DB struct {
 	closeOnce                sync.Once
 	closeErr                 error
 	vulnerabilityCreatedHook func(*Vulnerability)
+	planIndexMu              sync.Mutex
+	planIndex                *planTaskIndex
+	planIndexClosed          bool
 }
 
 // startPassiveCheckpointLoop 启动后台 PASSIVE checkpoint 循环。
@@ -164,6 +167,10 @@ func NewDB(dbPath string, logger *zap.Logger) (*DB, error) {
 	if err := database.initTables(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("初始化表失败: %w", err)
+	}
+	if err := database.initPlanTaskEvidenceTable(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize task evidence: %w", err)
 	}
 	if err := database.migrateLegacyToolGuardBlocks(); err != nil {
 		_ = db.Close()
@@ -1704,6 +1711,13 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closeOnce.Do(func() {
+		db.planIndexMu.Lock()
+		db.planIndexClosed = true
+		index := db.planIndex
+		db.planIndexMu.Unlock()
+		if index != nil {
+			index.close()
+		}
 		if db.checkpointStop != nil {
 			close(db.checkpointStop)
 			if db.checkpointDone != nil {
