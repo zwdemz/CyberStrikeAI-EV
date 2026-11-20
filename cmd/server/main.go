@@ -6,6 +6,7 @@ import (
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/logger"
+	"cyberstrike-ai/internal/processguard"
 	"cyberstrike-ai/internal/security"
 	"cyberstrike-ai/internal/termout"
 	"flag"
@@ -14,17 +15,28 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 	"golang.org/x/term"
 )
 
 func main() {
+	updateActivation := app.TakeUpdateActivation()
+	updateSessions := app.TakeUpdateSessionHandoff()
 	var configPath = flag.String("config", "config.yaml", "Path to the configuration file")
-	var httpsBootstrap = flag.Bool("https", false, "Enable HTTPS for the main site; uses an in-memory self-signed certificate when no cert/key is configured")
+	var httpsBootstrap = flag.Bool("https", false, "Enable HTTPS for the main site; creates and reuses a local self-signed certificate when no cert/key is configured")
 	var httpBootstrap = flag.Bool("http", false, "Force plain HTTP for the main site, overriding TLS settings in the configuration file")
 	var resetAdminPassword = flag.Bool("reset-admin-password", false, "Interactively reset the built-in admin password and exit")
+	checkIsolation := flag.Bool("check-process-isolation", false, "Probe task containment and cleanup, then exit without starting services")
+	checkUpdate := flag.Bool("check-update", false, "Report whether this installation's own repository has anything newer, then exit")
+	applyUpdate := flag.Bool("update", false, "Fast-forward this installation to its own remote, rebuild the binary, and exit")
+	updateRollback := flag.Bool("update-rollback", false, "Undo the last --update: back to the commit and binary kept before it")
 	flag.Parse()
+
+	if handled, code := updateCommandIfNeeded(strings.TrimSpace(*configPath), *checkUpdate, *applyUpdate, *updateRollback); handled {
+		os.Exit(code)
+	}
 
 	// 环境变量兼容（便于 systemd/docker 等不传参场景）
 	if *httpsBootstrap && *httpBootstrap {
@@ -49,17 +61,33 @@ func main() {
 	}
 	localConfig, err := config.EnsureLocalConfig(cp)
 	if err != nil {
-		fmt.Printf("Failed to load config: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
 	}
 
 	cfg, err := config.Load(cp)
 	if err != nil {
-		fmt.Printf("Failed to load config: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
 	}
 	if localConfig.Created {
 		termout.PrintConfigCreated()
+	}
+
+	if *checkIsolation {
+		if err := configureProcessIsolation(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		checkCtx, cancelCheck := context.WithTimeout(context.Background(), 15*time.Second)
+		backend, checkErr := processguard.Check(checkCtx)
+		cancelCheck()
+		if checkErr != nil {
+			fmt.Fprintln(os.Stderr, checkErr)
+			os.Exit(1)
+		}
+		fmt.Printf("{\"checked\":true,\"backend\":%q}\n", backend)
+		return
 	}
 
 	if *resetAdminPassword {
@@ -94,15 +122,32 @@ func main() {
 
 	// MCP 启用且 auth_header_value 为空时，自动生成随机密钥并写回配置
 	if err := config.EnsureMCPAuth(cp, cfg); err != nil {
-		fmt.Printf("Failed to configure MCP authentication: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Failed to configure MCP authentication: %v\n", err)
+		os.Exit(1)
 	}
 	if cfg.MCP.Enabled {
 		config.PrintMCPConfigJSON(cfg.MCP)
 	}
 
 	// 初始化日志
-	log := logger.New(cfg.Log.Level, cfg.Log.Output)
+	log := logger.New(cfg.Log.Level, cfg.Log.Output, logger.DiagnosticOptions{
+		Dir:           cfg.Log.DiagnosticDir,
+		Disabled:      cfg.Log.DiagnosticDisabled,
+		RetentionDays: cfg.Log.DiagnosticRetentionDays,
+	})
+	defer log.Close()
+
+	if err := configureProcessIsolation(cfg); err != nil {
+		log.Fatal("进程隔离初始化失败", "error", err)
+	}
+
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	backend, probeErr := processguard.Check(probeCtx)
+	probeCancel()
+	if probeErr != nil {
+		log.Fatal("进程隔离启动检查失败", "error", probeErr)
+	}
+	log.Info("任务进程隔离已就绪", zap.String("backend", backend))
 
 	// 创建可取消的根 context，用于优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
@@ -113,10 +158,11 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// 创建应用
-	application, err := app.New(cfg, log, cp)
+	application, err := app.New(cfg, log, cp, updateActivation)
 	if err != nil {
 		log.Fatal("应用初始化失败", "error", err)
 	}
+	application.RestoreUpdateSessions(updateSessions)
 
 	// 在后台监听信号
 	go func() {
@@ -204,4 +250,9 @@ func readHiddenPassword(prompt string) (string, error) {
 		return "", err
 	}
 	return string(password), nil
+}
+
+func configureProcessIsolation(cfg *config.Config) error {
+	isolation := cfg.Security.ProcessIsolation
+	return processguard.Configure(processguard.Options{Mode: isolation.Mode, CgroupRoot: isolation.CgroupRoot, MaxProcesses: isolation.MaxProcesses, MemoryMaxBytes: isolation.MemoryMaxBytes, CPUQuotaMicros: isolation.CPUQuotaMicros})
 }

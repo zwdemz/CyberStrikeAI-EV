@@ -104,6 +104,8 @@ Limits and behavior:
 5. Run the query, select results whose ownership has been verified, and choose **Save Selected**.
 6. Review the created, updated, and skipped counts.
 
+FOFA returns the state/province as `region`, which is saved to the asset province field on import. The legacy `province` alias in saved forms or API return-field lists is converted to `region`; this compatibility applies to returned fields, not query expressions.
+
 Internet search results are not automatically your assets. Narrow the query with organization domains, certificates, network ranges, or product fingerprints, then verify authorization before saving results.
 
 ## Normalization and deduplication
@@ -174,7 +176,7 @@ Scan prompts support `{{asset_id}}`, `{{target}}`, `{{host}}`, `{{ip}}`, `{{doma
 
 Select multiple assets and choose **Create Scan Task**. The system creates one subtask per asset and links each asset to its queue and subtask.
 
-The current defaults use manual scheduling, one concurrent task, and Eino single-Agent mode to limit load on targets and the local host. You must still confirm the test window, request rate, permitted validation methods, and approval requirements.
+The current defaults use manual scheduling, one concurrent task, and Pi single-Agent mode to limit load on targets and the local host. You must still confirm the test window, request rate, permitted validation methods, and approval requirements.
 
 ### Risk calculation
 

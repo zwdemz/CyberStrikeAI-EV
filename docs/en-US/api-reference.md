@@ -35,8 +35,8 @@ Prefer `Authorization: Bearer` for scripts. Query tokens can leak through logs.
 
 Single-agent:
 
-- `POST /api/eino-agent`
-- `POST /api/eino-agent/stream`
+- `POST /api/agent`
+- `POST /api/agent/stream`
 
 Multi-agent:
 
@@ -217,7 +217,7 @@ Every record being removed must share a domain, IP address, or Host with the pri
 | API type | Stability | Recommendation |
 | --- | --- | --- |
 | `/api/auth/*` | high | safe to integrate |
-| `/api/eino-agent*` | high | preferred chat entry |
+| `/api/agent*` | high | preferred chat entry |
 | `/api/openapi/spec` | high | client generation |
 | `/api/assets/*` | high | asset management and bulk import |
 | `/api/config*` | medium | admin automation only |
@@ -247,7 +247,7 @@ curl -k https://127.0.0.1:8080/api/conversations \
 ```
 
 ```bash
-curl -k https://127.0.0.1:8080/api/eino-agent \
+curl -k https://127.0.0.1:8080/api/agent \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"message":"Run authorized basic recon against 127.0.0.1; avoid high-risk actions."}'
@@ -258,7 +258,16 @@ curl -k https://127.0.0.1:8080/api/eino-agent \
 - Routes: `internal/app/app.go`
 - Auth middleware: `internal/security/auth_middleware.go`
 - OpenAPI: `internal/handler/openapi.go`
-- Single-agent: `internal/handler/eino_single_agent.go`
+- Single-agent: `internal/handler/single_agent.go`
 - Multi-agent: `internal/handler/multi_agent.go`
 - Asset endpoints: `internal/handler/asset.go`
 - Asset storage and deduplication: `internal/database/asset.go`
+
+## Missing deletes and empty lists
+
+After authentication and permission checks, with the requested module available:
+
+- `DELETE /api/c2/profiles/:id` and `DELETE /api/webshell/connections/:id` return `404` for missing or already deleted objects, with `profile not found` and `connection not found` respectively. Genuine database failures return `500` with a generic message; SQL details stay in server logs.
+- Successful `GET /api/vulnerabilities` and `GET /api/batch-tasks` queries with no matching records return `200`, with `"vulnerabilities": []` or `"queues": []` and a normal count of `"total": 0`.
+
+Clients can distinguish failed calls from successful empty results using the HTTP status. Empty collections for these two list endpoints now use `[]` instead of `null`.

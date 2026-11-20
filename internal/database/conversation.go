@@ -19,15 +19,17 @@ const ProjectFilterUnbound = "__none__"
 
 // Conversation 对话
 type Conversation struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	ProjectID string    `json:"projectId,omitempty"`
-	RoleName  string    `json:"roleName,omitempty"`
-	AgentMode string    `json:"agentMode,omitempty"`
-	Pinned    bool      `json:"pinned"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	Messages  []Message `json:"messages,omitempty"`
+	ID          string                   `json:"id"`
+	Title       string                   `json:"title"`
+	ProjectID   string                   `json:"projectId,omitempty"`
+	RoleName    string                   `json:"roleName,omitempty"`
+	AgentMode   string                   `json:"agentMode,omitempty"`
+	Pinned      bool                     `json:"pinned"`
+	CreatedAt   time.Time                `json:"createdAt"`
+	UpdatedAt   time.Time                `json:"updatedAt"`
+	Messages    []Message                `json:"messages,omitempty"`
+	MessagePage *ConversationMessagePage `json:"messagePage,omitempty"`
+	Retest      *VulnerabilityRetest     `json:"retest,omitempty"`
 }
 
 // Message 消息
@@ -331,6 +333,25 @@ func (db *DB) GetConversation(id string) (*Conversation, error) {
 // GetConversationLite 获取对话（轻量版）：包含 messages，但不加载 process_details。
 // 用于历史会话快速切换，避免一次性把大体量过程详情灌到前端导致卡顿。
 func (db *DB) GetConversationLite(id string) (*Conversation, error) {
+	conv, err := db.getConversationMetadata(id)
+	if err != nil {
+		return nil, err
+	}
+	conv.Messages, err = db.GetMessagesLite(id)
+	if err != nil {
+		return nil, fmt.Errorf("加载消息失败: %w", err)
+	}
+	return conv, nil
+}
+
+// GetConversationMetadata reads one conversation header without messages or
+// process details. Missing IDs and database failures return an error.
+func (db *DB) GetConversationMetadata(id string) (*Conversation, error) {
+	return db.getConversationMetadata(id)
+}
+
+// getConversationMetadata reads only the conversation header, without its history.
+func (db *DB) getConversationMetadata(id string) (*Conversation, error) {
 	var conv Conversation
 	var createdAt, updatedAt string
 	var pinned int
@@ -344,7 +365,7 @@ func (db *DB) GetConversationLite(id string) (*Conversation, error) {
 	).Scan(&conv.ID, &conv.Title, &pinned, &createdAt, &updatedAt, &projectID, &roleName, &agentMode)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("对话不存在")
+			return nil, fmt.Errorf("对话不存在: %w", sql.ErrNoRows)
 		}
 		return nil, fmt.Errorf("查询对话失败: %w", err)
 	}
@@ -378,12 +399,6 @@ func (db *DB) GetConversationLite(id string) (*Conversation, error) {
 
 	conv.Pinned = pinned != 0
 
-	// 加载消息（不加载 process_details / reasoning_content，减少历史会话切换 payload）
-	messages, err := db.GetMessagesLite(id)
-	if err != nil {
-		return nil, fmt.Errorf("加载消息失败: %w", err)
-	}
-	conv.Messages = messages
 	return &conv, nil
 }
 
@@ -397,12 +412,12 @@ func normalizeConversationRoleName(roleName string) string {
 
 func normalizeConversationAgentMode(agentMode string) string {
 	agentMode = strings.ToLower(strings.TrimSpace(agentMode))
-	agentMode = strings.ReplaceAll(agentMode, "-", "_")
+	agentMode = strings.TrimPrefix(strings.ReplaceAll(agentMode, "-", "_"), "eino_")
 	switch agentMode {
 	case "deep", "plan_execute", "supervisor":
 		return agentMode
 	default:
-		return "eino_single"
+		return "single"
 	}
 }
 
@@ -665,81 +680,6 @@ func scanConversationRows(rows *sql.Rows) ([]*Conversation, error) {
 	return conversations, rows.Err()
 }
 
-const ungroupedConversationsSQL = `
-	FROM conversations c
-	WHERE NOT EXISTS (
-		SELECT 1 FROM conversation_group_mappings cgm WHERE cgm.conversation_id = c.id
-	)`
-
-// CountUngroupedConversations 统计不在任何分组中的对话数量。
-func (db *DB) CountUngroupedConversations(projectID string) (int, error) {
-	where := ungroupedConversationsSQL
-	args := []interface{}{}
-	where, args = appendConversationProjectFilter(where, args, projectID, "c")
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) `+where, args...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("统计未分组对话失败: %w", err)
-	}
-	return count, nil
-}
-
-func (db *DB) CountUngroupedConversationsForAccess(projectID, userID, scope string) (int, error) {
-	where := ungroupedConversationsSQL
-	args := []interface{}{}
-	where, args = appendConversationProjectFilter(where, args, projectID, "c")
-	where, args = appendConversationAccessFilter(where, args, userID, scope, "c")
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) `+where, args...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("统计未分组对话失败: %w", err)
-	}
-	return count, nil
-}
-
-// ListUngroupedConversations 列出不在任何分组中的对话（最近对话侧栏）。
-func (db *DB) ListUngroupedConversations(limit, offset int, sortBy, projectID string) ([]*Conversation, error) {
-	orderClause := conversationOrderClause(sortBy, "c")
-	where := ungroupedConversationsSQL
-	args := []interface{}{}
-	where, args = appendConversationProjectFilter(where, args, projectID, "c")
-	args = append(args, limit, offset)
-	rows, err := db.Query(
-		`SELECT c.id, c.title, COALESCE(c.pinned, 0), c.created_at, c.updated_at, c.project_id, c.role_name, c.agent_mode `+
-			where+`
-		 `+orderClause+`
-		 LIMIT ? OFFSET ?`,
-		args...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("查询未分组对话失败: %w", err)
-	}
-	defer rows.Close()
-	return scanConversationRows(rows)
-}
-
-func (db *DB) ListUngroupedConversationsForAccess(limit, offset int, sortBy, projectID, userID, scope string) ([]*Conversation, error) {
-	if scope == RBACScopeAll || strings.TrimSpace(userID) == "" {
-		return db.ListUngroupedConversations(limit, offset, sortBy, projectID)
-	}
-	orderClause := conversationOrderClause(sortBy, "c")
-	where := ungroupedConversationsSQL
-	args := []interface{}{}
-	where, args = appendConversationProjectFilter(where, args, projectID, "c")
-	where, args = appendConversationAccessFilter(where, args, userID, scope, "c")
-	args = append(args, limit, offset)
-	rows, err := db.Query(
-		`SELECT c.id, c.title, COALESCE(c.pinned, 0), c.created_at, c.updated_at, c.project_id, c.role_name, c.agent_mode `+
-			where+`
-		 `+orderClause+`
-		 LIMIT ? OFFSET ?`,
-		args...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("查询未分组对话失败: %w", err)
-	}
-	defer rows.Close()
-	return scanConversationRows(rows)
-}
-
 // GetConversationTitle 获取对话标题（轻量查询，不加载消息）
 func (db *DB) GetConversationTitle(id string) (string, error) {
 	var title string
@@ -766,6 +706,22 @@ func (db *DB) UpdateConversationTitle(id, title string) error {
 	return nil
 }
 
+// UpdateConversationPinned 更新对话置顶状态
+func (db *DB) UpdateConversationPinned(id string, pinned bool) error {
+	pinnedValue := 0
+	if pinned {
+		pinnedValue = 1
+	}
+	_, err := db.Exec(
+		"UPDATE conversations SET pinned = ?, updated_at = ? WHERE id = ?",
+		pinnedValue, time.Now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("更新对话置顶状态失败: %w", err)
+	}
+	return nil
+}
+
 // UpdateConversationTime 更新对话时间
 func (db *DB) UpdateConversationTime(id string) error {
 	_, err := db.Exec(
@@ -784,10 +740,12 @@ func (db *DB) UpdateConversationTime(id string) error {
 // - process_details（过程详情）
 // - attack_chain_nodes（攻击链节点）
 // - attack_chain_edges（攻击链边）
-// - conversation_group_mappings（分组映射）
 // 漏洞记录会保留：vulnerabilities.conversation_id 使用 ON DELETE SET NULL，仅解除与会话的关联。
 // 注意：knowledge_retrieval_logs 在删除前会被显式清理。
 func (db *DB) DeleteConversation(id string) error {
+	if err := db.removePiSessions(id); err != nil {
+		return err
+	}
 	// 删除对话前补全漏洞来源标签，便于在漏洞库中追溯已删除会话的发现。
 	_, err := db.Exec(`
 		UPDATE vulnerabilities
@@ -850,19 +808,19 @@ func (db *DB) removeConversationScopedDir(base, conversationID, label string) {
 	}
 }
 
-func (db *DB) einoReductionBaseDir() string {
+func (db *DB) agentReductionBaseDir() string {
 	if db == nil {
 		return ""
 	}
-	if base := strings.TrimSpace(db.einoReductionRootDir); base != "" {
+	if base := strings.TrimSpace(db.agentReductionRootDir); base != "" {
 		return base
 	}
 	return filepath.Join("tmp", "reduction")
 }
 
-// EinoReductionBaseDir returns the configured reduction cache root.
-func (db *DB) EinoReductionBaseDir() string {
-	return db.einoReductionBaseDir()
+// AgentReductionBaseDir returns the configured reduction cache root.
+func (db *DB) AgentReductionBaseDir() string {
+	return db.agentReductionBaseDir()
 }
 
 // ConversationArtifactsBaseDir returns the conversation-scoped artifacts root.
@@ -873,16 +831,16 @@ func (db *DB) ConversationArtifactsBaseDir() string {
 	return strings.TrimSpace(db.conversationArtifactsDir)
 }
 
-// EinoWorkspaceBaseDir returns the configured agent workspace root.
-func (db *DB) EinoWorkspaceBaseDir() string {
-	return db.einoWorkspaceBaseDir()
+// AgentWorkspaceBaseDir returns the configured agent workspace root.
+func (db *DB) AgentWorkspaceBaseDir() string {
+	return db.agentWorkspaceBaseDir()
 }
 
-func (db *DB) einoWorkspaceBaseDir() string {
+func (db *DB) agentWorkspaceBaseDir() string {
 	if db == nil {
 		return ""
 	}
-	if base := strings.TrimSpace(db.einoWorkspaceRootDir); base != "" {
+	if base := strings.TrimSpace(db.agentWorkspaceRootDir); base != "" {
 		return base
 	}
 	return filepath.Join("tmp", "workspace")
@@ -891,26 +849,55 @@ func (db *DB) einoWorkspaceBaseDir() string {
 func (db *DB) removeConversationScopedDirs(conversationID, projectID string) {
 	// summarization transcript, etc.
 	db.removeConversationScopedDir(db.conversationArtifactsDir, conversationID, "conversation_artifacts")
-	// Eino plantask JSON boards (skills_dir/.eino/plantask/<id>/).
-	db.removeConversationScopedDir(db.einoPlantaskBaseDir, conversationID, "plantask")
-	// Eino ADK runner checkpoints (checkpoint_dir/<id>/).
-	db.removeConversationScopedDir(db.einoCheckpointBaseDir, conversationID, "eino_checkpoint")
-	// Eino reduction persisted tool outputs (tmp/reduction/conversations/<id>/).
+	// Agent plantask JSON boards (skills_dir/.pi/plantask/<id>/).
+	db.removeConversationScopedDir(db.agentPlantaskBaseDir, conversationID, "plantask")
+	// Pi runner checkpoints (checkpoint_dir/<id>/).
+	db.removeConversationScopedDir(db.agentCheckpointBaseDir, conversationID, "legacy_checkpoint")
+	// 上传附件始终归属单个会话，项目绑定的会话也要删，故放在 projectID 判断之外。
+	db.removeChatUploadDirs(conversationID)
+	// Agent reduction persisted tool outputs (tmp/reduction/conversations/<id>/).
 	// Project-bound sessions share projects/<id>/ — skip on single conversation delete.
 	if strings.TrimSpace(projectID) == "" {
-		reductionBase := filepath.Join(db.einoReductionBaseDir(), "conversations")
+		reductionBase := filepath.Join(db.agentReductionBaseDir(), "conversations")
 		db.removeConversationScopedDir(reductionBase, conversationID, "reduction")
-		workspaceBase := filepath.Join(db.einoWorkspaceBaseDir(), "conversations")
+		workspaceBase := filepath.Join(db.agentWorkspaceBaseDir(), "conversations")
 		db.removeConversationScopedDir(workspaceBase, conversationID, "workspace")
 	}
 }
 
+// removeChatUploadDirs 删除 chat_uploads/<日期>/<会话ID>/ 下属于该会话的上传目录。
+// 该根目录比其他产物多一层日期目录，无法复用 removeConversationScopedDir。
+func (db *DB) removeChatUploadDirs(conversationID string) {
+	base := strings.TrimSpace(db.chatUploadsDir)
+	if base == "" || strings.TrimSpace(conversationID) == "" {
+		return
+	}
+	seg := sanitizeConversationPathSegment(conversationID)
+	dates, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	for _, dateDir := range dates {
+		if !dateDir.IsDir() {
+			continue
+		}
+		dir := filepath.Join(base, dateDir.Name(), seg)
+		if rmErr := os.RemoveAll(dir); rmErr != nil && db.logger != nil {
+			db.logger.Warn("删除会话上传目录失败",
+				zap.String("conversationId", conversationID),
+				zap.String("kind", "chat_uploads"),
+				zap.String("dir", dir),
+				zap.Error(rmErr))
+		}
+	}
+}
+
 func (db *DB) removeProjectScopedDirs(projectID string) {
-	// Eino reduction persisted tool outputs (tmp/reduction/projects/<id>/).
-	reductionBase := filepath.Join(db.einoReductionBaseDir(), "projects")
+	// Agent reduction persisted tool outputs (tmp/reduction/projects/<id>/).
+	reductionBase := filepath.Join(db.agentReductionBaseDir(), "projects")
 	db.removeConversationScopedDir(reductionBase, projectID, "reduction")
 	// Agent download/analysis workspace (tmp/workspace/projects/<id>/).
-	workspaceBase := filepath.Join(db.einoWorkspaceBaseDir(), "projects")
+	workspaceBase := filepath.Join(db.agentWorkspaceBaseDir(), "projects")
 	db.removeConversationScopedDir(workspaceBase, projectID, "workspace")
 }
 
@@ -1099,6 +1086,11 @@ func (db *DB) GetMessagesLite(conversationID string) ([]Message, error) {
 	}
 	defer rows.Close()
 
+	return db.scanMessagesLite(rows)
+}
+
+// scanMessagesLite decodes shared lightweight rows; the caller closes rows.
+func (db *DB) scanMessagesLite(rows *sql.Rows) ([]Message, error) {
 	var messages []Message
 	for rows.Next() {
 		var msg Message
@@ -1141,7 +1133,7 @@ func (db *DB) GetMessagesLite(conversationID string) ([]Message, error) {
 		messages = append(messages, msg)
 	}
 
-	return messages, nil
+	return messages, rows.Err()
 }
 
 // turnSliceRange 根据任意一条消息 ID 定位「一轮对话」在 msgs 中的 [start, end) 下标区间（msgs 须已按时间升序，与 GetMessages 一致）。
@@ -1221,13 +1213,18 @@ func (db *DB) DeleteConversationTurn(conversationID, anchorMessageID string) (de
 	}
 
 	_, err = tx.Exec(
-		`UPDATE conversations SET last_react_input = NULL, last_react_output = NULL, updated_at = ? WHERE id = ?`,
+		`UPDATE conversations SET last_react_input = NULL, last_react_output = NULL, pi_session_revision = pi_session_revision + 1, updated_at = ? WHERE id = ?`,
 		time.Now(), conversationID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("clear react data: %w", err)
 	}
 
+	// Invalidate every mode/child session before acknowledging deletion. If cleanup
+	// fails, roll back the messages instead of reporting a misleading success.
+	if err := db.removePiSessions(conversationID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
@@ -1349,6 +1346,7 @@ func (db *DB) AddProcessDetailWithID(messageID, conversationID, eventType, messa
 	if err != nil {
 		return "", fmt.Errorf("添加过程详情失败: %w", err)
 	}
+
 	db.maybeRecordModelTokenUsage(messageID, conversationID, id, eventType, data)
 
 	return id, nil
@@ -1539,6 +1537,11 @@ LIMIT 1`, messageID).Scan(&terminalEvent, &terminalCreatedAt)
 		return nil, fmt.Errorf("统计工具调用详情失败: %w", err)
 	}
 
+	pendingToolStatus := "result_missing"
+	if summary.Status == "running" {
+		pendingToolStatus = "running"
+	}
+
 	execRows, err := db.Query(
 		"SELECT id, event_type, data FROM process_details WHERE message_id = ? AND event_type IN ('tool_call', 'tool_result') ORDER BY created_at ASC, rowid ASC",
 		messageID,
@@ -1549,12 +1552,12 @@ LIMIT 1`, messageID).Scan(&terminalEvent, &terminalCreatedAt)
 	seenExecIDs := make(map[string]bool)
 	// A provider may reuse a fallback toolCallId across streaming rounds. Keep a
 	// FIFO per ID instead of a single index so every persisted call gets at most
-	// one result. Results without a stable ID are kept separate instead of being
-	// guessed by order; showing no link is safer than linking to the wrong tool.
+	// one result. ID-less results still attach to an unmatched call with the same
+	// tool name (parallel nmap 1/2, 2/2 often lose one ID); different tools stay
+	// unlinked so a leftover preview cannot steal another call's slot.
 	toolIndexesByCallID := make(map[string][]int)
 	lastMatchedToolIndexByCallID := make(map[string]int)
 	matchedToolIndexes := make([]bool, 0)
-	nextUnmatchedToolIdx := 0
 	for execRows.Next() {
 		var detailID string
 		var eventType string
@@ -1570,33 +1573,19 @@ LIMIT 1`, messageID).Scan(&terminalEvent, &terminalCreatedAt)
 		if err := json.Unmarshal([]byte(dataJSON), &payload); err != nil {
 			continue
 		}
-		toolName, _ := payload["toolName"].(string)
-		toolName = strings.TrimSpace(toolName)
-		toolCallID, _ := payload["toolCallId"].(string)
-		toolCallID = strings.TrimSpace(toolCallID)
-		execID, _ := payload["executionId"].(string)
-		execID = strings.TrimSpace(execID)
-		status := ""
-		if eventType == "tool_result" {
-			if success, ok := payload["success"].(bool); ok {
-				if success {
-					status = "completed"
-				} else {
-					status = "failed"
-				}
-			} else if isErr, ok := payload["isError"].(bool); ok && isErr {
-				status = "failed"
-			}
-		}
+		toolName := processDetailString(payload, "toolName")
+		toolCallID := processDetailString(payload, "toolCallId")
+		execID := processDetailString(payload, "executionId")
+		status := toolResultStatusFromPayload(payload, eventType)
 		if eventType == "tool_call" {
 			summary.ToolExecutions = append(summary.ToolExecutions, ProcessDetailsToolExecution{
 				ProcessDetailID: strings.TrimSpace(detailID),
 				ToolName:        toolName,
 				ToolCallID:      toolCallID,
-				// This summary is reconstructed from persisted history, not live
-				// execution state. Until a matching result is found the honest state
-				// is "result_missing", never "running".
-				Status: "result_missing",
+				// This summary is reconstructed from persisted history. For an
+				// active assistant turn, a missing result means the call is still
+				// pending; after the turn is terminal it is genuinely incomplete.
+				Status: pendingToolStatus,
 			})
 			matchedToolIndexes = append(matchedToolIndexes, false)
 			if toolCallID != "" {
@@ -1604,36 +1593,14 @@ LIMIT 1`, messageID).Scan(&terminalEvent, &terminalCreatedAt)
 			}
 		}
 		if eventType == "tool_result" {
-			idx := -1
-			if toolCallID != "" {
-				queue := toolIndexesByCallID[toolCallID]
-				for len(queue) > 0 {
-					candidate := queue[0]
-					queue = queue[1:]
-					if candidate >= 0 && candidate < len(matchedToolIndexes) && !matchedToolIndexes[candidate] {
-						idx = candidate
-						break
-					}
-				}
-				toolIndexesByCallID[toolCallID] = queue
-				if idx < 0 {
-					// Multiple persisted result events for one call (for example an
-					// agent-facing reduced result replacing an earlier preview) update
-					// that call instead of consuming an unrelated FIFO entry.
-					if previous, ok := lastMatchedToolIndexByCallID[toolCallID]; ok {
-						idx = previous
-					}
-				}
-			}
-			if idx < 0 && toolCallID != "" {
-				for nextUnmatchedToolIdx < len(matchedToolIndexes) && matchedToolIndexes[nextUnmatchedToolIdx] {
-					nextUnmatchedToolIdx++
-				}
-				if nextUnmatchedToolIdx < len(matchedToolIndexes) {
-					idx = nextUnmatchedToolIdx
-					nextUnmatchedToolIdx++
-				}
-			}
+			idx := matchToolExecutionIndex(
+				summary.ToolExecutions,
+				matchedToolIndexes,
+				toolCallID,
+				toolName,
+				toolIndexesByCallID,
+				lastMatchedToolIndexByCallID,
+			)
 			if idx >= 0 && idx < len(summary.ToolExecutions) {
 				matchedToolIndexes[idx] = true
 				if toolCallID != "" {
@@ -1649,6 +1616,8 @@ LIMIT 1`, messageID).Scan(&terminalEvent, &terminalCreatedAt)
 				summary.ToolExecutions[idx].ExecutionID = execID
 				if status != "" {
 					summary.ToolExecutions[idx].Status = status
+				} else {
+					summary.ToolExecutions[idx].Status = "completed"
 				}
 			} else {
 				summary.ToolExecutions = append(summary.ToolExecutions, ProcessDetailsToolExecution{
@@ -1671,6 +1640,7 @@ LIMIT 1`, messageID).Scan(&terminalEvent, &terminalCreatedAt)
 		return nil, fmt.Errorf("遍历工具执行摘要失败: %w", err)
 	}
 	execRows.Close()
+	db.applyPersistedToolExecutionStatuses(summary.ToolExecutions)
 
 	rows, err := db.Query(
 		"SELECT data FROM process_details WHERE message_id = ? AND event_type = 'iteration' ORDER BY created_at ASC, rowid ASC",
@@ -1703,6 +1673,103 @@ LIMIT 1`, messageID).Scan(&terminalEvent, &terminalCreatedAt)
 	summary.IterationCount = iterCount
 	summary.MaxIteration = maxIter
 	return summary, nil
+}
+
+func processDetailString(payload map[string]interface{}, key string) string {
+	if payload == nil {
+		return ""
+	}
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return ""
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" || s == "<nil>" {
+		return ""
+	}
+	return s
+}
+
+func toolResultStatusFromPayload(payload map[string]interface{}, eventType string) string {
+	if eventType != "tool_result" {
+		return ""
+	}
+	if blocked, _ := payload["blocked"].(bool); blocked || strings.EqualFold(processDetailString(payload, "status"), "blocked") {
+		return "blocked"
+	}
+	if status := processDetailString(payload, "status"); strings.EqualFold(status, "background_running") {
+		return "background_running"
+	}
+	if success, ok := payload["success"].(bool); ok {
+		if success {
+			return "completed"
+		}
+		return "failed"
+	}
+	if isErr, ok := payload["isError"].(bool); ok && isErr {
+		return "failed"
+	}
+	return "completed"
+}
+
+func (db *DB) applyPersistedToolExecutionStatuses(executions []ProcessDetailsToolExecution) {
+	for i := range executions {
+		execID := strings.TrimSpace(executions[i].ExecutionID)
+		if execID == "" {
+			continue
+		}
+		var status string
+		if err := db.QueryRow(`SELECT status FROM tool_executions WHERE id = ?`, execID).Scan(&status); err != nil {
+			continue
+		}
+		status = strings.ToLower(strings.TrimSpace(status))
+		if status == "" {
+			continue
+		}
+		executions[i].Status = status
+	}
+}
+
+func matchToolExecutionIndex(
+	executions []ProcessDetailsToolExecution,
+	matched []bool,
+	toolCallID, toolName string,
+	toolIndexesByCallID map[string][]int,
+	lastMatchedToolIndexByCallID map[string]int,
+) int {
+	if toolCallID != "" {
+		queue := toolIndexesByCallID[toolCallID]
+		for len(queue) > 0 {
+			candidate := queue[0]
+			queue = queue[1:]
+			if candidate >= 0 && candidate < len(matched) && !matched[candidate] {
+				toolIndexesByCallID[toolCallID] = queue
+				return candidate
+			}
+		}
+		toolIndexesByCallID[toolCallID] = queue
+		if previous, ok := lastMatchedToolIndexByCallID[toolCallID]; ok {
+			return previous
+		}
+	}
+	if toolName != "" {
+		for i := range matched {
+			if matched[i] {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(executions[i].ToolName), toolName) {
+				return i
+			}
+		}
+	}
+	if toolCallID != "" {
+		for i := range matched {
+			if !matched[i] {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // GetProcessDetailsPage 分页获取消息的过程详情（按时间升序）。

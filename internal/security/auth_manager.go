@@ -1,6 +1,7 @@
 package security
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"strings"
@@ -28,7 +29,12 @@ type Session struct {
 	Permissions      map[string]bool
 	PermissionScopes map[string]string
 	Scope            string
+	userUpdatedAt    time.Time
 }
+
+type sessionDigest = [sha256.Size]byte
+
+func tokenDigest(token string) sessionDigest { return sha256.Sum256([]byte(token)) }
 
 // AuthManager manages password-based authentication and session lifecycle.
 type AuthManager struct {
@@ -36,7 +42,10 @@ type AuthManager struct {
 	db              *database.DB
 
 	mu       sync.RWMutex
-	sessions map[string]Session
+	sessions map[sessionDigest]Session
+	// Changes when cached authorization is revoked, including while a login
+	// is resolving access outside mu.
+	accessVersion uint64
 }
 
 // NewAuthManager creates a new AuthManager instance.
@@ -47,7 +56,7 @@ func NewAuthManager(sessionDurationHours int) *AuthManager {
 
 	return &AuthManager{
 		sessionDuration: time.Duration(sessionDurationHours) * time.Hour,
-		sessions:        make(map[string]Session),
+		sessions:        make(map[sessionDigest]Session),
 	}
 }
 
@@ -87,14 +96,31 @@ func (a *AuthManager) AttachRBACStore(db *database.DB) (generatedAdminPassword s
 
 // Authenticate validates the password and creates a new session.
 func (a *AuthManager) Authenticate(username, password string) (string, time.Time, error) {
-	session, err := a.authenticateSession(username, password)
-	if err != nil {
-		return "", time.Time{}, err
+	for {
+		a.mu.RLock()
+		version := a.accessVersion
+		a.mu.RUnlock()
+		session, err := a.authenticateSession(username, password)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		if a.publishSession(session, version) {
+			return session.Token, session.ExpiresAt, nil
+		}
 	}
+}
+
+// publishSession rejects a snapshot resolved across an authorization revocation.
+func (a *AuthManager) publishSession(session Session, version uint64) bool {
 	a.mu.Lock()
-	a.sessions[session.Token] = session
-	a.mu.Unlock()
-	return session.Token, session.ExpiresAt, nil
+	defer a.mu.Unlock()
+	if a.accessVersion != version {
+		return false
+	}
+	digest := tokenDigest(session.Token)
+	session.Token = ""
+	a.sessions[digest] = session
+	return true
 }
 
 func (a *AuthManager) authenticateSession(username, password string) (Session, error) {
@@ -126,21 +152,30 @@ func (a *AuthManager) authenticateSession(username, password string) (Session, e
 	if err != nil {
 		return Session{}, err
 	}
+	if !access.User.Enabled || access.User.PasswordHash != user.PasswordHash {
+		return Session{}, ErrInvalidPassword
+	}
+	session := sessionForAccess(access, expiresAt)
+	session.Token = token
+	return session, nil
+}
+
+func sessionForAccess(access *database.RBACAccess, expiresAt time.Time) Session {
 	roleIDs := make([]string, 0, len(access.Roles))
 	for _, role := range access.Roles {
 		roleIDs = append(roleIDs, role.ID)
 	}
 	return Session{
-		Token:            token,
 		ExpiresAt:        expiresAt,
-		UserID:           user.ID,
-		Username:         user.Username,
-		DisplayName:      user.DisplayName,
+		UserID:           access.User.ID,
+		Username:         access.User.Username,
+		DisplayName:      access.User.DisplayName,
 		Roles:            roleIDs,
 		Permissions:      access.Permissions,
 		PermissionScopes: access.PermissionScopes,
 		Scope:            access.Scope,
-	}, nil
+		userUpdatedAt:    access.User.UpdatedAt,
+	}
 }
 
 func (s Session) ScopeFor(permission string) string {
@@ -156,8 +191,9 @@ func (a *AuthManager) ValidateToken(token string) (Session, bool) {
 		return Session{}, false
 	}
 
+	digest := tokenDigest(token)
 	a.mu.RLock()
-	session, ok := a.sessions[token]
+	session, ok := a.sessions[digest]
 	a.mu.RUnlock()
 	if !ok {
 		return Session{}, false
@@ -165,11 +201,12 @@ func (a *AuthManager) ValidateToken(token string) (Session, bool) {
 
 	if time.Now().After(session.ExpiresAt) {
 		a.mu.Lock()
-		delete(a.sessions, token)
+		delete(a.sessions, digest)
 		a.mu.Unlock()
 		return Session{}, false
 	}
 
+	session.Token = token
 	return session, true
 }
 
@@ -212,6 +249,7 @@ func (a *AuthManager) UpdateUserPassword(userID, password string) error {
 		return err
 	}
 	a.mu.Lock()
+	a.accessVersion++
 	for token, session := range a.sessions {
 		if session.UserID == userID {
 			delete(a.sessions, token)
@@ -228,7 +266,7 @@ func (a *AuthManager) RevokeToken(token string) {
 	}
 
 	a.mu.Lock()
-	delete(a.sessions, token)
+	delete(a.sessions, tokenDigest(token))
 	a.mu.Unlock()
 }
 
@@ -238,6 +276,7 @@ func (a *AuthManager) RevokeUserSessions(userID string) {
 		return
 	}
 	a.mu.Lock()
+	a.accessVersion++
 	for token, session := range a.sessions {
 		if session.UserID == userID {
 			delete(a.sessions, token)
@@ -246,9 +285,30 @@ func (a *AuthManager) RevokeUserSessions(userID string) {
 	a.mu.Unlock()
 }
 
+// RevokeRoleSessions invalidates only snapshots containing the changed role.
+// Matching the session snapshot also works after the role has been deleted.
+func (a *AuthManager) RevokeRoleSessions(roleID string) {
+	roleID = strings.TrimSpace(roleID)
+	if roleID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.accessVersion++
+	for token, session := range a.sessions {
+		for _, id := range session.Roles {
+			if id == roleID {
+				delete(a.sessions, token)
+				break
+			}
+		}
+	}
+}
+
 func (a *AuthManager) RevokeAllSessions() {
 	a.mu.Lock()
-	a.sessions = make(map[string]Session)
+	a.accessVersion++
+	a.sessions = make(map[sessionDigest]Session)
 	a.mu.Unlock()
 }
 

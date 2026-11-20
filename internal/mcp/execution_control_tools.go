@@ -19,7 +19,7 @@ const (
 	maxPartialPreviewBytes      = 64 * 1024
 )
 
-// RegisterExecutionControlTools exposes execution handle operations to Eino as
+// RegisterExecutionControlTools exposes execution handle operations to Agent as
 // ordinary MCP tools. This keeps the agent loop native: the model calls a tool,
 // receives a bounded result, and may call wait_tool_execution again if needed.
 func RegisterExecutionControlTools(server *Server, external *ExternalMCPManager) {
@@ -190,6 +190,9 @@ func formatExecutionForModel(exec *ToolExecution, opts executionFormatOptions) s
 	if exec.Result != nil {
 		payload["result"] = ToolResultPlainText(exec.Result)
 		payload["is_error"] = exec.Result.IsError
+		if exec.Result.Blocked {
+			payload["blocked"] = true
+		}
 	}
 	if opts.includePartialOutput && exec.PartialOutput != "" {
 		partial := tailStringBytes(exec.PartialOutput, opts.partialMaxBytes)

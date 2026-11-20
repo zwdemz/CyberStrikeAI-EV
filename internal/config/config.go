@@ -6,47 +6,70 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
-	"cyberstrike-ai/internal/toolguard"
 	"cyberstrike-ai/internal/termout"
+	"cyberstrike-ai/internal/toolguard"
 
 	"gopkg.in/yaml.v3"
 )
 
+// TestProxyConfig controls only opted-in target testing, never model-provider clients.
+type TestProxyConfig struct {
+	ProbeURLs              []string `yaml:"probe_urls,omitempty" json:"probe_urls,omitempty"`
+	MaxConcurrent          int      `yaml:"max_concurrent" json:"max_concurrent"`
+	MaxConcurrentPerTarget int      `yaml:"max_concurrent_per_target" json:"max_concurrent_per_target"`
+	QueueTimeoutSeconds    int      `yaml:"queue_timeout_seconds" json:"queue_timeout_seconds"`
+}
+
 type Config struct {
-	Version     string                `yaml:"version,omitempty" json:"version,omitempty"` // 前端显示的版本号，如 v1.3.3
-	Server      ServerConfig          `yaml:"server"`
-	Log         LogConfig             `yaml:"log"`
-	MCP         MCPConfig             `yaml:"mcp"`
-	AI          AIConfig              `yaml:"ai,omitempty" json:"ai,omitempty"`
-	OpenAI      OpenAIConfig          `yaml:"openai,omitempty" json:"openai,omitempty"`
-	FOFA        FofaConfig            `yaml:"fofa,omitempty" json:"fofa,omitempty"`
-	ZoomEye     SpaceSearchConfig     `yaml:"zoomeye,omitempty" json:"zoomeye,omitempty"`
-	Quake       SpaceSearchConfig     `yaml:"quake,omitempty" json:"quake,omitempty"`
-	Shodan      SpaceSearchConfig     `yaml:"shodan,omitempty" json:"shodan,omitempty"`
-	Agent       AgentConfig           `yaml:"agent"`
-	Hitl        HitlConfig            `yaml:"hitl,omitempty" json:"hitl,omitempty"`
-	Security    SecurityConfig        `yaml:"security"`
-	Database    DatabaseConfig        `yaml:"database"`
-	Auth        AuthConfig            `yaml:"auth"`
-	Audit       AuditConfig           `yaml:"audit,omitempty" json:"audit,omitempty"`
-	Monitor     MonitorConfig         `yaml:"monitor,omitempty" json:"monitor,omitempty"`
-	ExternalMCP ExternalMCPConfig     `yaml:"external_mcp,omitempty"`
-	Knowledge   KnowledgeConfig       `yaml:"knowledge,omitempty"`
-	C2          C2Config              `yaml:"c2,omitempty" json:"c2,omitempty"`                 // 内置 C2 总开关；未配置时默认启用
-	Robots      RobotsConfig          `yaml:"robots,omitempty" json:"robots,omitempty"`         // 企业微信/钉钉/飞书等机器人配置
-	RolesDir    string                `yaml:"roles_dir,omitempty" json:"roles_dir,omitempty"`   // 角色配置文件目录（新方式）
-	Roles       map[string]RoleConfig `yaml:"roles,omitempty" json:"roles,omitempty"`           // 向后兼容：支持在主配置文件中定义角色
-	SkillsDir   string                `yaml:"skills_dir,omitempty" json:"skills_dir,omitempty"` // Skills配置文件目录
-	AgentsDir   string                `yaml:"agents_dir,omitempty" json:"agents_dir,omitempty"` // 多代理子 Agent Markdown 定义目录（*.md，YAML front matter）
-	MultiAgent  MultiAgentConfig      `yaml:"multi_agent,omitempty" json:"multi_agent,omitempty"`
-	Project     ProjectConfig         `yaml:"project,omitempty" json:"project,omitempty"`
-	Vision      VisionConfig          `yaml:"vision,omitempty" json:"vision,omitempty"`
-	ToolGuard   *toolguard.Config     `yaml:"tool_guard,omitempty" json:"tool_guard,omitempty"`
+	TestProxy    TestProxyConfig       `yaml:"test_proxy,omitempty" json:"test_proxy,omitempty"`
+	APIClient    APIClientConfig       `yaml:"api_client,omitempty" json:"api_client,omitempty"`
+	Version      string                `yaml:"version,omitempty" json:"version,omitempty"` // 前端显示的版本号，如 v1.3.3
+	Server       ServerConfig          `yaml:"server"`
+	Log          LogConfig             `yaml:"log"`
+	MCP          MCPConfig             `yaml:"mcp"`
+	AI           AIConfig              `yaml:"ai,omitempty" json:"ai,omitempty"`
+	OpenAI       OpenAIConfig          `yaml:"openai,omitempty" json:"openai,omitempty"`
+	FOFA         FofaConfig            `yaml:"fofa,omitempty" json:"fofa,omitempty"`
+	ZoomEye      SpaceSearchConfig     `yaml:"zoomeye,omitempty" json:"zoomeye,omitempty"`
+	Quake        SpaceSearchConfig     `yaml:"quake,omitempty" json:"quake,omitempty"`
+	Shodan       SpaceSearchConfig     `yaml:"shodan,omitempty" json:"shodan,omitempty"`
+	Agent        AgentConfig           `yaml:"agent"`
+	Hitl         HitlConfig            `yaml:"hitl,omitempty" json:"hitl,omitempty"`
+	ToolGuard    *toolguard.Config     `yaml:"tool_guard,omitempty" json:"tool_guard,omitempty"`
+	Security     SecurityConfig        `yaml:"security"`
+	Database     DatabaseConfig        `yaml:"database"`
+	Auth         AuthConfig            `yaml:"auth"`
+	Audit        AuditConfig           `yaml:"audit,omitempty" json:"audit,omitempty"`
+	Monitor      MonitorConfig         `yaml:"monitor,omitempty" json:"monitor,omitempty"`
+	Storage      StorageConfig         `yaml:"storage,omitempty" json:"storage,omitempty"`
+	ExternalMCP  ExternalMCPConfig     `yaml:"external_mcp,omitempty"`
+	Knowledge    KnowledgeConfig       `yaml:"knowledge,omitempty"`
+	C2           C2Config              `yaml:"c2,omitempty" json:"c2,omitempty"`                 // 内置 C2 总开关；未配置时默认启用
+	Robots       RobotsConfig          `yaml:"robots,omitempty" json:"robots,omitempty"`         // 企业微信/钉钉/飞书等机器人配置
+	RolesDir     string                `yaml:"roles_dir,omitempty" json:"roles_dir,omitempty"`   // 角色配置文件目录（新方式）
+	Roles        map[string]RoleConfig `yaml:"roles,omitempty" json:"roles,omitempty"`           // 向后兼容：支持在主配置文件中定义角色
+	SkillsDir    string                `yaml:"skills_dir,omitempty" json:"skills_dir,omitempty"` // Skills配置文件目录
+	AgentsDir    string                `yaml:"agents_dir,omitempty" json:"agents_dir,omitempty"` // 多代理子 Agent Markdown 定义目录（*.md，YAML front matter）
+	MultiAgent   MultiAgentConfig      `yaml:"multi_agent,omitempty" json:"multi_agent,omitempty"`
+	Project      ProjectConfig         `yaml:"project,omitempty" json:"project,omitempty"`
+	Vision       VisionConfig          `yaml:"vision,omitempty" json:"vision,omitempty"`
+	Update       UpdateConfig          `yaml:"update,omitempty" json:"update,omitempty"`
+	AgentRuntime AgentRuntimeConfig    `yaml:"agent_runtime,omitempty" json:"agent_runtime,omitempty"`
+}
+
+// UpdateConfig 一键更新的更新源（可选）：一个仓库地址，更新跟随该仓库的默认分支。
+// 留空即官方仓库（internal/update.DefaultRepoURL），跟随镜像或自己的二开只需改这一处。
+type UpdateConfig struct {
+	// Repo 更新源仓库地址（https/http/ssh/git/file:// 或本机绝对路径）；留空 = 官方仓库。
+	Repo string `yaml:"repo,omitempty" json:"repo,omitempty"`
 }
 
 type EnsureLocalConfigResult struct {
@@ -56,25 +79,28 @@ type EnsureLocalConfigResult struct {
 
 const (
 	DefaultMaxCompletionTokens                        = 16384
-	DefaultMaxToolArgumentsBytes                      = 65536
-	DefaultMaxShellCommandBytes                       = 65536
-	DefaultModelOutputRepairMaxAttempts               = 1
 	DefaultSummarizationUserIntentLedgerMaxRunes      = 96000
 	DefaultSummarizationUserIntentLedgerEntryMaxRunes = 16000
 	DefaultLatestUserMessageMaxRunes                  = 48000
 	DefaultLatestUserMessageHeadRunes                 = 24000
 	DefaultLatestUserMessageTailRunes                 = 24000
-	DefaultSummarizationOutputReserveTokens           = 8192
+	DefaultSummarizationOutputReserveTokens           = 40960
 )
 
 // ProjectConfig 项目黑板（跨对话共享事实）配置。
 type ProjectConfig struct {
+	ContextCheckpoints      *bool  `yaml:"context_checkpoints,omitempty" json:"context_checkpoints,omitempty"`
 	Enabled                 bool   `yaml:"enabled" json:"enabled"`
 	DefaultProjectID        string `yaml:"default_project_id,omitempty" json:"default_project_id,omitempty"` // 机器人/批量等无显式项目时绑定的默认项目
 	FactIndexMaxRunes       int    `yaml:"fact_index_max_runes,omitempty" json:"fact_index_max_runes,omitempty"`
 	FactIndexPathMaxRunes   int    `yaml:"fact_index_path_max_runes,omitempty" json:"fact_index_path_max_runes,omitempty"`
 	FactSummaryMaxRunes     int    `yaml:"fact_summary_max_runes,omitempty" json:"fact_summary_max_runes,omitempty"`
 	DefaultInjectDeprecated bool   `yaml:"default_inject_deprecated,omitempty" json:"default_inject_deprecated,omitempty"`
+}
+
+// ContextCheckpointsEnabled persists generated continuation notes on compaction.
+func (c ProjectConfig) ContextCheckpointsEnabled() bool {
+	return c.ContextCheckpoints == nil || *c.ContextCheckpoints
 }
 
 // FactIndexMaxRunesEffective 自动注入黑板索引的最大 rune 数。
@@ -101,16 +127,16 @@ func (c ProjectConfig) FactSummaryMaxRunesEffective() int {
 	return c.FactSummaryMaxRunes
 }
 
-// MultiAgentConfig 基于 CloudWeGo Eino adk/prebuilt 的多代理编排（deep | plan_execute | supervisor）。
+// MultiAgentConfig 基于 Pi adk/prebuilt 的多代理编排（deep | plan_execute | supervisor）。
 type MultiAgentConfig struct {
 	Enabled               bool   `yaml:"enabled" json:"enabled"`
-	RobotDefaultAgentMode string `yaml:"robot_default_agent_mode,omitempty" json:"robot_default_agent_mode,omitempty"` // eino_single | deep | plan_execute | supervisor
-	BatchUseMultiAgent    bool   `yaml:"batch_use_multi_agent" json:"batch_use_multi_agent"`                           // 为 true 时批量任务队列中每子任务走 Eino 多代理
+	RobotDefaultAgentMode string `yaml:"robot_default_agent_mode,omitempty" json:"robot_default_agent_mode,omitempty"` // single | deep | plan_execute | supervisor
+	BatchUseMultiAgent    bool   `yaml:"batch_use_multi_agent" json:"batch_use_multi_agent"`                           // 为 true 时批量任务队列中每子任务走 Agent 多代理
 	// Orchestration 已弃用：保留仅兼容旧版 config.yaml；编排由聊天/WebShell 请求体 orchestration 决定，未传时按 deep。
 	Orchestration string `yaml:"orchestration,omitempty" json:"orchestration,omitempty"`
 	// MaxIteration 已废弃：统一使用 agent.max_iterations（YAML 中保留字段仅为兼容旧配置，运行时不读取）。
 	MaxIteration int `yaml:"max_iteration,omitempty" json:"max_iteration,omitempty"`
-	// PlanExecuteLoopMaxIterations plan_execute 模式下 execute↔replan 外层循环上限；0 表示用 Eino 默认 10。
+	// PlanExecuteLoopMaxIterations plan_execute 模式下 execute↔replan 外层循环上限；0 表示用 Agent 默认 10。
 	PlanExecuteLoopMaxIterations int `yaml:"plan_execute_loop_max_iterations,omitempty" json:"plan_execute_loop_max_iterations,omitempty"`
 	// SubAgentMaxIterations 已废弃：子代理与主代理均使用 agent.max_iterations（Markdown max_iterations>0 可覆盖）。
 	SubAgentMaxIterations   int    `yaml:"sub_agent_max_iterations,omitempty" json:"sub_agent_max_iterations,omitempty"`
@@ -125,12 +151,10 @@ type MultiAgentConfig struct {
 	// SubAgentUserContextMaxRunes caps user-context supplement for sub-agent task descriptions.
 	// 0 (default) preserves all user turns verbatim; >0 caps total runes; negative disables injection.
 	SubAgentUserContextMaxRunes int `yaml:"sub_agent_user_context_max_runes,omitempty" json:"sub_agent_user_context_max_runes,omitempty"`
-	// EinoSkills configures CloudWeGo Eino ADK skill middleware + optional local filesystem/execute on DeepAgent.
-	EinoSkills MultiAgentEinoSkillsConfig `yaml:"eino_skills,omitempty" json:"eino_skills,omitempty"`
-	// EinoMiddleware wires optional ADK middleware (patchtoolcalls, toolsearch, plantask, reduction) and Deep extras.
-	EinoMiddleware MultiAgentEinoMiddlewareConfig `yaml:"eino_middleware,omitempty" json:"eino_middleware,omitempty"`
-	// EinoCallbacks attaches CloudWeGo eino callbacks.InitCallbacks on ADK Runner context (structured logs + optional SSE trace).
-	EinoCallbacks MultiAgentEinoCallbacksConfig `yaml:"eino_callbacks,omitempty" json:"eino_callbacks,omitempty"`
+	// Skills configures native skill loading + optional local filesystem/execute on DeepAgent.
+	Skills AgentSkillsConfig `yaml:"skills,omitempty" json:"skills,omitempty"`
+	// Runtime wires native tool discovery, task boards, output budgeting and model resilience.
+	Runtime AgentTuningConfig `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 }
 
 // SubAgentUserContextMaxRunesEffective returns max runes for sub-agent task supplement; 0 = unlimited; negative = disabled.
@@ -138,132 +162,8 @@ func (c MultiAgentConfig) SubAgentUserContextMaxRunesEffective() int {
 	return c.SubAgentUserContextMaxRunes
 }
 
-// MultiAgentEinoCallbacksConfig enables Eino unified callbacks on each ADK agent run (deep / plan_execute / supervisor / eino_single).
-// Modes: log_only (zap + optional OTel; no SSE to browser), sse (adds client SSE eino_trace_* when sse_trace_to_client), full (sse rules + stream callback copies closed).
-type MultiAgentEinoCallbacksConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Mode    string `yaml:"mode,omitempty" json:"mode,omitempty"` // log_only | sse | full; empty with enabled=true defaults to log_only
-	// SseTraceToClient when true emits eino_trace_* SSE for UI (use only for admin/debug; nil/false recommended in production).
-	SseTraceToClient *bool `yaml:"sse_trace_to_client,omitempty" json:"sse_trace_to_client,omitempty"`
-	// Otel configures OpenTelemetry trace export (independent of mode; exporter none disables export even if enabled).
-	Otel MultiAgentEinoCallbacksOtelConfig `yaml:"otel,omitempty" json:"otel,omitempty"`
-	// MaxInputSummaryRunes / MaxOutputSummaryRunes cap text placed in SSE payloads and debug logs (not full payloads).
-	MaxInputSummaryRunes  int `yaml:"max_input_summary_runes,omitempty" json:"max_input_summary_runes,omitempty"`
-	MaxOutputSummaryRunes int `yaml:"max_output_summary_runes,omitempty" json:"max_output_summary_runes,omitempty"`
-	// ZapVerbose when true logs input/output summaries at zap.Debug on start/end; false uses Info with short fields only.
-	ZapVerbose bool `yaml:"zap_verbose,omitempty" json:"zap_verbose,omitempty"`
-}
-
-// MultiAgentEinoCallbacksOtelConfig OpenTelemetry for Eino callback spans (W3C trace in collector / stdout).
-type MultiAgentEinoCallbacksOtelConfig struct {
-	Enabled      bool    `yaml:"enabled" json:"enabled"`
-	ServiceName  string  `yaml:"service_name,omitempty" json:"service_name,omitempty"`
-	Exporter     string  `yaml:"exporter,omitempty" json:"exporter,omitempty"`           // none | stdout | otlphttp
-	OTLPEndpoint string  `yaml:"otlp_endpoint,omitempty" json:"otlp_endpoint,omitempty"` // host:port, e.g. localhost:4318 (path /v1/traces)
-	SampleRatio  float64 `yaml:"sample_ratio,omitempty" json:"sample_ratio,omitempty"`   // 0–1, default 1.0
-}
-
-// EinoCallbacksModeEffective returns off | log_only | sse | full.
-func (c MultiAgentEinoCallbacksConfig) EinoCallbacksModeEffective() string {
-	if !c.Enabled {
-		return "off"
-	}
-	m := strings.TrimSpace(strings.ToLower(c.Mode))
-	switch m {
-	case "log_only":
-		return "log_only"
-	case "sse":
-		return "sse"
-	case "full":
-		return "full"
-	case "":
-		return "log_only"
-	default:
-		return "log_only"
-	}
-}
-
-// SseTraceToClientEffective is false unless explicitly set true (best practice: do not expose framework traces to end users by default).
-func (c MultiAgentEinoCallbacksConfig) SseTraceToClientEffective() bool {
-	if c.SseTraceToClient == nil {
-		return false
-	}
-	return *c.SseTraceToClient
-}
-
-// ShouldEmitEinoTraceSSE is true when client-visible trace events should be sent over progress/SSE.
-func (c MultiAgentEinoCallbacksConfig) ShouldEmitEinoTraceSSE(mode string) bool {
-	if !c.SseTraceToClientEffective() {
-		return false
-	}
-	return mode == "sse" || mode == "full"
-}
-
-// OtelExporterEffective returns none | stdout | otlphttp.
-func (c MultiAgentEinoCallbacksOtelConfig) OtelExporterEffective() string {
-	e := strings.TrimSpace(strings.ToLower(c.Exporter))
-	switch e {
-	case "none", "stdout", "otlphttp":
-		return e
-	case "":
-		if c.Enabled {
-			return "stdout"
-		}
-		return "none"
-	default:
-		return "none"
-	}
-}
-
-// OtelTracingActive is true when spans should be started (enabled + non-none exporter).
-func (c MultiAgentEinoCallbacksConfig) OtelTracingActive() bool {
-	if !c.Otel.Enabled {
-		return false
-	}
-	return c.Otel.OtelExporterEffective() != "none"
-}
-
-func (c MultiAgentEinoCallbacksOtelConfig) ServiceNameEffective() string {
-	s := strings.TrimSpace(c.ServiceName)
-	if s != "" {
-		return s
-	}
-	return "cyberstrike-ai"
-}
-
-func (c MultiAgentEinoCallbacksOtelConfig) SampleRatioEffective() float64 {
-	r := c.SampleRatio
-	if r <= 0 {
-		return 1.0
-	}
-	if r > 1 {
-		return 1.0
-	}
-	return r
-}
-
-func (c MultiAgentEinoCallbacksConfig) EinoCallbacksMaxInputSummaryRunes() int {
-	if c.MaxInputSummaryRunes > 0 {
-		return c.MaxInputSummaryRunes
-	}
-	return 400
-}
-
-func (c MultiAgentEinoCallbacksConfig) EinoCallbacksMaxOutputSummaryRunes() int {
-	if c.MaxOutputSummaryRunes > 0 {
-		return c.MaxOutputSummaryRunes
-	}
-	return 400
-}
-
-// MultiAgentEinoMiddlewareConfig optional Eino ADK middleware and Deep / supervisor tuning.
-type MultiAgentEinoMiddlewareConfig struct {
-	// MaxToolArgumentsBytes hard-rejects oversized model-generated tool arguments before execution.
-	MaxToolArgumentsBytes int `yaml:"max_tool_arguments_bytes,omitempty" json:"max_tool_arguments_bytes,omitempty"`
-	// MaxShellCommandBytes applies a stricter limit to exec/execute command strings.
-	MaxShellCommandBytes int `yaml:"max_shell_command_bytes,omitempty" json:"max_shell_command_bytes,omitempty"`
-	// ModelOutputRepairMaxAttempts limits consecutive model-output repair attempts.
-	ModelOutputRepairMaxAttempts int `yaml:"model_output_repair_max_attempts,omitempty" json:"model_output_repair_max_attempts,omitempty"`
+// AgentTuningConfig optional Pi middleware and Deep / supervisor tuning.
+type AgentTuningConfig struct {
 	// PatchToolCalls inserts placeholder tool results for dangling assistant tool_calls (nil = enabled).
 	PatchToolCalls *bool `yaml:"patch_tool_calls,omitempty" json:"patch_tool_calls,omitempty"`
 	// ToolSearch enables dynamictool/toolsearch: hide tail tools until model calls tool_search (reduces prompt tools).
@@ -272,11 +172,13 @@ type MultiAgentEinoMiddlewareConfig struct {
 	ToolSearchAlwaysVisible int  `yaml:"tool_search_always_visible,omitempty" json:"tool_search_always_visible,omitempty"` // default 12; first N tools stay always visible
 	// ToolSearchAlwaysVisibleTools keeps specified tool names always visible (never hidden by tool_search).
 	ToolSearchAlwaysVisibleTools []string `yaml:"tool_search_always_visible_tools,omitempty" json:"tool_search_always_visible_tools,omitempty"`
-	// Plantask adds TaskCreate/Get/Update/List (file-backed under skills dir); requires eino_skills + local backend.
+	// ToolSearchIncludeBuiltins keeps backend builtin tools always visible (nil = true).
+	ToolSearchIncludeBuiltins *bool `yaml:"tool_search_include_builtins,omitempty" json:"tool_search_include_builtins,omitempty"`
+	// Plantask adds TaskCreate/Get/Update/List (file-backed under skills dir); requires skills and its configured directory.
 	PlantaskEnable bool `yaml:"plantask_enable,omitempty" json:"plantask_enable,omitempty"`
-	// PlantaskRelDir relative to skills_dir for per-conversation task boards (default .eino/plantask).
+	// PlantaskRelDir relative to skills_dir for per-conversation task boards (default .pi/plantask).
 	PlantaskRelDir string `yaml:"plantask_rel_dir,omitempty" json:"plantask_rel_dir,omitempty"`
-	// Reduction truncates/offloads large tool outputs (requires eino local backend for Write).
+	// Reduction truncates/offloads large tool outputs (uses the host output store).
 	ReductionEnable            bool     `yaml:"reduction_enable,omitempty" json:"reduction_enable,omitempty"`
 	ReductionRootDir           string   `yaml:"reduction_root_dir,omitempty" json:"reduction_root_dir,omitempty"`                         // 非空：落盘根目录（默认 tmp/reduction）；其下按 projects/{id} 或 conversations/{id} 隔离
 	ReductionMaxLengthForTrunc int      `yaml:"reduction_max_length_for_trunc,omitempty" json:"reduction_max_length_for_trunc,omitempty"` // default 12000
@@ -285,7 +187,7 @@ type MultiAgentEinoMiddlewareConfig struct {
 	ReductionSubAgents         bool     `yaml:"reduction_sub_agents,omitempty" json:"reduction_sub_agents,omitempty"` // also attach to sub-agents
 	// SummarizationTriggerRatio controls summarization trigger threshold as max_total_tokens * ratio (default 0.8).
 	SummarizationTriggerRatio float64 `yaml:"summarization_trigger_ratio,omitempty" json:"summarization_trigger_ratio,omitempty"`
-	// SummarizationOutputReserveTokens reserves completion headroom for the summarization model call (default 8192).
+	// SummarizationOutputReserveTokens reserves completion headroom for the summarization model call (default 40960).
 	SummarizationOutputReserveTokens int `yaml:"summarization_output_reserve_tokens,omitempty" json:"summarization_output_reserve_tokens,omitempty"`
 	// SummarizationEmitInternalEvents controls middleware internal event emission (default true).
 	SummarizationEmitInternalEvents *bool `yaml:"summarization_emit_internal_events,omitempty" json:"summarization_emit_internal_events,omitempty"`
@@ -299,7 +201,7 @@ type MultiAgentEinoMiddlewareConfig struct {
 	LatestUserMessageHeadRunes int `yaml:"latest_user_message_head_runes,omitempty" json:"latest_user_message_head_runes,omitempty"`
 	// LatestUserMessageTailRunes keeps the tail preview for an oversized current user turn.
 	LatestUserMessageTailRunes int `yaml:"latest_user_message_tail_runes,omitempty" json:"latest_user_message_tail_runes,omitempty"`
-	// SummarizationRetryMaxAttempts 已废弃：summarization 与 run loop 共用 run_retry_max_attempts 及 isEinoTransientRunError。
+	// SummarizationRetryMaxAttempts 已废弃：summarization 与 Agent 原生 ModelRetry 共用 model_retry_max_retries 及 isAgentTransientRunError。
 	SummarizationRetryMaxAttempts int `yaml:"summarization_retry_max_attempts,omitempty" json:"summarization_retry_max_attempts,omitempty"`
 	// PlanExecuteUserInputBudgetRatio caps planner/replanner/executor userInput prompt budget ratio (default 0.35).
 	PlanExecuteUserInputBudgetRatio float64 `yaml:"plan_execute_user_input_budget_ratio,omitempty" json:"plan_execute_user_input_budget_ratio,omitempty"`
@@ -309,15 +211,24 @@ type MultiAgentEinoMiddlewareConfig struct {
 	PlanExecuteMaxStepResultRunes int `yaml:"plan_execute_max_step_result_runes,omitempty" json:"plan_execute_max_step_result_runes,omitempty"`
 	// PlanExecuteKeepLastSteps keeps only the tail steps in prompt view (default 8).
 	PlanExecuteKeepLastSteps int `yaml:"plan_execute_keep_last_steps,omitempty" json:"plan_execute_keep_last_steps,omitempty"`
-	// CheckpointDir when non-empty enables adk.Runner CheckPointStore (file-backed) for interrupt/resume persistence.
+	// CheckpointDir is retained for config compatibility. Chat agent runs do
+	// not consume it; cross-turn recovery is centralized in conversations.last_react_*.
 	CheckpointDir string `yaml:"checkpoint_dir,omitempty" json:"checkpoint_dir,omitempty"`
 	// DeepOutputKey passed to deep.Config OutputKey (session final text); empty = off.
 	DeepOutputKey string `yaml:"deep_output_key,omitempty" json:"deep_output_key,omitempty"`
-	// DeepModelRetryMaxRetries 已废弃：临时错误统一由 run loop 内 isEinoTransientRunError + run_retry_max_attempts 处理。
+	// DeepModelRetryMaxRetries 已废弃：请用 model_retry_max_retries；保留字段仅为兼容旧配置。
 	DeepModelRetryMaxRetries int `yaml:"deep_model_retry_max_retries,omitempty" json:"deep_model_retry_max_retries,omitempty"`
-	// RunRetryMaxAttempts > 0：408/409/425/429/5xx/网络抖动时可退避重试次数（run loop 与 summarization 共用）；0=默认 4。
+	// ModelRetryMaxRetries configures Pi native ChatModel retry attempts; 0=default 4.
+	ModelRetryMaxRetries int `yaml:"model_retry_max_retries,omitempty" json:"model_retry_max_retries,omitempty"`
+	// ModelRetryMaxBackoffSec caps native model retry backoff seconds; 0=default 30.
+	ModelRetryMaxBackoffSec int `yaml:"model_retry_max_backoff_sec,omitempty" json:"model_retry_max_backoff_sec,omitempty"`
+	// ModelFailoverChannels lists ai.channels IDs to try after native model retry is exhausted.
+	ModelFailoverChannels []string `yaml:"model_failover_channels,omitempty" json:"model_failover_channels,omitempty"`
+	// ModelFailoverMaxRetries caps distinct failover channel attempts; 0=all configured failover channels.
+	ModelFailoverMaxRetries int `yaml:"model_failover_max_retries,omitempty" json:"model_failover_max_retries,omitempty"`
+	// RunRetryMaxAttempts 已废弃：模型临时错误由 Agent 原生 ModelRetry 处理；仅保留给非模型层 run loop 兜底与 summarization 旧字段。
 	RunRetryMaxAttempts int `yaml:"run_retry_max_attempts,omitempty" json:"run_retry_max_attempts,omitempty"`
-	// RunRetryMaxBackoffSec 单次退避上限秒数；0=默认 30。
+	// RunRetryMaxBackoffSec 已废弃：请用 model_retry_max_backoff_sec；仅保留给非模型层 run loop 兜底与 summarization 旧字段。
 	RunRetryMaxBackoffSec int `yaml:"run_retry_max_backoff_sec,omitempty" json:"run_retry_max_backoff_sec,omitempty"`
 	// EmptyResponseContinueMaxAttempts Run 成功但未捕获助手正文时 Handler 层退避续跑次数；0=默认 5。
 	EmptyResponseContinueMaxAttempts int `yaml:"empty_response_continue_max_attempts,omitempty" json:"empty_response_continue_max_attempts,omitempty"`
@@ -325,28 +236,7 @@ type MultiAgentEinoMiddlewareConfig struct {
 	TaskToolDescriptionPrefix string `yaml:"task_tool_description_prefix,omitempty" json:"task_tool_description_prefix,omitempty"`
 }
 
-func (c MultiAgentEinoMiddlewareConfig) MaxToolArgumentsBytesEffective() int {
-	if c.MaxToolArgumentsBytes > 0 {
-		return c.MaxToolArgumentsBytes
-	}
-	return DefaultMaxToolArgumentsBytes
-}
-
-func (c MultiAgentEinoMiddlewareConfig) MaxShellCommandBytesEffective() int {
-	if c.MaxShellCommandBytes > 0 {
-		return c.MaxShellCommandBytes
-	}
-	return DefaultMaxShellCommandBytes
-}
-
-func (c MultiAgentEinoMiddlewareConfig) ModelOutputRepairMaxAttemptsEffective() int {
-	if c.ModelOutputRepairMaxAttempts > 0 {
-		return c.ModelOutputRepairMaxAttempts
-	}
-	return DefaultModelOutputRepairMaxAttempts
-}
-
-func (c MultiAgentEinoMiddlewareConfig) SummarizationTriggerRatioEffective() float64 {
+func (c AgentTuningConfig) SummarizationTriggerRatioEffective() float64 {
 	v := c.SummarizationTriggerRatio
 	if v <= 0 {
 		return 0.8
@@ -360,56 +250,56 @@ func (c MultiAgentEinoMiddlewareConfig) SummarizationTriggerRatioEffective() flo
 	return v
 }
 
-func (c MultiAgentEinoMiddlewareConfig) SummarizationOutputReserveTokensEffective() int {
+func (c AgentTuningConfig) SummarizationOutputReserveTokensEffective() int {
 	if c.SummarizationOutputReserveTokens > 0 {
 		return c.SummarizationOutputReserveTokens
 	}
 	return DefaultSummarizationOutputReserveTokens
 }
 
-func (c MultiAgentEinoMiddlewareConfig) SummarizationEmitInternalEventsEffective() bool {
+func (c AgentTuningConfig) SummarizationEmitInternalEventsEffective() bool {
 	if c.SummarizationEmitInternalEvents != nil {
 		return *c.SummarizationEmitInternalEvents
 	}
 	return true
 }
 
-func (c MultiAgentEinoMiddlewareConfig) SummarizationUserIntentLedgerMaxRunesEffective() int {
+func (c AgentTuningConfig) SummarizationUserIntentLedgerMaxRunesEffective() int {
 	if c.SummarizationUserIntentLedgerMaxRunes > 0 {
 		return c.SummarizationUserIntentLedgerMaxRunes
 	}
 	return DefaultSummarizationUserIntentLedgerMaxRunes
 }
 
-func (c MultiAgentEinoMiddlewareConfig) SummarizationUserIntentLedgerEntryMaxRunesEffective() int {
+func (c AgentTuningConfig) SummarizationUserIntentLedgerEntryMaxRunesEffective() int {
 	if c.SummarizationUserIntentLedgerEntryMaxRunes > 0 {
 		return c.SummarizationUserIntentLedgerEntryMaxRunes
 	}
 	return DefaultSummarizationUserIntentLedgerEntryMaxRunes
 }
 
-func (c MultiAgentEinoMiddlewareConfig) LatestUserMessageMaxRunesEffective() int {
+func (c AgentTuningConfig) LatestUserMessageMaxRunesEffective() int {
 	if c.LatestUserMessageMaxRunes > 0 {
 		return c.LatestUserMessageMaxRunes
 	}
 	return DefaultLatestUserMessageMaxRunes
 }
 
-func (c MultiAgentEinoMiddlewareConfig) LatestUserMessageHeadRunesEffective() int {
+func (c AgentTuningConfig) LatestUserMessageHeadRunesEffective() int {
 	if c.LatestUserMessageHeadRunes > 0 {
 		return c.LatestUserMessageHeadRunes
 	}
 	return DefaultLatestUserMessageHeadRunes
 }
 
-func (c MultiAgentEinoMiddlewareConfig) LatestUserMessageTailRunesEffective() int {
+func (c AgentTuningConfig) LatestUserMessageTailRunesEffective() int {
 	if c.LatestUserMessageTailRunes > 0 {
 		return c.LatestUserMessageTailRunes
 	}
 	return DefaultLatestUserMessageTailRunes
 }
 
-func (c MultiAgentEinoMiddlewareConfig) PlanExecuteUserInputBudgetRatioEffective() float64 {
+func (c AgentTuningConfig) PlanExecuteUserInputBudgetRatioEffective() float64 {
 	v := c.PlanExecuteUserInputBudgetRatio
 	if v <= 0 {
 		return 0.35
@@ -423,7 +313,7 @@ func (c MultiAgentEinoMiddlewareConfig) PlanExecuteUserInputBudgetRatioEffective
 	return v
 }
 
-func (c MultiAgentEinoMiddlewareConfig) PlanExecuteExecutedStepsBudgetRatioEffective() float64 {
+func (c AgentTuningConfig) PlanExecuteExecutedStepsBudgetRatioEffective() float64 {
 	v := c.PlanExecuteExecutedStepsBudgetRatio
 	if v <= 0 {
 		return 0.2
@@ -437,46 +327,47 @@ func (c MultiAgentEinoMiddlewareConfig) PlanExecuteExecutedStepsBudgetRatioEffec
 	return v
 }
 
-func (c MultiAgentEinoMiddlewareConfig) PlanExecuteMaxStepResultRunesEffective() int {
+func (c AgentTuningConfig) PlanExecuteMaxStepResultRunesEffective() int {
 	if c.PlanExecuteMaxStepResultRunes > 0 {
 		return c.PlanExecuteMaxStepResultRunes
 	}
 	return 4000
 }
 
-func (c MultiAgentEinoMiddlewareConfig) PlanExecuteKeepLastStepsEffective() int {
+func (c AgentTuningConfig) PlanExecuteKeepLastStepsEffective() int {
 	if c.PlanExecuteKeepLastSteps > 0 {
 		return c.PlanExecuteKeepLastSteps
 	}
 	return 8
 }
 
-func (c MultiAgentEinoMiddlewareConfig) ReductionMaxLengthForTruncEffective() int {
+func (c AgentTuningConfig) ReductionMaxLengthForTruncEffective() int {
 	if c.ReductionMaxLengthForTrunc > 0 {
 		return c.ReductionMaxLengthForTrunc
 	}
 	return 12000
 }
 
-func (c MultiAgentEinoMiddlewareConfig) ReductionMaxTokensForClearEffective() int {
+func (c AgentTuningConfig) ReductionMaxTokensForClearEffective() int {
 	if c.ReductionMaxTokensForClear > 0 {
 		return c.ReductionMaxTokensForClear
 	}
 	return 50000
 }
 
-// MultiAgentEinoSkillsConfig toggles Eino official skill progressive disclosure and host filesystem tools.
-type MultiAgentEinoSkillsConfig struct {
+// AgentSkillsConfig toggles Agent official skill progressive disclosure and host filesystem tools.
+type AgentSkillsConfig struct {
+	CatalogProfile string `yaml:"catalog_profile,omitempty" json:"catalog_profile,omitempty"`
 	// Disable skips skill middleware (and does not attach local FS tools for Deep).
 	Disable bool `yaml:"disable" json:"disable"`
-	// FilesystemTools registers read_file/glob/grep/write/edit/execute (eino-ext local backend). Nil/omitted = true.
+	// FilesystemTools registers read_file/glob/grep/write/edit/execute (native Go tools). Nil/omitted = true.
 	FilesystemTools *bool `yaml:"filesystem_tools,omitempty" json:"filesystem_tools,omitempty"`
-	// SkillToolName overrides the default Eino tool name "skill".
+	// SkillToolName overrides the default Agent tool name "skill".
 	SkillToolName string `yaml:"skill_tool_name,omitempty" json:"skill_tool_name,omitempty"`
 }
 
-// EinoSkillFilesystemToolsEffective returns whether Deep/sub-agents should attach local filesystem + streaming shell.
-func (c MultiAgentEinoSkillsConfig) EinoSkillFilesystemToolsEffective() bool {
+// FilesystemToolsEffective returns whether Deep/sub-agents should attach local filesystem + streaming shell.
+func (c AgentSkillsConfig) FilesystemToolsEffective() bool {
 	if c.FilesystemTools != nil {
 		return *c.FilesystemTools
 	}
@@ -484,14 +375,19 @@ func (c MultiAgentEinoSkillsConfig) EinoSkillFilesystemToolsEffective() bool {
 }
 
 // PatchToolCallsEffective returns whether patchtoolcalls middleware should run (default true).
-func (c MultiAgentEinoMiddlewareConfig) PatchToolCallsEffective() bool {
+func (c AgentTuningConfig) PatchToolCallsEffective() bool {
 	if c.PatchToolCalls != nil {
 		return *c.PatchToolCalls
 	}
 	return true
 }
 
-// MultiAgentSubConfig 子代理（Eino ChatModelAgent）：deep 下由 task 调度；supervisor 下由 transfer 委派；plan_execute 不使用子代理列表。
+// ToolSearchIncludeBuiltinsEffective controls whether backend builtin tools bypass tool_search.
+func (c AgentTuningConfig) ToolSearchIncludeBuiltinsEffective() bool {
+	return c.ToolSearchIncludeBuiltins == nil || *c.ToolSearchIncludeBuiltins
+}
+
+// MultiAgentSubConfig 子代理（Pi）：deep 下由 task 调度；supervisor 下由 transfer 委派；plan_execute 不使用子代理列表。
 type MultiAgentSubConfig struct {
 	ID            string   `yaml:"id" json:"id"`
 	Name          string   `yaml:"name" json:"name"`
@@ -511,21 +407,25 @@ type MultiAgentPublic struct {
 	SubAgentCount                              int      `json:"sub_agent_count"`
 	Orchestration                              string   `json:"orchestration,omitempty"`
 	PlanExecuteLoopMaxIterations               int      `json:"plan_execute_loop_max_iterations"`
+	ModelRetryMaxRetries                       int      `json:"model_retry_max_retries"`
+	ModelRetryMaxBackoffSec                    int      `json:"model_retry_max_backoff_sec"`
+	ModelFailoverChannels                      []string `json:"model_failover_channels,omitempty"`
+	ModelFailoverMaxRetries                    int      `json:"model_failover_max_retries"`
+	ToolSearchAlwaysVisibleTools               []string `json:"tool_search_always_visible_tools,omitempty"`
+	ToolSearchAlwaysVisibleEffectiveTools      []string `json:"tool_search_always_visible_effective_tools,omitempty"`
 	SummarizationUserIntentLedgerMaxRunes      int      `json:"summarization_user_intent_ledger_max_runes"`
 	SummarizationUserIntentLedgerEntryMaxRunes int      `json:"summarization_user_intent_ledger_entry_max_runes"`
 	LatestUserMessageMaxRunes                  int      `json:"latest_user_message_max_runes"`
 	LatestUserMessageHeadRunes                 int      `json:"latest_user_message_head_runes"`
 	LatestUserMessageTailRunes                 int      `json:"latest_user_message_tail_runes"`
-	ToolSearchAlwaysVisibleTools               []string `json:"tool_search_always_visible_tools,omitempty"`
-	ToolSearchAlwaysVisibleEffectiveTools      []string `json:"tool_search_always_visible_effective_tools,omitempty"`
 }
 
-// NormalizeAgentMode 解析代理模式（eino_single | deep | plan_execute | supervisor）；空值默认 eino_single。
+// NormalizeAgentMode 解析代理模式（single | deep | plan_execute | supervisor）；空值默认 single。
 func NormalizeAgentMode(mode string) string {
-	s := strings.TrimSpace(strings.ToLower(mode))
+	s := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(mode)), "eino_")
 	switch s {
-	case "", "eino_single":
-		return "eino_single"
+	case "", "single", "eino_single":
+		return "single"
 	case "deep":
 		return "deep"
 	case "plan_execute", "plan-execute", "planexecute", "pe":
@@ -533,7 +433,7 @@ func NormalizeAgentMode(mode string) string {
 	case "supervisor", "super", "sv":
 		return "supervisor"
 	default:
-		return "eino_single"
+		return "single"
 	}
 }
 
@@ -557,17 +457,21 @@ func NormalizeMultiAgentOrchestration(s string) string {
 
 // MultiAgentAPIUpdate 设置页/API 仅更新多代理标量字段；写入 YAML 时不覆盖 sub_agents 等块。
 type MultiAgentAPIUpdate struct {
-	Enabled                                    bool   `json:"enabled"`
-	RobotDefaultAgentMode                      string `json:"robot_default_agent_mode,omitempty"`
-	BatchUseMultiAgent                         bool   `json:"batch_use_multi_agent"`
-	PlanExecuteLoopMaxIterations               *int   `json:"plan_execute_loop_max_iterations,omitempty"`
-	SummarizationUserIntentLedgerMaxRunes      *int   `json:"summarization_user_intent_ledger_max_runes,omitempty"`
-	SummarizationUserIntentLedgerEntryMaxRunes *int   `json:"summarization_user_intent_ledger_entry_max_runes,omitempty"`
-	LatestUserMessageMaxRunes                  *int   `json:"latest_user_message_max_runes,omitempty"`
-	LatestUserMessageHeadRunes                 *int   `json:"latest_user_message_head_runes,omitempty"`
-	LatestUserMessageTailRunes                 *int   `json:"latest_user_message_tail_runes,omitempty"`
+	Enabled                      bool      `json:"enabled"`
+	RobotDefaultAgentMode        string    `json:"robot_default_agent_mode,omitempty"`
+	BatchUseMultiAgent           bool      `json:"batch_use_multi_agent"`
+	PlanExecuteLoopMaxIterations *int      `json:"plan_execute_loop_max_iterations,omitempty"`
+	ModelRetryMaxRetries         *int      `json:"model_retry_max_retries,omitempty"`
+	ModelRetryMaxBackoffSec      *int      `json:"model_retry_max_backoff_sec,omitempty"`
+	ModelFailoverChannels        *[]string `json:"model_failover_channels,omitempty"`
+	ModelFailoverMaxRetries      *int      `json:"model_failover_max_retries,omitempty"`
 	// 指针区分「JSON 未传该字段」与「传空数组要清空」；省略时不应覆盖 YAML 中的常驻工具白名单。
-	ToolSearchAlwaysVisibleTools *[]string `json:"tool_search_always_visible_tools,omitempty"`
+	ToolSearchAlwaysVisibleTools               *[]string `json:"tool_search_always_visible_tools,omitempty"`
+	SummarizationUserIntentLedgerMaxRunes      *int      `json:"summarization_user_intent_ledger_max_runes,omitempty"`
+	SummarizationUserIntentLedgerEntryMaxRunes *int      `json:"summarization_user_intent_ledger_entry_max_runes,omitempty"`
+	LatestUserMessageMaxRunes                  *int      `json:"latest_user_message_max_runes,omitempty"`
+	LatestUserMessageHeadRunes                 *int      `json:"latest_user_message_head_runes,omitempty"`
+	LatestUserMessageTailRunes                 *int      `json:"latest_user_message_tail_runes,omitempty"`
 }
 
 // RobotsConfig 机器人配置（企业微信、钉钉、飞书、微信 iLink、Telegram、Slack、Discord、QQ 等）
@@ -804,6 +708,15 @@ func (c RobotsConfig) ServiceAccountUserIDs() map[string]string {
 type ServerConfig struct {
 	Host string `yaml:"host" json:"host"`
 	Port int    `yaml:"port" json:"port"`
+	// TrustedProxies accepts explicit proxy IPs/CIDRs; empty means no forwarding headers are trusted.
+	TrustedProxies []string `yaml:"trusted_proxies,omitempty" json:"trusted_proxies,omitempty"`
+	// HTTP limits use seconds (zero selects the documented default); write deadlines
+	// remain disabled because chat, terminal and MCP responses can be long-lived.
+	ReadHeaderTimeoutSeconds int `yaml:"read_header_timeout_seconds,omitempty" json:"read_header_timeout_seconds,omitempty"`
+	ReadTimeoutSeconds       int `yaml:"read_timeout_seconds,omitempty" json:"read_timeout_seconds,omitempty"`
+	IdleTimeoutSeconds       int `yaml:"idle_timeout_seconds,omitempty" json:"idle_timeout_seconds,omitempty"`
+	// WebhookMaxBodyBytes bounds the WeCom callback body before XML parsing (default 1 MiB).
+	WebhookMaxBodyBytes int64 `yaml:"webhook_max_body_bytes,omitempty" json:"webhook_max_body_bytes,omitempty"`
 	// CORSAllowedOrigins contains additional, exact origins that may call the API.
 	// Same-origin browser requests are always allowed. Wildcards are intentionally unsupported.
 	CORSAllowedOrigins []string `yaml:"cors_allowed_origins,omitempty" json:"cors_allowed_origins,omitempty"`
@@ -812,15 +725,18 @@ type ServerConfig struct {
 	// TLSCertPath / TLSKeyPath 非空时从 PEM 文件加载证书（生产环境推荐）。
 	TLSCertPath string `yaml:"tls_cert_path,omitempty" json:"tls_cert_path,omitempty"`
 	TLSKeyPath  string `yaml:"tls_key_path,omitempty" json:"tls_key_path,omitempty"`
-	// TLSAutoSelfSign 为 true 且未配置有效证书路径时，启动时生成内存自签证书（仅本地/测试；浏览器会提示不受信任）。
+	// TLSAutoSelfSign 为 true 且未配置证书路径时，生成并复用安装目录中的自签证书（仅本地/测试）。
 	TLSAutoSelfSign bool `yaml:"tls_auto_self_sign,omitempty" json:"tls_auto_self_sign,omitempty"`
 	// TLSHTTPRedirect 为 false 时禁用 HTTP→HTTPS 跳转；省略或为 true 且已启用 HTTPS 时，明文 HTTP 访问将 308 跳转到 HTTPS（同端口嗅探分流）。
 	TLSHTTPRedirect *bool `yaml:"tls_http_redirect,omitempty" json:"tls_http_redirect,omitempty"`
 }
 
 type LogConfig struct {
-	Level  string `yaml:"level"`
-	Output string `yaml:"output"`
+	Level                   string `yaml:"level"`
+	Output                  string `yaml:"output"`
+	DiagnosticDir           string `yaml:"diagnostic_dir"`
+	DiagnosticDisabled      bool   `yaml:"diagnostic_disabled"`
+	DiagnosticRetentionDays int    `yaml:"diagnostic_retention_days"`
 }
 
 type MCPConfig struct {
@@ -833,14 +749,19 @@ type MCPConfig struct {
 }
 
 type OpenAIConfig struct {
-	Provider            string `yaml:"provider,omitempty" json:"provider,omitempty"` // API 提供商: "openai"(默认) 或 "claude"，claude 时自动桥接为 Anthropic Messages API
-	APIKey              string `yaml:"api_key" json:"api_key"`
-	BaseURL             string `yaml:"base_url" json:"base_url"`
-	Model               string `yaml:"model" json:"model"`
-	MaxTotalTokens      int    `yaml:"max_total_tokens,omitempty" json:"max_total_tokens,omitempty"`
-	MaxCompletionTokens int    `yaml:"max_completion_tokens,omitempty" json:"max_completion_tokens,omitempty"`
+	// Temperature optionally overrides the audit model sampling temperature; nil keeps the audit default.
+	Temperature         *float64 `yaml:"temperature,omitempty" json:"temperature,omitempty"`
+	Provider            string   `yaml:"provider,omitempty" json:"provider,omitempty"` // API 提供商: "openai"(默认) 或 "claude"，claude 使用 Eino 原生 Anthropic Messages API
+	APIKey              string   `yaml:"api_key" json:"api_key"`
+	BaseURL             string   `yaml:"base_url" json:"base_url"`
+	Model               string   `yaml:"model" json:"model"`
+	MaxTotalTokens      int      `yaml:"max_total_tokens,omitempty" json:"max_total_tokens,omitempty"`
+	MaxCompletionTokens int      `yaml:"max_completion_tokens,omitempty" json:"max_completion_tokens,omitempty"`
 	// Reasoning 控制 Eino ChatModel 的 thinking / reasoning_effort / output_config 等（Eino 单/多代理路径生效）。
-	Reasoning OpenAIReasoningConfig `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
+	Headers        map[string]string     `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ContextWindow  int                   `yaml:"context_window,omitempty" json:"context_window,omitempty"`
+	ContextProfile string                `yaml:"context_profile,omitempty" json:"context_profile,omitempty"`
+	Reasoning      OpenAIReasoningConfig `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
 }
 
 // AIConfig stores first-class model channels. Runtime callers resolve a channel
@@ -858,6 +779,9 @@ type AIChannelConfig struct {
 	Model               string                `yaml:"model" json:"model"`
 	MaxTotalTokens      int                   `yaml:"max_total_tokens,omitempty" json:"max_total_tokens,omitempty"`
 	MaxCompletionTokens int                   `yaml:"max_completion_tokens,omitempty" json:"max_completion_tokens,omitempty"`
+	Headers             map[string]string     `yaml:"headers,omitempty" json:"headers,omitempty"`
+	ContextWindow       int                   `yaml:"context_window,omitempty" json:"context_window,omitempty"`
+	ContextProfile      string                `yaml:"context_profile,omitempty" json:"context_profile,omitempty"`
 	Reasoning           OpenAIReasoningConfig `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
 }
 
@@ -873,6 +797,9 @@ func (c AIChannelConfig) ToOpenAIConfig() OpenAIConfig {
 		Model:               c.Model,
 		MaxTotalTokens:      c.MaxTotalTokens,
 		MaxCompletionTokens: c.MaxCompletionTokens,
+		Headers:             ExpandHeaderMap(c.Headers),
+		ContextWindow:       c.ContextWindow,
+		ContextProfile:      NormalizeContextProfile(c.ContextProfile),
 		Reasoning:           c.Reasoning,
 	}
 }
@@ -889,6 +816,9 @@ func AIChannelFromOpenAI(id, name string, oa OpenAIConfig) AIChannelConfig {
 		Model:               oa.Model,
 		MaxTotalTokens:      oa.MaxTotalTokens,
 		MaxCompletionTokens: oa.MaxCompletionTokens,
+		Headers:             ExpandHeaderMap(oa.Headers),
+		ContextWindow:       oa.ContextWindow,
+		ContextProfile:      oa.ContextProfile,
 		Reasoning:           oa.Reasoning,
 	}
 }
@@ -961,32 +891,91 @@ func (c *Config) ApplyDefaultAIChannel() {
 	if c == nil {
 		return
 	}
+	c.NormalizeAIProviderProfiles()
 	c.AI.EnsureDefaultFromOpenAI(c.OpenAI)
 	if oa, _, ok := c.AI.ResolveChannel(c.AI.DefaultChannel); ok {
 		c.OpenAI = oa
 	}
+	c.NormalizeAIProviderProfiles()
 }
 
 func (c OpenAIConfig) MaxCompletionTokensEffective() int {
-	if c.MaxCompletionTokens > 0 {
-		return c.MaxCompletionTokens
+	out := c.MaxCompletionTokens
+	if out <= 0 {
+		out = DefaultMaxCompletionTokens
 	}
-	return DefaultMaxCompletionTokens
+	if window := c.EffectiveContextWindow(); window > 0 && out > window/2 {
+		out = window / 2
+	}
+	return out
+}
+
+// IsDeepSeekEndpointOrModel reports whether the channel targets DeepSeek's
+// official-compatible API endpoint. The historical name is kept for compatibility;
+// model names alone are not enough to infer DeepSeek wire behavior behind
+// OpenAI-compatible gateways.
+func (c OpenAIConfig) IsDeepSeekEndpointOrModel() bool {
+	baseURL := strings.ToLower(strings.TrimSpace(c.BaseURL))
+	return strings.Contains(baseURL, "deepseek")
+}
+
+func (c OpenAIConfig) IsDeepSeekOfficialEndpoint() bool {
+	host := normalizedURLHost(c.BaseURL)
+	return host == "api.deepseek.com"
+}
+
+func normalizedURLHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		parsed, err = url.Parse("https://" + strings.TrimLeft(raw, "/"))
+		if err != nil {
+			return ""
+		}
+	}
+	return strings.ToLower(strings.TrimPrefix(parsed.Hostname(), "www."))
+}
+
+func NormalizeOpenAIProviderProfile(oa *OpenAIConfig) {
+	if oa == nil {
+		return
+	}
+	if oa.IsDeepSeekOfficialEndpoint() {
+		oa.Reasoning.Profile = "deepseek"
+	}
+}
+
+func (c *Config) NormalizeAIProviderProfiles() {
+	if c == nil {
+		return
+	}
+	NormalizeOpenAIProviderProfile(&c.OpenAI)
+	if c.AI.Channels != nil {
+		for id, ch := range c.AI.Channels {
+			oa := ch.ToOpenAIConfig()
+			NormalizeOpenAIProviderProfile(&oa)
+			ch.Reasoning = oa.Reasoning
+			c.AI.Channels[id] = ch
+		}
+	}
 }
 
 // OpenAIReasoningConfig 全局默认与网关 profile（对话页可通过 ChatRequest.reasoning 覆盖，受 AllowClientReasoning 约束）。
 type OpenAIReasoningConfig struct {
 	// Mode: auto（默认）| on | off | default（与 auto 相同）。
-	// off 在 OpenAI/Claude profile 下省略推理字段；DeepSeek profile 下发送 thinking.type=disabled（其默认开启思考）。
+	// off 对已知支持 none 的官方 OpenAI 模型发送 reasoning_effort=none；DeepSeek profile 发送 thinking.type=disabled；其他服务保持省略推理字段。
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
-	// Effort: low | medium | high | max | xhigh；max/xhigh 为不同网关最高档命名，原样下发、不互转。空表示不单独指定强度。
+	// Effort: low | medium | high | max | xhigh；已知支持 none 的官方 OpenAI 模型另接受 none（等同关闭）。空表示不单独指定强度。
 	Effort string `yaml:"effort,omitempty" json:"effort,omitempty"`
 	// AllowClientReasoning 为 false 时忽略请求体 reasoning；nil 或未设置等同于 true。
 	AllowClientReasoning *bool `yaml:"allow_client_reasoning,omitempty" json:"allow_client_reasoning,omitempty"`
 	// Profile: auto | deepseek_compat | openai_compat | output_config_effort
 	Profile string `yaml:"profile,omitempty" json:"profile,omitempty"`
 	// ExtraRequestFields 合并进 Chat Completions 根 JSON（管理员用；与自动字段同名时后者覆盖）。
-	// Mode=off 时会移除其中的推理控制字段，但保留其他扩展字段；DeepSeek profile 随后补充显式关闭开关。
+	// Mode=off 时移除其中的推理控制字段，保留其他扩展字段，再按提供商与已知模型能力补充显式关闭参数。
 	ExtraRequestFields map[string]interface{} `yaml:"extra_request_fields,omitempty" json:"extra_request_fields,omitempty"`
 }
 
@@ -1027,7 +1016,17 @@ type SpaceSearchConfig struct {
 	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 }
 
+type ProcessIsolationConfig struct {
+	Mode           string `yaml:"mode" json:"mode"`
+	CgroupRoot     string `yaml:"cgroup_root" json:"cgroup_root"`
+	MaxProcesses   int    `yaml:"max_processes" json:"max_processes"`
+	MemoryMaxBytes int64  `yaml:"memory_max_bytes" json:"memory_max_bytes"`
+	CPUQuotaMicros int64  `yaml:"cpu_quota_micros" json:"cpu_quota_micros"`
+}
+
 type SecurityConfig struct {
+	ProcessIsolation ProcessIsolationConfig `yaml:"process_isolation,omitempty" json:"process_isolation"`
+
 	Tools               []ToolConfig `yaml:"tools,omitempty"`                 // 向后兼容：支持在主配置文件中定义工具
 	ToolsDir            string       `yaml:"tools_dir,omitempty"`             // 工具配置文件目录（新方式）
 	ToolDescriptionMode string       `yaml:"tool_description_mode,omitempty"` // 工具描述模式: "short" | "full"，默认 short
@@ -1039,13 +1038,15 @@ type DatabaseConfig struct {
 }
 
 type AgentConfig struct {
-	MaxIterations                      int `yaml:"max_iterations" json:"max_iterations"`
-	ToolTimeoutMinutes                 int `yaml:"tool_timeout_minutes" json:"tool_timeout_minutes"`                                     // 单次工具执行最大时长（分钟），超时自动终止，防止长时间挂起；0 表示不限制（不推荐）
-	ToolWaitTimeoutSeconds             int `yaml:"tool_wait_timeout_seconds" json:"tool_wait_timeout_seconds"`                           // 工具本轮等待秒数；到时返回 execution_id，worker 继续后台执行；0 表示等到完成
-	ExternalMCPMaxConcurrentPerServer  int `yaml:"external_mcp_max_concurrent_per_server" json:"external_mcp_max_concurrent_per_server"` // 单个外部 MCP server 同时运行的工具数；0 表示默认 2
-	ExternalMCPMaxConcurrentTotal      int `yaml:"external_mcp_max_concurrent_total" json:"external_mcp_max_concurrent_total"`           // 所有外部 MCP 工具全局并发；0 表示默认 16
-	ExternalMCPCircuitFailureThreshold int `yaml:"external_mcp_circuit_failure_threshold" json:"external_mcp_circuit_failure_threshold"` // 单个 MCP server 连续失败多少次后打开熔断；0 表示默认 3；负数关闭
-	ExternalMCPCircuitCooldownSeconds  int `yaml:"external_mcp_circuit_cooldown_seconds" json:"external_mcp_circuit_cooldown_seconds"`   // 熔断后冷却秒数；0 表示默认 60
+	ToolFailureCooldown                ToolFailureCooldownConfig `yaml:"tool_failure_cooldown,omitempty" json:"tool_failure_cooldown,omitempty"`
+	MaxIterations                      int                       `yaml:"max_iterations" json:"max_iterations"`
+	ToolTimeoutMinutes                 int                       `yaml:"tool_timeout_minutes" json:"tool_timeout_minutes"`                                     // 单次工具执行最大时长（分钟），超时自动终止，防止长时间挂起；0 表示不限制（不推荐）
+	ToolWaitTimeoutSeconds             int                       `yaml:"tool_wait_timeout_seconds" json:"tool_wait_timeout_seconds"`                           // 工具本轮等待秒数；到时返回 execution_id，worker 继续后台执行；0 表示等到完成
+	ExternalMCPMaxConcurrentPerServer  int                       `yaml:"external_mcp_max_concurrent_per_server" json:"external_mcp_max_concurrent_per_server"` // 单个外部 MCP server 同时运行的工具数；0 表示默认 2
+	ExternalMCPMaxConcurrentTotal      int                       `yaml:"external_mcp_max_concurrent_total" json:"external_mcp_max_concurrent_total"`           // 所有外部 MCP 工具全局并发；0 表示默认 16
+	ExternalMCPCircuitFailureThreshold int                       `yaml:"external_mcp_circuit_failure_threshold" json:"external_mcp_circuit_failure_threshold"` // 单个 MCP server 连续失败多少次后打开熔断；0 表示默认 3；负数关闭
+	ExternalMCPCircuitCooldownSeconds  int                       `yaml:"external_mcp_circuit_cooldown_seconds" json:"external_mcp_circuit_cooldown_seconds"`   // 熔断后冷却秒数；0 表示默认 60
+	TaskTimeoutMinutes                 *int                      `yaml:"task_timeout_minutes,omitempty" json:"task_timeout_minutes,omitempty"`                 // nil=600 minutes; 0=unlimited
 	// ShellNoOutputTimeoutSeconds execute/exec 无任何 stdout/stderr 时的空闲终止秒数（通用防挂死，不维护命令黑名单）；0=默认 300（5 分钟）；-1=关闭。
 	ShellNoOutputTimeoutSeconds int `yaml:"shell_no_output_timeout_seconds" json:"shell_no_output_timeout_seconds"`
 	// WorkspaceRootDir 会话工作目录根路径（curl/wget 下载、read_file/glob/grep 本地分析）；空=tmp/workspace，其下按 projects/{id} 或 conversations/{id} 隔离。
@@ -1058,7 +1059,9 @@ type AgentConfig struct {
 // tool_whitelist 可在侧栏「应用」时合并写入 config.yaml 并立即生效。
 // audit_agent_prompt / audit_agent_prompt_review_edit 可在人机协同页编辑并立即生效；空则使用内置默认。
 type HitlConfig struct {
-	// AuditModel 审计 Agent 专用模型；字段留空时继承 OpenAI 主配置，便于用小模型做审批。
+	// AuditBackend 审计 Agent 后端：openai（兼容协议聊天模型）或 typesafe（Jev 结构化裁决）。空值视为 openai。
+	AuditBackend string `yaml:"audit_backend,omitempty" json:"audit_backend,omitempty"`
+	// AuditModel 审计 Agent 专用模型。openai 后端空字段继承主模型；typesafe 后端 api_key 必填，不继承主模型密钥。
 	AuditModel OpenAIConfig `yaml:"audit_model,omitempty" json:"audit_model,omitempty"`
 	// ToolWhitelist 全局免审批工具名（与白名单内工具不触发 HITL 审批）。
 	ToolWhitelist []string `yaml:"tool_whitelist,omitempty" json:"tool_whitelist,omitempty"`
@@ -1072,7 +1075,7 @@ type HitlConfig struct {
 	DefaultMode string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
 	// DefaultReviewer 全局默认审批方（human | audit_agent）；新建会话无独立配置时沿用。
 	DefaultReviewer string `yaml:"default_reviewer,omitempty" json:"default_reviewer,omitempty"`
-	// DefaultTimeoutSeconds 全局默认审批等待秒数；nil 表示使用 5 分钟，0 表示不限时。
+	// DefaultTimeoutSeconds 全局默认审批等待秒数；nil 表示使用前端历史默认 300 秒，0 表示不限时。
 	DefaultTimeoutSeconds *int `yaml:"default_timeout_seconds,omitempty" json:"default_timeout_seconds,omitempty"`
 }
 
@@ -1098,7 +1101,7 @@ func (h HitlConfig) EffectiveDefaultReviewer() string {
 	}
 }
 
-// EffectiveDefaultTimeoutSeconds returns the default HITL approval timeout; omitted defaults to 5 minutes.
+// EffectiveDefaultTimeoutSeconds returns the default HITL approval timeout; nil defaults to 5 minutes.
 func (h HitlConfig) EffectiveDefaultTimeoutSeconds() int {
 	if h.DefaultTimeoutSeconds == nil {
 		return 300
@@ -1120,10 +1123,50 @@ func (h HitlConfig) RetentionDaysEffective() int {
 	return *h.RetentionDays
 }
 
+const (
+	HitlAuditBackendOpenAI   = "openai"
+	HitlAuditBackendTypeSafe = "typesafe"
+	TypeSafeDefaultBaseURL   = "https://api.typesafe.ai"
+	TypeSafeDefaultModel     = "jev-latest"
+)
+
+// EffectiveAuditBackend returns openai or typesafe. Omitted or unknown values default to openai.
+func (h HitlConfig) EffectiveAuditBackend() string {
+	switch strings.ToLower(strings.TrimSpace(h.AuditBackend)) {
+	case HitlAuditBackendTypeSafe, "jev", "type-safe", "typesafe-ai":
+		return HitlAuditBackendTypeSafe
+	default:
+		return HitlAuditBackendOpenAI
+	}
+}
+
+// TypeSafeConfigEffective returns TypeSafe endpoint settings. Empty base_url/model use defaults; API key is never inherited from the main OpenAI channel.
+func (h HitlConfig) TypeSafeConfigEffective() (baseURL, apiKey, model string) {
+	baseURL = strings.TrimSpace(h.AuditModel.BaseURL)
+	if baseURL == "" {
+		baseURL = TypeSafeDefaultBaseURL
+	}
+	apiKey = strings.TrimSpace(h.AuditModel.APIKey)
+	model = strings.TrimSpace(h.AuditModel.Model)
+	if model == "" {
+		model = TypeSafeDefaultModel
+	}
+	return strings.TrimSuffix(baseURL, "/"), apiKey, model
+}
+
 // AuditModelEffective returns the audit-agent model config with empty fields inherited from the main model config.
 func (h HitlConfig) AuditModelEffective(main OpenAIConfig) OpenAIConfig {
 	out := main
 	am := h.AuditModel
+	// Sampling settings are audit-specific and must not inherit main-model defaults.
+	out.Temperature = am.Temperature
+	out.Headers = auditModelHeaders(main, am)
+	if strings.TrimSpace(am.Provider) != "" || strings.TrimSpace(am.BaseURL) != "" || strings.TrimSpace(am.Model) != "" {
+		out.Reasoning.Profile = ""
+	}
+	if strings.TrimSpace(am.Reasoning.Profile) != "" {
+		out.Reasoning.Profile = am.Reasoning.Profile
+	}
 	if strings.TrimSpace(am.Provider) != "" {
 		out.Provider = strings.TrimSpace(am.Provider)
 	}
@@ -1235,6 +1278,22 @@ func (c HitlConfig) EffectiveAuditAgentPromptForMode(mode string) string {
 	return DefaultHitlAuditAgentPrompt()
 }
 
+// JevOperatorPolicy returns a custom audit-strategy prompt for TypeSafe Jev.
+// Built-in default prompts stay encoded as Jev questions and are not copied into state.
+func (c HitlConfig) JevOperatorPolicy(mode string) string {
+	effective := strings.TrimSpace(c.EffectiveAuditAgentPromptForMode(mode))
+	var def string
+	if normalizeHitlModeForPrompt(mode) == "review_edit" {
+		def = strings.TrimSpace(DefaultHitlAuditAgentPromptReviewEdit())
+	} else {
+		def = strings.TrimSpace(DefaultHitlAuditAgentPrompt())
+	}
+	if effective == "" || effective == def {
+		return ""
+	}
+	return effective
+}
+
 func normalizeHitlModeForPrompt(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "review_edit":
@@ -1263,6 +1322,132 @@ func (m MonitorConfig) RetentionDaysEffective() int {
 		return 0
 	}
 	return *m.RetentionDays
+}
+
+// 运行空间垃圾清理的类别键。顺序即前端展示顺序，勿依赖 map 迭代顺序。
+const (
+	StorageCategoryWorkspace            = "workspace"
+	StorageCategoryReduction            = "reduction"
+	StorageCategoryConversationArtifact = "conversation_artifacts"
+	StorageCategoryPlantask             = "plantask"
+	StorageCategoryC2Artifacts          = "c2_artifacts"
+	StorageCategoryChatUploads          = "chat_uploads"
+	StorageCategoryWorkflowCheckpoints  = "workflow_checkpoints"
+	StorageCategoryDiagnosticLogs       = "diagnostic_logs"
+)
+
+// StorageCategoryOrder 列出全部可清理类别，供 UI 与报表稳定排序。
+var StorageCategoryOrder = []string{
+	StorageCategoryWorkspace,
+	StorageCategoryReduction,
+	StorageCategoryConversationArtifact,
+	StorageCategoryPlantask,
+	StorageCategoryC2Artifacts,
+	StorageCategoryChatUploads,
+	StorageCategoryWorkflowCheckpoints,
+	StorageCategoryDiagnosticLogs,
+}
+
+// StorageCategoryDefaults 各类别默认保留天数。取较短值的是纯派生产物
+// （reduction/checkpoint），取较长值的是可能仍需人工回看的上传件。
+var StorageCategoryDefaults = map[string]int{
+	StorageCategoryWorkspace:            30,
+	StorageCategoryReduction:            7,
+	StorageCategoryConversationArtifact: 30,
+	StorageCategoryPlantask:             30,
+	StorageCategoryC2Artifacts:          30,
+	StorageCategoryChatUploads:          90,
+	StorageCategoryWorkflowCheckpoints:  7,
+	StorageCategoryDiagnosticLogs:       14,
+}
+
+// StorageCategoryConfig 单个清理类别的策略覆盖。
+type StorageCategoryConfig struct {
+	// Enabled 省略时默认 true；显式 false 表示该类别既不自动清理也不出现在手动清理范围内。
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// RetentionDays 省略时使用 StorageCategoryDefaults；0 表示不按保留期清理（孤儿目录仍会回收）。
+	RetentionDays *int `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
+}
+
+// StorageConfig 运行空间垃圾清理策略。
+// 自动清理默认关闭：与 Argo ttlStrategy / K8s ttlSecondsAfterFinished 的 unset 语义一致，
+// 升级后不会在管理员不知情的情况下删除既有数据。
+type StorageConfig struct {
+	// AutoClean 省略或 false 关闭后台自动清理；显式 true 才启用。
+	AutoClean *bool `yaml:"auto_clean,omitempty" json:"auto_clean,omitempty"`
+	// IntervalMinutes 后台清理轮询间隔；省略默认 60，最小 5。
+	IntervalMinutes *int `yaml:"interval_minutes,omitempty" json:"interval_minutes,omitempty"`
+	// OrphanGraceDays 会话/项目已删除但目录残留时的最小保留天数；省略默认 1。
+	OrphanGraceDays *int `yaml:"orphan_grace_days,omitempty" json:"orphan_grace_days,omitempty"`
+	// ActiveGraceHours 最近有活动的会话一律跳过清理；省略默认 24。
+	ActiveGraceHours *int `yaml:"active_grace_hours,omitempty" json:"active_grace_hours,omitempty"`
+	// Categories 按类别覆盖策略；未列出的类别使用内置默认值。
+	Categories map[string]StorageCategoryConfig `yaml:"categories,omitempty" json:"categories,omitempty"`
+}
+
+// AutoCleanEffective returns true only when storage.auto_clean is explicitly true.
+func (s StorageConfig) AutoCleanEffective() bool {
+	return s.AutoClean != nil && *s.AutoClean
+}
+
+// IntervalMinutesEffective returns the background sweep interval; defaults to 60, floor 5.
+func (s StorageConfig) IntervalMinutesEffective() int {
+	if s.IntervalMinutes == nil {
+		return 60
+	}
+	if *s.IntervalMinutes < 5 {
+		return 5
+	}
+	return *s.IntervalMinutes
+}
+
+// OrphanGraceDaysEffective returns the minimum age before an orphaned session dir is reclaimed; defaults to 1.
+func (s StorageConfig) OrphanGraceDaysEffective() int {
+	if s.OrphanGraceDays == nil {
+		return 1
+	}
+	if *s.OrphanGraceDays < 0 {
+		return 0
+	}
+	return *s.OrphanGraceDays
+}
+
+// ActiveGraceHoursEffective returns the recent-activity protection window; defaults to 24, floor 1.
+func (s StorageConfig) ActiveGraceHoursEffective() int {
+	if s.ActiveGraceHours == nil {
+		return 24
+	}
+	if *s.ActiveGraceHours < 1 {
+		return 1
+	}
+	return *s.ActiveGraceHours
+}
+
+// CategoryEnabled reports whether a category participates in cleanup; unknown keys default to false.
+func (s StorageConfig) CategoryEnabled(key string) bool {
+	if _, known := StorageCategoryDefaults[key]; !known {
+		return false
+	}
+	if c, ok := s.Categories[key]; ok && c.Enabled != nil {
+		return *c.Enabled
+	}
+	return true
+}
+
+// CategoryRetentionDays returns the effective retention for a category; unknown keys yield 0 (keep forever).
+func (s StorageConfig) CategoryRetentionDays(key string) int {
+	def, known := StorageCategoryDefaults[key]
+	if !known {
+		return 0
+	}
+	c, ok := s.Categories[key]
+	if !ok || c.RetentionDays == nil {
+		return def
+	}
+	if *c.RetentionDays < 0 {
+		return 0
+	}
+	return *c.RetentionDays
 }
 
 // AuditConfig platform operation audit log settings (not chat/tool execution bodies).
@@ -1362,6 +1547,8 @@ func (c ExternalMCPServerConfig) GetTransportType() string {
 }
 
 type ToolConfig struct {
+	Platforms        []string          `yaml:"platforms,omitempty"` // Optional GOOS allowlist; omitted preserves legacy behavior.
+	RuntimeToolsDir  string            `yaml:"-" json:"-"`          // 工具定义所在目录，仅用于本地依赖解析，不写回配置
 	Name             string            `yaml:"name"`
 	Command          string            `yaml:"command"`
 	Args             []string          `yaml:"args,omitempty"`              // 固定参数（可选）
@@ -1398,11 +1585,25 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
-	if err := validateToolGuardYAML(data); err != nil {
-		return nil, fmt.Errorf("解析 tool_guard 配置失败: %w", err)
+	if err := cfg.APIClient.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Hitl.ValidateAuditTemperature(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Server.ValidateHTTPSecurity(); err != nil {
+		return nil, fmt.Errorf("校验 server 配置失败: %w", err)
+	}
+	if err := cfg.Agent.validateTaskTimeout(); err != nil {
+		return nil, err
+	}
+	if cfg.ToolGuard != nil {
+		if err := validateToolGuardYAML(data); err != nil {
+			return nil, fmt.Errorf("调用拦截配置无效: %w", err)
+		}
 	}
 	if _, err := toolguard.Compile(cfg.EffectiveToolGuard()); err != nil {
-		return nil, fmt.Errorf("校验 tool_guard 配置失败: %w", err)
+		return nil, fmt.Errorf("调用拦截配置无效: %w", err)
 	}
 
 	if cfg.Auth.SessionDurationHours <= 0 {
@@ -1411,9 +1612,15 @@ func Load(path string) (*Config, error) {
 	if cfg.Audit.MaxDetailBytes <= 0 {
 		cfg.Audit.MaxDetailBytes = 8192
 	}
+	cfg.NormalizeAIProviderProfiles()
 	cfg.ApplyDefaultAIChannel()
-	if err := validateModelOutputLimits(cfg.OpenAI, cfg.MultiAgent.EinoMiddleware); err != nil {
+	if err := validateOpenAIOutputLimits(cfg.OpenAI); err != nil {
 		return nil, err
+	}
+	for id, ch := range cfg.AI.Channels {
+		if err := ValidateContextSettings("ai.channels."+id, ch.ContextWindow, ch.ContextProfile); err != nil {
+			return nil, err
+		}
 	}
 	// 如果配置了工具目录，从目录加载工具配置
 	if cfg.Security.ToolsDir != "" {
@@ -1477,23 +1684,248 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func validateModelOutputLimits(openAI OpenAIConfig, mw MultiAgentEinoMiddlewareConfig) error {
+func validateOpenAIOutputLimits(openAI OpenAIConfig) error {
 	if openAI.MaxCompletionTokens < 0 {
 		return fmt.Errorf("openai.max_completion_tokens 必须为正数")
 	}
-	if mw.MaxToolArgumentsBytes < 0 {
-		return fmt.Errorf("multi_agent.eino_middleware.max_tool_arguments_bytes 必须为正数")
+	return ValidateContextSettings("openai", openAI.ContextWindow, openAI.ContextProfile)
+}
+
+// ValidateContextSettings 校验主通道与 ai.channels 共用的上下文配置。
+func ValidateContextSettings(prefix string, window int, profile string) error {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "openai"
 	}
-	if mw.MaxShellCommandBytes < 0 {
-		return fmt.Errorf("multi_agent.eino_middleware.max_shell_command_bytes 必须为正数")
+	if window < 0 {
+		return fmt.Errorf("%s.context_window 不能为负数", prefix)
 	}
-	if mw.ModelOutputRepairMaxAttempts < 0 {
-		return fmt.Errorf("multi_agent.eino_middleware.model_output_repair_max_attempts 必须为正数")
-	}
-	if mw.MaxShellCommandBytesEffective() > mw.MaxToolArgumentsBytesEffective() {
-		return fmt.Errorf("multi_agent.eino_middleware.max_shell_command_bytes 不能大于 max_tool_arguments_bytes")
+	if raw := strings.TrimSpace(profile); raw != "" &&
+		!strings.EqualFold(raw, "auto") && NormalizeContextProfile(raw) == "" {
+		return fmt.Errorf("%s.context_profile 只支持 auto、economy、custom、local 或 local_auto", prefix)
 	}
 	return nil
+}
+
+// LoadUpdateRepo 只读 update 段的 repo 字段，不加载也不校验文件其余部分：命令行一键更新
+// 必须与页面用同一个更新源，而配置里其它段落坏掉不该拦住"把源码更新好"这条修复路径。
+// 文件不存在不是错误（未配置 = 官方仓库）；YAML 解析失败则报错，不去猜更新源。
+func LoadUpdateRepo(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("读取配置文件失败: %w", err)
+	}
+	var thin struct {
+		Update struct {
+			Repo string `yaml:"repo"`
+		} `yaml:"update"`
+	}
+	if err := yaml.Unmarshal(data, &thin); err != nil {
+		return "", fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	return strings.TrimSpace(thin.Update.Repo), nil
+}
+
+// FileVersion 读一个配置文件形态 YAML 的顶层 version 字段。仓库里的 config.example.yaml
+// 载着这份代码对应的发布版本（上游随 release 提交一起改），一键更新用它把"当前跑的是什么
+// 版本"同步进运维者的 config.yaml。文件或字段不存在 = 未知，不是错误。
+func FileVersion(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("读取配置文件失败: %w", err)
+	}
+	version, err := parseTopVersion(data)
+	if err != nil {
+		return "", fmt.Errorf("解析配置文件失败: %w", err)
+	}
+	return version, nil
+}
+
+// parseTopVersion 从配置文本里取顶层 version。走 YAML 解析，version / "version" / 'version'
+// 三种写法一视同仁——读取认得的写法，写入也必须认得，否则就会在合法的引号键配置上追加出
+// 第二个 version 键（见 WriteVersion）。
+func parseTopVersion(data []byte) (string, error) {
+	var thin struct {
+		Version string `yaml:"version"`
+	}
+	if err := yaml.Unmarshal(data, &thin); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(thin.Version), nil
+}
+
+// versionValuePattern 约束能写进配置的版本号：它来自仓库里的文件，但落到的是运维者的
+// 配置上，带引号或换行的值会把 YAML 写坏。
+var versionValuePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+
+// topVersionKey 判断一行是不是顶层的 version 键，三种 YAML 都认的写法都在内：version:、
+// "version":、'version':。缩进的同名键属于别的段落，不动。
+func topVersionKey(line string) bool {
+	for _, key := range []string{"version", `"version"`, "'version'"} {
+		if strings.HasPrefix(line, key) {
+			return strings.HasPrefix(strings.TrimSpace(line[len(key):]), ":")
+		}
+	}
+	return false
+}
+
+func yamlDocumentStart(line string) bool {
+	line = strings.TrimPrefix(strings.TrimSuffix(line, "\r"), "\uFEFF")
+	if !strings.HasPrefix(line, "---") {
+		return false
+	}
+	rest := line[len("---"):]
+	if strings.Trim(rest, " \t") == "" {
+		return true
+	}
+	return len(rest) > 0 && (rest[0] == ' ' || rest[0] == '\t') && strings.HasPrefix(strings.TrimLeft(rest, " \t"), "#")
+}
+
+// WriteVersion 就地替换配置文件的顶层 version 字段，保留其它每一行的原样（tarball 升级
+// 路径一直这么做）；没有这个字段就插到文件开头（若文件以 YAML 文档标记开头，则插在标记后）。
+// 返回是否真的改了。写盘走临时文件 + 原子 rename——这是运维者的活配置，不能留半截。替换后先把新文本解析回验一遍：行级替换够不着的
+// 写法（JSON 单行、多行标量……）解析失败或读不回目标值就拒绝写、原文件不动。版本号停在旧值
+// 只是页头显示问题，写坏配置是起不来。
+func WriteVersion(path, version string) (bool, error) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return false, nil
+	}
+	if len(version) > 64 || !versionValuePattern.MatchString(version) {
+		return false, fmt.Errorf("版本号不合法：%q", version)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	path = resolved
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(string(data), "\n")
+	replaced := false
+	for i, line := range lines {
+		if topVersionKey(line) {
+			lines[i] = `version: "` + version + `"`
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		versionLine := `version: "` + version + `"`
+		insertAt := 0
+		for i, line := range lines {
+			if yamlDocumentStart(line) {
+				insertAt = i + 1
+				break
+			}
+			trimmed := strings.TrimSpace(strings.TrimPrefix(line, "\uFEFF"))
+			if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(line, "%") {
+				break
+			}
+		}
+		lines = append(lines[:insertAt], append([]string{versionLine}, lines[insertAt:]...)...)
+	}
+	out := strings.Join(lines, "\n")
+	if out == string(data) {
+		return false, nil
+	}
+	if got, err := parseTopVersion([]byte(out)); err != nil || got != version {
+		return false, fmt.Errorf("version 的写法无法就地替换（改后配置解析失败或读回为 %q），已放弃写入，原文件未改动", got)
+	}
+	// Reading back version alone is insufficient: inserting before an inline
+	// document marker can create a new first document and hide every setting.
+	var originalSettings, nextSettings map[string]interface{}
+	if err := yaml.Unmarshal(data, &originalSettings); err != nil {
+		return false, err
+	}
+	if err := yaml.Unmarshal([]byte(out), &nextSettings); err != nil {
+		return false, err
+	}
+	delete(originalSettings, "version")
+	delete(nextSettings, "version")
+	if len(originalSettings) != len(nextSettings) || (len(originalSettings) > 0 && !reflect.DeepEqual(originalSettings, nextSettings)) {
+		return false, fmt.Errorf("版本号写入会改变其它配置，已放弃写入，原文件未改动")
+	}
+	if err := writeVersionFile(path, []byte(out), info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	return true, nil
+
+}
+
+// RemoveVersion undoes a version field added by an update to an unversioned
+// configuration. All other settings and the file's permissions stay intact.
+func RemoveVersion(path string) (bool, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	path = resolved
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if !topVersionKey(line) {
+			continue
+		}
+		out := strings.Join(append(lines[:i], lines[i+1:]...), "\n")
+		var before, after map[string]interface{}
+		if err := yaml.Unmarshal(data, &before); err != nil {
+			return false, err
+		}
+		if err := yaml.Unmarshal([]byte(out), &after); err != nil {
+			return false, err
+		}
+		delete(before, "version")
+		if _, present := after["version"]; present || len(before) != len(after) || (len(before) > 0 && !reflect.DeepEqual(before, after)) {
+			return false, fmt.Errorf("无法安全移除版本号，原配置未改动")
+		}
+		if err := writeVersionFile(path, []byte(out), info.Mode().Perm()); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func writeVersionFile(path string, data []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".version-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 func EnsureLocalConfig(path string) (EnsureLocalConfigResult, error) {
@@ -1694,6 +2126,7 @@ func MergeToolsFromDir(toolsDir string, inlineTools []ToolConfig) ([]ToolConfig,
 	merged := append([]ToolConfig(nil), dirTools...)
 	for _, tool := range inlineTools {
 		if !existing[tool.Name] {
+			tool.RuntimeToolsDir = toolsDir
 			merged = append(merged, tool)
 		}
 	}
@@ -1788,6 +2221,7 @@ func LoadToolFromFile(path string) (*ToolConfig, error) {
 	if err := yaml.Unmarshal(data, &tool); err != nil {
 		return nil, fmt.Errorf("解析工具配置失败: %w", err)
 	}
+	tool.RuntimeToolsDir, _ = filepath.Abs(filepath.Dir(path))
 
 	// 验证必需字段
 	if tool.Name == "" {
@@ -2035,7 +2469,7 @@ type KnowledgeConfig struct {
 
 // IndexingConfig 索引构建配置（用于控制知识库索引构建时的行为）
 type IndexingConfig struct {
-	// ChunkStrategy: "markdown_then_recursive"（默认，Eino Markdown 标题切分后再递归切）或 "recursive"（仅递归切分）
+	// ChunkStrategy: "markdown_then_recursive"（默认，Agent Markdown 标题切分后再递归切）或 "recursive"（仅递归切分）
 	ChunkStrategy string `yaml:"chunk_strategy,omitempty" json:"chunk_strategy,omitempty"`
 	// RequestTimeoutSeconds 嵌入 HTTP 客户端超时（秒），0 表示使用默认 120
 	RequestTimeoutSeconds int `yaml:"request_timeout_seconds,omitempty" json:"request_timeout_seconds,omitempty"`
@@ -2044,7 +2478,7 @@ type IndexingConfig struct {
 	ChunkOverlap     int `yaml:"chunk_overlap,omitempty" json:"chunk_overlap,omitempty"`             // 块之间的重叠 token 数，默认 50
 	MaxChunksPerItem int `yaml:"max_chunks_per_item,omitempty" json:"max_chunks_per_item,omitempty"` // 单个知识项的最大块数量，0 表示不限制
 
-	// PreferSourceFile 为 true 时优先用 Eino FileLoader 从 file_path 读原文再索引（与库内 content 不一致时以磁盘为准）
+	// PreferSourceFile 为 true 时优先用 Agent FileLoader 从 file_path 读原文再索引（与库内 content 不一致时以磁盘为准）
 	PreferSourceFile bool `yaml:"prefer_source_file,omitempty" json:"prefer_source_file,omitempty"`
 
 	// 速率限制配置（用于避免 API 速率限制）
@@ -2057,7 +2491,7 @@ type IndexingConfig struct {
 
 	// BatchSize 嵌入批大小（SQLite 索引写入），0 表示默认 64
 	BatchSize int `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
-	// SubIndexes 传入 Eino indexer.WithSubIndexes（逻辑分区标记，随 Document 元数据传递）
+	// SubIndexes 传入 Agent indexer.WithSubIndexes（逻辑分区标记，随 Document 元数据传递）
 	SubIndexes []string `yaml:"sub_indexes,omitempty" json:"sub_indexes,omitempty"`
 }
 
@@ -2079,9 +2513,9 @@ type PostRetrieveConfig struct {
 	MaxContextTokens int `yaml:"max_context_tokens,omitempty" json:"max_context_tokens,omitempty"`
 }
 
-// MultiQueryConfig Eino MultiQuery 查询改写（始终启用，无关闭开关）。
+// MultiQueryConfig 配置知识库查询改写。
 type MultiQueryConfig struct {
-	// MaxQueries LLM 生成的检索变体上限（含原问语义覆盖）；0 表示默认 4。
+	// MaxQueries 包含原查询的检索次数上限。1 跳过改写，0 使用默认值 4。
 	MaxQueries int `yaml:"max_queries,omitempty" json:"max_queries,omitempty"`
 }
 
@@ -2146,14 +2580,15 @@ type RolesConfig struct {
 
 // RoleConfig 单个角色配置
 type RoleConfig struct {
-	Name            string   `yaml:"name" json:"name"`                                             // 角色名称
-	Description     string   `yaml:"description" json:"description"`                               // 角色描述
-	UserPrompt      string   `yaml:"user_prompt" json:"user_prompt"`                               // 用户提示词(追加到用户消息前)
-	Icon            string   `yaml:"icon,omitempty" json:"icon,omitempty"`                         // 角色图标（可选）
-	Tools           []string `yaml:"tools,omitempty" json:"tools,omitempty"`                       // 关联的工具列表（toolKey格式，如 "toolName" 或 "mcpName::toolName"）
-	MCPs            []string `yaml:"mcps,omitempty" json:"mcps,omitempty"`                         // 向后兼容：关联的MCP服务器列表（已废弃，使用tools替代）
-	WorkflowID      string   `yaml:"workflow_id,omitempty" json:"workflow_id,omitempty"`           // 可选：绑定工作流 ID
-	WorkflowVersion string   `yaml:"workflow_version,omitempty" json:"workflow_version,omitempty"` // latest 或具体版本号；空等同 latest
-	WorkflowPolicy  string   `yaml:"workflow_policy,omitempty" json:"workflow_policy,omitempty"`   // auto | off；空且 workflow_id 非空时按 auto
-	Enabled         bool     `yaml:"enabled" json:"enabled"`                                       // 是否启用
+	ToolPolicy      RoleToolPolicy `yaml:"tool_policy,omitempty" json:"tool_policy,omitempty"`           // 角色工具执行边界；空 profile 保留现有行为
+	Name            string         `yaml:"name" json:"name"`                                             // 角色名称
+	Description     string         `yaml:"description" json:"description"`                               // 角色描述
+	UserPrompt      string         `yaml:"user_prompt" json:"user_prompt"`                               // 用户提示词(追加到用户消息前)
+	Icon            string         `yaml:"icon,omitempty" json:"icon,omitempty"`                         // 角色图标（可选）
+	Tools           []string       `yaml:"tools,omitempty" json:"tools,omitempty"`                       // 关联的工具列表（toolKey格式，如 "toolName" 或 "mcpName::toolName"）
+	MCPs            []string       `yaml:"mcps,omitempty" json:"mcps,omitempty"`                         // 向后兼容：关联的MCP服务器列表（已废弃，使用tools替代）
+	WorkflowID      string         `yaml:"workflow_id,omitempty" json:"workflow_id,omitempty"`           // 可选：绑定工作流 ID
+	WorkflowVersion string         `yaml:"workflow_version,omitempty" json:"workflow_version,omitempty"` // latest 或具体版本号；空等同 latest
+	WorkflowPolicy  string         `yaml:"workflow_policy,omitempty" json:"workflow_policy,omitempty"`   // auto | off；空且 workflow_id 非空时按 auto
+	Enabled         bool           `yaml:"enabled" json:"enabled"`                                       // 是否启用
 }

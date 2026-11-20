@@ -26,10 +26,28 @@
         if (navLang.startsWith('zh')) {
             return 'zh-CN';
         }
+        if (navLang.startsWith('ru')) {
+            return 'ru-RU';
+        }
+        if (navLang.startsWith('ar')) {
+            return 'ar-SA';
+        }
         if (navLang.startsWith('en')) {
             return 'en-US';
         }
         return DEFAULT_LANG;
+    }
+
+    // 根据语言设置文档方向（阿拉伯语为从右到左 RTL）
+    function applyDirection(lang) {
+        try {
+            if (document && document.documentElement) {
+                var l = String(lang || DEFAULT_LANG).toLowerCase();
+                document.documentElement.dir = l.indexOf('ar') === 0 ? 'rtl' : 'ltr';
+            }
+        } catch (e) {
+            // ignore
+        }
     }
 
     async function loadLanguageResources(lang) {
@@ -110,6 +128,15 @@
         } catch (e) {
             // ignore
         }
+
+        // 更新文档方向（RTL/LTR）
+        applyDirection(i18next.language || DEFAULT_LANG);
+
+        try {
+            if (typeof window.syncHitlAuditBackendUI === 'function') {
+                window.syncHitlAuditBackendUI();
+            }
+        } catch (e) { /* ignore */ }
     }
 
     function updateLangLabel() {
@@ -118,6 +145,10 @@
         const lang = (i18next.language || DEFAULT_LANG).toLowerCase();
         if (lang.indexOf('zh') === 0) {
             label.textContent = i18next.t('lang.zhCN');
+        } else if (lang.indexOf('ru') === 0) {
+            label.textContent = i18next.t('lang.ruRU');
+        } else if (lang.indexOf('ar') === 0) {
+            label.textContent = i18next.t('lang.arSA');
         } else {
             label.textContent = i18next.t('lang.enUS');
         }
@@ -148,6 +179,9 @@
         const current = i18next.language || DEFAULT_LANG;
         if (lang === current) return;
         await loadLanguageResources(lang);
+        if (lang === 'ru-RU' || lang === 'ar-SA') {
+            await loadLanguageResources('en-US');
+        }
         await i18next.changeLanguage(lang);
         try {
             localStorage.setItem(STORAGE_KEY, lang);
@@ -177,12 +211,19 @@
         const initialLang = detectInitialLang();
         await i18next.init({
             lng: initialLang,
-            fallbackLng: DEFAULT_LANG,
+            fallbackLng: {
+                'ru-RU': ['en-US', 'zh-CN'],
+                'ar-SA': ['en-US', 'zh-CN'],
+                'default': [DEFAULT_LANG]
+            },
             debug: false,
             resources: {}
         });
 
         await loadLanguageResources(initialLang);
+        if (initialLang === 'ru-RU' || initialLang === 'ar-SA') {
+            await loadLanguageResources('en-US');
+        }
         applyTranslations(document);
         updateLangLabel();
         if (typeof window.refreshThemeToggleLabel === 'function') {
@@ -196,6 +237,13 @@
         window.t = function (key, opts) {
             if (typeof i18next === 'undefined') return key;
             return i18next.t(key, opts);
+        };
+        window.uiLocale = function () {
+            const lang = String((window.__locale || (typeof i18next !== 'undefined' && i18next.language) || '')).toLowerCase();
+            if (lang.indexOf('zh') === 0) return 'zh-CN';
+            if (lang.indexOf('ru') === 0) return 'ru-RU';
+            if (lang.indexOf('ar') === 0) return 'ar-SA';
+            return 'en-US';
         };
         window.changeLanguage = changeLanguage;
         window.applyTranslations = applyTranslations;

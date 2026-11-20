@@ -1,7 +1,6 @@
 package security
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,13 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/dnslog"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/testproxy"
 	"cyberstrike-ai/internal/tooloutput"
 
 	"github.com/creack/pty"
@@ -41,6 +41,9 @@ type Executor struct {
 	shellNoOutputTimeoutSec int // execute/exec 无新输出空闲秒数；0=默认 300；-1=关闭（见 SetShellNoOutputTimeoutSeconds）
 	toolOutputMaxBytes      int
 	spillRootDir            string
+	digPMOnce               sync.Once
+	digPM                   *dnslog.Client
+	digPMError              error
 }
 
 // NewExecutor 创建新的执行器
@@ -127,6 +130,24 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 		zap.Any("args", args),
 	)
 
+	if tool, exists := e.toolIndex[toolName]; exists && !config.ToolSupportsPlatform(*tool, runtime.GOOS) {
+		return nil, fmt.Errorf("tool does not support %s", runtime.GOOS)
+	}
+	if err := testproxy.CheckTool(ctx, toolName); err != nil {
+		return nil, err
+	}
+	var proxyLease *testproxy.Lease
+	if toolName == "http-framework-test" && testproxy.Current() != nil {
+		waitCtx, cancel := context.WithTimeout(ctx, testproxy.Current().QueueTimeout())
+		var err error
+		proxyLease, err = testproxy.Current().Acquire(waitCtx, fmt.Sprint(args["url"]))
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		defer proxyLease.Finish(false)
+	}
+
 	// 特殊处理：exec工具直接执行系统命令
 	if toolName == "exec" {
 		e.logger.Debug("执行exec工具")
@@ -186,8 +207,15 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	}
 
 	// 执行命令
-	cmd := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+	command, commandErr := config.ResolveToolCommand(*toolConfig)
+	if commandErr != nil {
+		return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "工具依赖未安装或不可执行：请维护人员安装到项目 tools/runtime 并重新加载工具配置。"}}, IsError: true}, nil
+	}
+	cmd := exec.CommandContext(ctx, command, cmdArgs...)
 	applyDefaultTerminalEnv(cmd)
+	if proxyLease != nil {
+		cmd.Env = append(cmd.Env, "CYBERSTRIKE_TEST_PROXY="+proxyLease.URL)
+	}
 	attachNonInteractiveStdin(cmd)
 	_ = prepareShellCmdSession(cmd)
 
@@ -203,11 +231,11 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	if cb, ok := ctx.Value(ToolOutputCallbackCtxKey).(ToolOutputCallback); (ok && cb != nil) || mcp.MCPExecutionIDFromContext(ctx) != "" {
 		cb = e.wrapToolOutputCallback(ctx, cb)
 		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec), e.toolOutputMaxBytes, spill)
-		if err != nil && shouldRetryWithPTY(output) {
+		if err != nil && proxyLease == nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
 			)
-			cmd2 := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+			cmd2 := exec.CommandContext(ctx, command, cmdArgs...)
 			applyDefaultTerminalEnv(cmd2)
 			_ = prepareShellCmdSession(cmd2)
 			output, err = runCommandWithPTY(ctx, cmd2, cb, e.toolOutputMaxBytes, spill)
@@ -215,15 +243,19 @@ func (e *Executor) ExecuteTool(ctx context.Context, toolName string, args map[st
 	} else {
 		// 非流式：内存缓冲 + ctx 取消杀进程组；行为对齐原 CombinedOutput，避免双流管道 fan-in 死锁。
 		output, err = combinedOutputCancellableWithLimit(ctx, cmd, e.toolOutputMaxBytes, spill)
-		if err != nil && shouldRetryWithPTY(output) {
+		if err != nil && proxyLease == nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到工具需要 TTY，使用 PTY 重试",
 				zap.String("tool", toolName),
 			)
-			cmd2 := exec.CommandContext(ctx, toolConfig.Command, cmdArgs...)
+			cmd2 := exec.CommandContext(ctx, command, cmdArgs...)
 			applyDefaultTerminalEnv(cmd2)
 			_ = prepareShellCmdSession(cmd2)
 			output, err = runCommandWithPTY(ctx, cmd2, nil, e.toolOutputMaxBytes, spill)
 		}
+	}
+	if proxyLease != nil {
+		proxyLease.Finish(err != nil && getExitCodeValue(err) == 76)
+		output = "[test-proxy node=" + proxyLease.ID + "]\n" + output
 	}
 	if err != nil {
 		// 检查退出码是否在允许列表中
@@ -304,6 +336,13 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 			continue
 		}
 
+		// Do not advertise missing executables: descriptions alone cannot prevent
+		// repeated model calls. Keep configuration enabled for recovery on reload.
+		if missing, ok := missingTools[toolConfig.Name]; ok {
+			e.logger.Warn("跳过不可用工具注册", zap.String("tool", missing.Name), zap.String("reason", missing.Reason))
+			continue
+		}
+
 		// 创建工具配置的副本，避免闭包问题
 		toolName := toolConfig.Name
 		toolConfigCopy := toolConfig
@@ -333,15 +372,6 @@ func (e *Executor) RegisterTools(mcpServer *mcp.Server) {
 			Description:      toolConfigCopy.Description,
 			ShortDescription: shortDesc,
 			InputSchema:      e.buildInputSchema(&toolConfigCopy),
-		}
-		if missing, ok := missingTools[toolName]; ok {
-			hint := fmt.Sprintf("当前不可用：依赖命令 %q %s。请勿重复调用；可尝试使用 execute-python-script 实现等价操作。", missing.Command, missing.Reason)
-			tool.Description = hint + "\n\n" + tool.Description
-			if tool.ShortDescription == "" {
-				tool.ShortDescription = hint
-			} else {
-				tool.ShortDescription = "[不可用] " + tool.ShortDescription
-			}
 		}
 
 		handler := func(ctx context.Context, args map[string]interface{}) (*mcp.ToolResult, error) {
@@ -526,6 +556,12 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 			}
 		}
 
+		// 在位置参数之前追加扫描选项，保持每个选项及其值相邻。
+		// 不从已拼接的参数中猜测 target：additional_args 的末项可能是超时或文件名。
+		if hasScanType {
+			cmdArgs = append(cmdArgs, e.parseAdditionalArgs(scanTypeValue)...)
+		}
+
 		// 然后处理位置参数（位置参数通常在标志参数之后）
 		// 对位置参数按位置排序
 		// 首先找到最大的位置值，确定需要处理多少个位置
@@ -585,30 +621,6 @@ func (e *Executor) buildCommandArgs(toolName string, toolConfig *config.ToolConf
 			// 按空格分割，但保留引号内的内容
 			additionalArgsList := e.parseAdditionalArgs(additionalArgs)
 			cmdArgs = append(cmdArgs, additionalArgsList...)
-		}
-
-		// 特殊处理：scan_type 参数（需要按空格分割并插入到合适位置）
-		if hasScanType {
-			scanTypeArgs := e.parseAdditionalArgs(scanTypeValue)
-			if len(scanTypeArgs) > 0 {
-				// 对于 nmap，scan_type 应该替换默认的扫描类型参数
-				// 由于我们已经跳过了默认的 args，现在需要将 scan_type 插入到合适位置
-				// 找到 target 参数的位置（通常是最后一个位置参数）
-				insertPos := len(cmdArgs)
-				for i := len(cmdArgs) - 1; i >= 0; i-- {
-					// target 通常是最后一个非标志参数
-					if !strings.HasPrefix(cmdArgs[i], "-") {
-						insertPos = i
-						break
-					}
-				}
-				// 在 target 之前插入 scan_type 参数
-				newArgs := make([]string, 0, len(cmdArgs)+len(scanTypeArgs))
-				newArgs = append(newArgs, cmdArgs[:insertPos]...)
-				newArgs = append(newArgs, scanTypeArgs...)
-				newArgs = append(newArgs, cmdArgs[insertPos:]...)
-				cmdArgs = newArgs
-			}
 		}
 
 		return cmdArgs
@@ -764,6 +776,10 @@ func (e *Executor) formatParamValue(param config.ParameterConfig, value interfac
 // IsBackgroundShellCommand 检测命令是否为完全后台命令（末尾有独立 &，且不在引号内）。
 // command1 & command2 不算完全后台（command2 仍在前台执行）。
 func IsBackgroundShellCommand(command string) bool {
+	// Windows uses explicit managed-background requests; & is not POSIX syntax.
+	if runtime.GOOS == "windows" {
+		return false
+	}
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return false
@@ -816,8 +832,8 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 
 	command = PrepareShellCommandForExecute(command)
 
-	// 获取shell类型（可选，默认为sh）
-	shell := "sh"
+	// 获取 shell 类型；留空时由操作系统选择默认 shell。
+	shell := ""
 	if s, ok := args["shell"].(string); ok && s != "" {
 		shell = s
 	}
@@ -832,13 +848,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 	isBackground := IsBackgroundShellCommand(command)
 
 	// 构建命令
-	var cmd *exec.Cmd
-	if workDir != "" {
-		cmd = exec.CommandContext(ctx, shell, "-c", command)
-		cmd.Dir = workDir
-	} else {
-		cmd = exec.CommandContext(ctx, shell, "-c", command)
-	}
+	cmd := NewShellCommand(ctx, shell, command, workDir)
 	ConfigureShellCmdForAgentExecute(cmd)
 
 	// 执行命令
@@ -849,128 +859,13 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		zap.Bool("isBackground", isBackground),
 	)
 
-	// 如果是后台命令，使用特殊处理来获取实际的后台进程PID
 	if isBackground {
-		// 移除命令末尾的 & 符号
-		commandWithoutAmpersand := strings.TrimSuffix(strings.TrimSpace(command), "&")
-		commandWithoutAmpersand = strings.TrimSpace(commandWithoutAmpersand)
-
-		// 构建新命令：后台作业重定向标准流后 echo $pid（与 RedirectBackgroundJobStdio 一致）。
-		pidCommand := RedirectBackgroundJobStdio(commandWithoutAmpersand+" &") + " pid=$!; echo $pid"
-
-		// 创建新命令来获取PID
-		var pidCmd *exec.Cmd
-		if workDir != "" {
-			pidCmd = exec.CommandContext(ctx, shell, "-c", pidCommand)
-			pidCmd.Dir = workDir
-		} else {
-			pidCmd = exec.CommandContext(ctx, shell, "-c", pidCommand)
-		}
-		ConfigureShellCmdForAgentExecute(pidCmd)
-
-		// 获取stdout管道
-		stdout, err := pidCmd.StdoutPipe()
+		job := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(command), "&"))
+		session, err := StartManagedBackground(ctx, shell, job, workDir)
 		if err != nil {
-			e.logger.Error("创建stdout管道失败",
-				zap.String("command", command),
-				zap.Error(err),
-			)
-			// 如果创建管道失败，使用shell进程的PID作为fallback
-			if err := pidCmd.Start(); err != nil {
-				return &mcp.ToolResult{
-					Content: []mcp.Content{
-						{
-							Type: "text",
-							Text: fmt.Sprintf("后台命令启动失败: %v", err),
-						},
-					},
-					IsError: true,
-				}, nil
-			}
-			pid := pidCmd.Process.Pid
-			go pidCmd.Wait() // 在后台等待，避免僵尸进程
-			return &mcp.ToolResult{
-				Content: []mcp.Content{
-					{
-						Type: "text",
-						Text: fmt.Sprintf("后台命令已启动\n命令: %s\n进程ID: %d (可能不准确，获取PID失败)\n\n注意: 后台进程将继续运行，不会等待其完成。", command, pid),
-					},
-				},
-				IsError: false,
-			}, nil
+			return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: fmt.Sprintf("后台命令启动失败: %v", err)}}, IsError: true}, nil
 		}
-
-		// 启动命令
-		if err := pidCmd.Start(); err != nil {
-			stdout.Close()
-			e.logger.Error("后台命令启动失败",
-				zap.String("command", command),
-				zap.Error(err),
-			)
-			return &mcp.ToolResult{
-				Content: []mcp.Content{
-					{
-						Type: "text",
-						Text: fmt.Sprintf("后台命令启动失败: %v", err),
-					},
-				},
-				IsError: true,
-			}, nil
-		}
-
-		// 读取第一行输出（PID）
-		reader := bufio.NewReader(stdout)
-		pidLine, err := reader.ReadString('\n')
-		stdout.Close()
-
-		var actualPid int
-		if err != nil && err != io.EOF {
-			e.logger.Warn("读取后台进程PID失败",
-				zap.String("command", command),
-				zap.Error(err),
-			)
-			// 如果读取失败，使用shell进程的PID
-			actualPid = pidCmd.Process.Pid
-		} else {
-			// 解析PID
-			pidStr := strings.TrimSpace(pidLine)
-			if parsedPid, err := strconv.Atoi(pidStr); err == nil {
-				actualPid = parsedPid
-			} else {
-				e.logger.Warn("解析后台进程PID失败",
-					zap.String("command", command),
-					zap.String("pidLine", pidStr),
-					zap.Error(err),
-				)
-				// 如果解析失败，使用shell进程的PID
-				actualPid = pidCmd.Process.Pid
-			}
-		}
-
-		// 在goroutine中等待shell进程，避免僵尸进程
-		go func() {
-			if err := pidCmd.Wait(); err != nil {
-				e.logger.Debug("后台命令shell进程执行完成",
-					zap.String("command", command),
-					zap.Error(err),
-				)
-			}
-		}()
-
-		e.logger.Info("后台命令已启动",
-			zap.String("command", command),
-			zap.Int("actualPid", actualPid),
-		)
-
-		return &mcp.ToolResult{
-			Content: []mcp.Content{
-				{
-					Type: "text",
-					Text: fmt.Sprintf("后台命令已启动\n命令: %s\n进程ID: %d\n\n注意: 后台进程将继续运行，不会等待其完成。", command, actualPid),
-				},
-			},
-			IsError: false,
-		}, nil
+		return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: fmt.Sprintf("后台命令已启动\n命令: %s\n进程组ID: %d\n\n后台进程由本轮任务托管，任务结束时自动清理。", command, session.rootPID)}}}, nil
 	}
 
 	// 非后台命令：等待输出
@@ -983,7 +878,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		output, err = streamCommandOutput(ctx, cmd, cb, ResolveShellNoOutputTimeoutSeconds(e.shellNoOutputTimeoutSec), e.toolOutputMaxBytes, spill)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
-			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
+			cmd2 := NewShellCommand(ctx, shell, command, workDir)
 			if workDir != "" {
 				cmd2.Dir = workDir
 			}
@@ -994,7 +889,7 @@ func (e *Executor) executeSystemCommand(ctx context.Context, args map[string]int
 		output, err = combinedOutputCancellableWithLimit(ctx, cmd, e.toolOutputMaxBytes, spill)
 		if err != nil && shouldRetryWithPTY(output) {
 			e.logger.Info("检测到系统命令需要 TTY，使用 PTY 重试")
-			cmd2 := exec.CommandContext(ctx, shell, "-c", command)
+			cmd2 := NewShellCommand(ctx, shell, command, workDir)
 			if workDir != "" {
 				cmd2.Dir = workDir
 			}
@@ -1054,7 +949,7 @@ func combinedOutputCancellableWithLimit(ctx context.Context, cmd *exec.Cmd, maxB
 	cmd.Stdout = stdoutBuf
 	cmd.Stderr = stderrBuf
 
-	session, err := StartShellSession(cmd)
+	session, err := StartShellSessionContext(ctx, cmd)
 	if err != nil {
 		return "", err
 	}
@@ -1261,7 +1156,7 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 		_ = stdoutPipe.Close()
 		return "", err
 	}
-	session, err := StartShellSession(cmd)
+	session, err := StartShellSessionContext(ctx, cmd)
 	if err != nil {
 		_ = stdoutPipe.Close()
 		_ = stderrPipe.Close()
@@ -1278,6 +1173,8 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 	}()
 	defer close(stopWatch)
 
+	readStop := make(chan struct{})
+	defer close(readStop)
 	chunks := make(chan string, 64)
 	var wg sync.WaitGroup
 	readFn := func(r io.Reader) {
@@ -1286,7 +1183,11 @@ func streamCommandOutput(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallba
 		for {
 			n, readErr := r.Read(buf)
 			if n > 0 {
-				chunks <- string(buf[:n])
+				select {
+				case chunks <- string(buf[:n]):
+				case <-readStop:
+					return
+				}
 			}
 			if readErr != nil {
 				return
@@ -1435,16 +1336,16 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 	}
 
 	_ = prepareShellCmdSession(cmd)
-	ptmx, err := pty.Start(cmd)
+	var ptmx *os.File
+	session, err := startShellSessionContext(ctx, cmd, func() error {
+		var startErr error
+		ptmx, startErr = pty.Start(cmd)
+		return startErr
+	})
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = ptmx.Close() }()
-
-	rootPID := 0
-	if cmd.Process != nil {
-		rootPID = cmd.Process.Pid
-	}
 
 	// ctx 取消时尽快终止子进程
 	done := make(chan struct{})
@@ -1452,7 +1353,7 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 		select {
 		case <-ctx.Done():
 			_ = ptmx.Close() // 触发读退出
-			terminateProcessGroup(rootPID, cmd)
+			session.Terminate()
 		case <-done:
 		}
 	}()
@@ -1497,13 +1398,16 @@ func runCommandWithPTY(ctx context.Context, cmd *exec.Cmd, cb ToolOutputCallback
 	}
 	flush()
 
-	waitErr := cmd.Wait()
+	waitErr := session.Wait()
 	return finalizeBoundedOutput(outBuilder, maxBytes, tee), waitErr
 }
 
 // executeInternalTool 执行内部工具（不执行外部命令）
 func (e *Executor) executeInternalTool(ctx context.Context, toolName string, command string, args map[string]interface{}) (*mcp.ToolResult, error) {
 	internalToolType := strings.TrimPrefix(command, "internal:")
+	if internalToolType == "dig_pm_dnslog" {
+		return e.executeDigPM(ctx, args)
+	}
 	e.logger.Warn("未知的内部工具",
 		zap.String("toolName", toolName),
 		zap.String("internalToolType", internalToolType),

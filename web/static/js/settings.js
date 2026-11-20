@@ -172,7 +172,15 @@ function syncSettingsCustomSelect(select) {
 }
 
 function refreshSettingsCustomSelects() {
-    settingsCustomSelects.forEach((_reg, select) => syncSettingsCustomSelect(select));
+    settingsCustomSelects.forEach((reg, select) => {
+        if (!select.isConnected) {
+            closeSettingsCustomSelect(select);
+            reg.menu.remove();
+            settingsCustomSelects.delete(select);
+            return;
+        }
+        syncSettingsCustomSelect(select);
+    });
 }
 
 function enhanceSettingsSelect(select) {
@@ -277,10 +285,7 @@ function enhanceSettingsSelect(select) {
     syncSettingsCustomSelect(select);
 }
 
-function initSettingsCustomSelects(root) {
-    const scope = root || document.getElementById('page-settings');
-    if (!scope) return;
-    scope.querySelectorAll('select').forEach(enhanceSettingsSelect);
+function bindSettingsCustomSelectEvents() {
     if (!settingsCustomSelectsDocBound) {
         document.addEventListener('click', closeAllSettingsCustomSelects);
         document.addEventListener('keydown', (event) => {
@@ -288,8 +293,35 @@ function initSettingsCustomSelects(root) {
         });
         document.addEventListener('scroll', repositionOpenSettingsCustomSelects, true);
         window.addEventListener('resize', repositionOpenSettingsCustomSelects);
+        window.addEventListener('hashchange', closeAllSettingsCustomSelects);
         settingsCustomSelectsDocBound = true;
     }
+}
+
+function initSettingsCustomSelects(root) {
+    const scope = root || document.getElementById('page-settings');
+    if (!scope) return;
+    scope.querySelectorAll('select').forEach(enhanceSettingsSelect);
+    bindSettingsCustomSelectEvents();
+    refreshSettingsCustomSelects();
+}
+
+// Pagination menus use the floating select so clipped panels cannot hide options.
+function initPaginationSelects(root) {
+    if (!root) return;
+    root.querySelectorAll('.pagination-page-size select').forEach(select => {
+        if (select.dataset.projectsCustomSelect === '1') return;
+        enhanceSettingsSelect(select);
+        const reg = settingsCustomSelects.get(select);
+        if (!reg) return;
+        reg.wrapper.classList.add('pagination-custom-select');
+        const label = select.labels?.[0] || select.closest('.pagination-page-size');
+        const labelText = label && Array.from(label.childNodes)
+            .filter(node => node.nodeType === 3).map(node => node.textContent).join(' ').trim();
+        const accessibleName = select.getAttribute('aria-label') || labelText;
+        if (accessibleName) reg.trigger.setAttribute('aria-label', accessibleName);
+    });
+    bindSettingsCustomSelectEvents();
     refreshSettingsCustomSelects();
 }
 
@@ -600,7 +632,7 @@ let toolsLoadSequence = 0;
 
 let c2NavSyncedOnce = false;
 
-/** 根据是否启用多代理，禁用/启用机器人模式中的 Eino 编排选项 */
+/** 根据是否启用多代理，禁用/启用机器人模式中的 Pi 编排选项 */
 function syncRobotAgentModeSelectOptions(multiEnabled) {
     const sel = document.getElementById('multi-agent-robot-mode');
     if (!sel) return;
@@ -609,7 +641,7 @@ function syncRobotAgentModeSelectOptions(multiEnabled) {
         if (opt) opt.disabled = !multiEnabled;
     });
     if (!multiEnabled && ['deep', 'plan_execute', 'supervisor'].indexOf(sel.value) >= 0) {
-        sel.value = 'eino_single';
+        sel.value = 'single';
     }
     syncSettingsCustomSelect(sel);
 }
@@ -619,6 +651,7 @@ window.syncC2NavOnceFromServer = async function syncC2NavOnceFromServer() {
     if (c2NavSyncedOnce || typeof apiFetch === 'undefined') {
         return;
     }
+    if (typeof hasPermission === 'function' && !hasPermission('config:read')) return;
     c2NavSyncedOnce = true;
     try {
         const r = await apiFetch('/api/config');
@@ -652,13 +685,33 @@ function syncC2NavFromConfig(cfg) {
     }
 }
 
+/** Return the permission required to open a settings section. */
+function settingsSectionPermission(section) {
+    return ({storage: 'storage:read', update: 'update:read', 'token-usage': 'dashboard:read', rbac: 'rbac:read'})[section] || 'config:read';
+}
+
+/** Return the first accessible settings section, or null when access is denied. */
+function defaultSettingsSection() {
+    return ['basic', 'storage', 'update', 'token-usage'].find(section =>
+        typeof hasPermission !== 'function' || hasPermission(settingsSectionPermission(section))) || null;
+}
+
 // 切换设置分类
 function switchSettingsSection(section) {
+    const required = settingsSectionPermission(section);
+    if (typeof hasPermission === 'function' && !hasPermission(required)) return;
     if (section === 'rbac') {
         if (typeof switchPage === 'function') {
             switchPage('platform-rbac');
         }
         return;
+    }
+
+    // Unknown hash sections must not hide every settings panel.
+    const requestedContent = document.getElementById(`settings-section-${section}`);
+    if (!requestedContent) return;
+    if (window.location.hash.split('?')[0] === '#settings') {
+        history.replaceState(null, '', section === 'token-usage' ? '#settings?section=token-usage' : '#settings');
     }
 
     // 更新导航项状态
@@ -669,7 +722,7 @@ function switchSettingsSection(section) {
     if (activeNavItem) {
         activeNavItem.classList.add('active');
     }
-    
+
     // 更新内容区域显示
     document.querySelectorAll('.settings-section-content').forEach(content => {
         content.classList.remove('active');
@@ -678,6 +731,11 @@ function switchSettingsSection(section) {
     if (activeContent) {
         activeContent.classList.add('active');
         initSettingsCustomSelects(activeContent);
+    }
+    if (section === 'token-usage' && typeof refreshTokenUsage === 'function') {
+        refreshTokenUsage();
+    } else if (typeof stopTokenUsageRequests === 'function') {
+        stopTokenUsageRequests();
     }
 	if (section === 'robots' && typeof window.loadVulnerabilityAlertSubscription === 'function') {
 		window.loadVulnerabilityAlertSubscription();
@@ -688,29 +746,43 @@ function switchSettingsSection(section) {
     if (section === 'audit' && typeof initAuditLogsSection === 'function') {
         setTimeout(initAuditLogsSection, 0);
     }
+    if (section === 'storage' && typeof initStorageSection === 'function') {
+        setTimeout(initStorageSection, 0);
+    }
+    if (section === 'update') {
+        if (typeof loadUpdateConsole === 'function') {
+            loadUpdateConsole();
+        }
+    } else if (typeof stopUpdatePolling === 'function') {
+        // 离开更新分区就停掉进度轮询；服务端的任务照跑，回来时 loadUpdateConsole 会接着读。
+        stopUpdatePolling();
+    }
 }
 
 // 打开设置
 async function openSettings() {
+    const section = defaultSettingsSection();
+    if (!section) return;
+    const canReadConfig = typeof hasPermission !== 'function' || hasPermission('config:read');
     // 切换到设置页面
     if (typeof switchPage === 'function') {
         switchPage('settings');
     }
-    
+
     // 每次打开时清空全局状态映射，重新加载最新配置
     toolStateMap.clear();
-    
+
     // 每次打开时重新加载最新配置（系统设置页面不需要加载工具列表）
-    await loadConfig(false);
+    if (canReadConfig) await loadConfig(false);
     initSettingsCustomSelects();
-    
+
     // 清除之前的验证错误状态
     document.querySelectorAll('.form-group input').forEach(input => {
         input.classList.remove('error');
     });
-    
+
     // 默认显示基本设置
-    switchSettingsSection('basic');
+    switchSettingsSection(section);
 }
 
 // 关闭设置（保留函数以兼容旧代码，但现在不需要关闭功能）
@@ -725,7 +797,7 @@ function closeSettings() {
 // 点击模态框外部关闭（只保留MCP详情模态框）
 window.onclick = function(event) {
     const mcpModal = document.getElementById('mcp-detail-modal');
-    
+
     if (event.target === mcpModal) {
         closeMCPDetail();
     }
@@ -742,7 +814,7 @@ async function loadConfig(loadTools = true, options = {}) {
             }
             throw new Error('获取配置失败');
         }
-        
+
         currentConfig = await response.json();
         const alwaysVisibleConfigured = currentConfig?.multi_agent?.tool_search_always_visible_tools;
         const alwaysVisibleEffective = currentConfig?.multi_agent?.tool_search_always_visible_effective_tools;
@@ -759,7 +831,7 @@ async function loadConfig(loadTools = true, options = {}) {
                 }
             });
         }
-        
+
         currentConfig.ai = ensureAIConfigShape(currentConfig);
         selectedAIChannelId = currentConfig.ai.default_channel;
         renderAIChannelSelect();
@@ -790,6 +862,13 @@ async function loadConfig(loadTools = true, options = {}) {
             hitlReviewerEl.value = reviewer === 'audit_agent' ? 'audit_agent' : 'human';
         }
         const hitlAuditModel = hitl.audit_model || {};
+        const auditTemperatureEl = document.getElementById('hitl-audit-model-temperature');
+        if (auditTemperatureEl) auditTemperatureEl.value = hitlAuditModel.temperature ?? '';
+        const hitlAuditBackendEl = document.getElementById('hitl-audit-backend');
+        if (hitlAuditBackendEl) {
+            const backend = String(hitl.audit_backend || '').trim().toLowerCase();
+            hitlAuditBackendEl.value = (backend === 'typesafe' || backend === 'jev') ? 'typesafe' : 'openai';
+        }
         const hitlAuditProviderEl = document.getElementById('hitl-audit-model-provider');
         if (hitlAuditProviderEl) {
             const provider = String(hitlAuditModel.provider || '').trim().toLowerCase();
@@ -817,7 +896,10 @@ async function loadConfig(loadTools = true, options = {}) {
         if (hitlReviewEditPromptEl) {
             hitlReviewEditPromptEl.value = hitl.audit_agent_prompt_review_edit || '';
         }
-        
+        if (typeof window.syncHitlAuditBackendUI === 'function') {
+            window.syncHitlAuditBackendUI();
+        }
+
         // 填充Agent配置
         document.getElementById('agent-max-iterations').value = currentConfig.agent.max_iterations || 30;
         const toolWaitTimeoutEl = document.getElementById('agent-tool-wait-timeout-seconds');
@@ -855,84 +937,80 @@ async function loadConfig(loadTools = true, options = {}) {
         }
         const maRobotMode = document.getElementById('multi-agent-robot-mode');
         if (maRobotMode) {
-            let mode = (ma.robot_default_agent_mode || 'eino_single').trim().toLowerCase();
+            let mode = (ma.robot_default_agent_mode || 'single').trim().toLowerCase();
             maRobotMode.value = mode;
             syncRobotAgentModeSelectOptions(ma.enabled === true);
         }
-        const userLedgerMaxEl = document.getElementById('summarization-user-ledger-max-runes');
-        if (userLedgerMaxEl) {
-            const v = ma.summarization_user_intent_ledger_max_runes;
-            userLedgerMaxEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '96000';
+        const modelRetryMaxEl = document.getElementById('pi-model-retry-max-retries');
+        if (modelRetryMaxEl) {
+            const v = ma.model_retry_max_retries;
+            modelRetryMaxEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '0';
         }
-        const userLedgerEntryMaxEl = document.getElementById('summarization-user-ledger-entry-max-runes');
-        if (userLedgerEntryMaxEl) {
-            const v = ma.summarization_user_intent_ledger_entry_max_runes;
-            userLedgerEntryMaxEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '16000';
+        const modelRetryBackoffEl = document.getElementById('pi-model-retry-max-backoff-sec');
+        if (modelRetryBackoffEl) {
+            const v = ma.model_retry_max_backoff_sec;
+            modelRetryBackoffEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '0';
         }
-        const latestUserMaxEl = document.getElementById('latest-user-message-max-runes');
-        if (latestUserMaxEl) {
-            const v = ma.latest_user_message_max_runes;
-            latestUserMaxEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '48000';
+        const modelFailoverChannelsEl = document.getElementById('pi-model-failover-channels');
+        if (modelFailoverChannelsEl) {
+            const channels = ma.model_failover_channels;
+            modelFailoverChannelsEl.value = Array.isArray(channels) ? channels.join('\n') : '';
         }
-        const latestUserHeadEl = document.getElementById('latest-user-message-head-runes');
-        if (latestUserHeadEl) {
-            const v = ma.latest_user_message_head_runes;
-            latestUserHeadEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '24000';
+        const modelFailoverMaxEl = document.getElementById('pi-model-failover-max-retries');
+        if (modelFailoverMaxEl) {
+            const v = ma.model_failover_max_retries;
+            modelFailoverMaxEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '0';
         }
-        const latestUserTailEl = document.getElementById('latest-user-message-tail-runes');
-        if (latestUserTailEl) {
-            const v = ma.latest_user_message_tail_runes;
-            latestUserTailEl.value = (v !== undefined && v !== null && !Number.isNaN(Number(v))) ? String(Number(v)) : '24000';
-        }
-        
+
+
         // 填充知识库配置
         const knowledgeEnabledCheckbox = document.getElementById('knowledge-enabled');
         if (knowledgeEnabledCheckbox) {
             knowledgeEnabledCheckbox.checked = currentConfig.knowledge?.enabled !== false;
         }
-        
+
         // 填充知识库详细配置
         if (currentConfig.knowledge) {
             const knowledge = currentConfig.knowledge;
-            
+
             // 基本配置
             const basePathInput = document.getElementById('knowledge-base-path');
             if (basePathInput) {
                 basePathInput.value = knowledge.base_path || 'knowledge_base';
             }
-            
+
             // 嵌入模型配置
             const embeddingProviderSelect = document.getElementById('knowledge-embedding-provider');
             if (embeddingProviderSelect) {
                 embeddingProviderSelect.value = knowledge.embedding?.provider || 'openai';
             }
-            
+
             const embeddingModelInput = document.getElementById('knowledge-embedding-model');
             if (embeddingModelInput) {
                 embeddingModelInput.value = knowledge.embedding?.model || '';
             }
-            
+
             const embeddingBaseUrlInput = document.getElementById('knowledge-embedding-base-url');
             if (embeddingBaseUrlInput) {
                 embeddingBaseUrlInput.value = knowledge.embedding?.base_url || '';
             }
-            
+
             const embeddingApiKeyInput = document.getElementById('knowledge-embedding-api-key');
             if (embeddingApiKeyInput) {
                 embeddingApiKeyInput.value = knowledge.embedding?.api_key || '';
             }
-            
+
             // 检索配置
             const retrievalTopKInput = document.getElementById('knowledge-retrieval-top-k');
             if (retrievalTopKInput) {
                 retrievalTopKInput.value = knowledge.retrieval?.top_k || 5;
             }
-            
+
             const retrievalThresholdInput = document.getElementById('knowledge-retrieval-similarity-threshold');
             if (retrievalThresholdInput) {
                 retrievalThresholdInput.value = knowledge.retrieval?.similarity_threshold || 0.7;
             }
-            
+
             const subIdxFilterInput = document.getElementById('knowledge-retrieval-sub-index-filter');
             if (subIdxFilterInput) {
                 subIdxFilterInput.value = knowledge.retrieval?.sub_index_filter || '';
@@ -1125,13 +1203,13 @@ async function loadConfig(loadTools = true, options = {}) {
         refreshRobotManager();
         initSettingsCustomSelects();
         refreshSettingsCustomSelects();
-        
+
         // 只有在需要时才加载工具列表（MCP管理页面需要，系统设置页面不需要）
         if (loadTools) {
             // 设置每页显示数量（会在分页控件渲染时设置）
             const savedPageSize = getToolsPageSize();
             toolsPagination.pageSize = savedPageSize;
-            
+
             // 加载工具列表（使用分页）
             toolsSearchKeyword = '';
             await loadToolsList(1, '');
@@ -1185,7 +1263,7 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
             toolsList.innerHTML = '<div class="tools-list-items"><div class="loading" style="padding: 20px; text-align: center; color: var(--text-muted);">⏳ ' + (typeof window.t === 'function' ? window.t('mcp.loadingTools') : '正在加载工具列表...') + '</div></div>';
         }
     }
-    
+
     let timeoutId = null;
     try {
         const pageSize = toolsPagination.pageSize;
@@ -1202,21 +1280,21 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
         if (toolsExternalMcpFilter) {
             url += `&external_mcp=${encodeURIComponent(toolsExternalMcpFilter)}`;
         }
-        
+
         // 使用较短的超时时间（10秒），避免长时间等待
         timeoutId = setTimeout(() => controller.abort(), 10000);
-        
+
         const response = await apiFetch(url, {
             signal: controller.signal
         });
-        
+
         if (!response.ok) {
             if (typeof readApiError === 'function') {
                 throw new Error(await readApiError(response, '获取工具列表失败'));
             }
             throw new Error('获取工具列表失败');
         }
-        
+
         const result = await response.json();
         if (requestSequence !== toolsLoadSequence) return;
 
@@ -1228,7 +1306,7 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
             totalEnabled: result.total_enabled ?? 0,
             totalPages: result.total_pages || 1
         };
-        
+
         // 初始化工具状态映射（如果工具不在映射中，使用服务器返回的状态）
         allTools.forEach(tool => {
             const toolKey = getToolKey(tool);
@@ -1241,7 +1319,7 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
                 });
             }
         });
-        
+
         renderToolsList();
         renderToolsPagination();
         renderExternalMcpFilterChip();
@@ -1253,7 +1331,7 @@ async function loadToolsList(page = 1, searchKeyword = '', options = {}) {
         console.error('加载工具列表失败:', error);
         if (toolsList) {
             const isTimeout = error.name === 'AbortError' || error.message.includes('timeout');
-            const errorMsg = isTimeout 
+            const errorMsg = isTimeout
                 ? (typeof window.t === 'function' ? window.t('mcp.loadToolsTimeout') : '加载工具列表超时，可能是外部MCP连接较慢。请点击"刷新"按钮重试，或检查外部MCP连接状态。')
                 : (typeof window.t === 'function' ? window.t('mcp.loadToolsFailed') : '加载工具列表失败') + ': ' + escapeHtml(error.message);
             toolsList.innerHTML = `<div class="error" style="padding: 20px; text-align: center;">${errorMsg}</div>`;
@@ -1330,13 +1408,13 @@ function filterToolsByStatus(status) {
 function renderToolsList() {
     const toolsList = document.getElementById('tools-list');
     if (!toolsList) return;
-    
+
     // 移除可能存在的分页控件（会在 renderToolsPagination 中重新添加）
     const oldPagination = toolsList.querySelector('.tools-pagination');
     if (oldPagination) {
         oldPagination.remove();
     }
-    
+
     // 获取或创建列表容器
     let listContainer = toolsList.querySelector('.tools-list-items');
     if (!listContainer) {
@@ -1344,10 +1422,10 @@ function renderToolsList() {
         listContainer.className = 'tools-list-items';
         toolsList.appendChild(listContainer);
     }
-    
+
     // 清空列表容器内容（移除加载提示）
     listContainer.innerHTML = '';
-    
+
     if (allTools.length === 0) {
         listContainer.innerHTML = '<div class="empty">' + (typeof window.t === 'function' ? window.t('mcp.noTools') : '暂无工具') + '</div>';
         if (!toolsList.contains(listContainer)) {
@@ -1357,7 +1435,7 @@ function renderToolsList() {
         updateToolsStats();
         return;
     }
-    
+
     allTools.forEach(tool => {
         const toolKey = getToolKey(tool); // 生成唯一标识符
         const toolItem = document.createElement('div');
@@ -1366,7 +1444,7 @@ function renderToolsList() {
         toolItem.dataset.toolName = tool.name; // 保存原始工具名称
         toolItem.dataset.isExternal = tool.is_external ? 'true' : 'false';
         toolItem.dataset.externalMcp = tool.external_mcp || '';
-        
+
         // 从全局状态映射获取工具状态，如果不存在则使用服务器返回的状态
         const toolState = toolStateMap.get(toolKey) || {
             enabled: tool.enabled,
@@ -1375,7 +1453,7 @@ function renderToolsList() {
         };
         const alwaysVisibleChecked = isToolAlwaysVisible(tool);
         const alwaysVisibleLocked = isToolAlwaysVisibleBuiltin(tool);
-        
+
         // 外部工具标签，显示来源信息（可点击跳转到对应 MCP 卡片）
         let externalBadge = '';
         if (toolState.is_external || tool.is_external) {
@@ -1416,11 +1494,11 @@ function renderToolsList() {
         });
         listContainer.appendChild(toolItem);
     });
-    
+
     if (!toolsList.contains(listContainer)) {
         toolsList.appendChild(listContainer);
     }
-    
+
     // 更新统计
     updateToolsStats();
 }
@@ -1615,25 +1693,26 @@ function renderExternalMcpFilterChip() {
 function renderToolsPagination() {
     const toolsList = document.getElementById('tools-list');
     if (!toolsList) return;
-    
+
     // 移除旧的分页控件
     const oldPagination = toolsList.querySelector('.tools-pagination');
     if (oldPagination) {
         oldPagination.remove();
     }
-    
+
     // 如果只有一页或没有数据，不显示分页
     if (toolsPagination.totalPages <= 1) {
+        initPaginationSelects(toolsList);
         return;
     }
-    
+
     const pagination = document.createElement('div');
     pagination.className = 'tools-pagination';
-    
+
     const { page, totalPages, total } = toolsPagination;
     const startItem = (page - 1) * toolsPagination.pageSize + 1;
     const endItem = Math.min(page * toolsPagination.pageSize, total);
-    
+
     const savedPageSize = getToolsPageSize();
     const t = typeof window.t === 'function' ? window.t : (k) => k;
     const paginationT = (key, opts) => {
@@ -1663,8 +1742,9 @@ function renderToolsPagination() {
             <button class="btn-secondary" onclick="loadToolsList(${totalPages}, ${settingsEscapeJsStringAttr(toolsSearchKeyword)})" ${page === totalPages ? 'disabled' : ''}>${t('mcp.lastPage')}</button>
         </div>
     `;
-    
+
     toolsList.appendChild(pagination);
+    initPaginationSelects(pagination);
 }
 
 // 处理工具checkbox状态变化
@@ -1749,24 +1829,24 @@ async function changeToolsPageSize() {
     // 尝试从两个位置获取选择器（顶部或分页区域）
     const pageSizeSelect = document.getElementById('tools-page-size') || document.getElementById('tools-page-size-pagination');
     if (!pageSizeSelect) return;
-    
+
     const newPageSize = parseInt(pageSizeSelect.value, 10);
     if (isNaN(newPageSize) || newPageSize < 1) {
         return;
     }
-    
+
     // 保存到localStorage
     localStorage.setItem('toolsPageSize', newPageSize.toString());
-    
+
     // 更新分页配置
     toolsPagination.pageSize = newPageSize;
-    
+
     // 同步更新另一个选择器（如果存在）
     const otherSelect = document.getElementById('tools-page-size') || document.getElementById('tools-page-size-pagination');
     if (otherSelect && otherSelect !== pageSizeSelect) {
         otherSelect.value = newPageSize;
     }
-    
+
     // 重新加载第一页
     await loadToolsList(1, toolsSearchKeyword);
 }
@@ -1775,18 +1855,18 @@ async function changeToolsPageSize() {
 async function updateToolsStats() {
     const statsEl = document.getElementById('tools-stats');
     if (!statsEl) return;
-    
+
     // 先保存当前页的状态到全局映射
     saveCurrentPageToolStates();
-    
+
     // 计算当前页的启用工具数（仅行首「启用」复选框，不含「常驻」）
     const currentPageEnabled = Array.from(document.querySelectorAll(`${TOOL_ENABLE_CHECKBOX_SELECTOR}:checked`)).length;
     const currentPageTotal = document.querySelectorAll(TOOL_ENABLE_CHECKBOX_SELECTOR).length;
-    
+
     // 计算所有工具的启用数
     let totalEnabled = 0;
     let totalTools = toolsPagination.total || 0;
-    
+
     try {
         // 如果有搜索关键词，只统计搜索结果
         if (toolsSearchKeyword) {
@@ -1826,7 +1906,7 @@ async function updateToolsStats() {
         totalTools = totalTools || currentPageTotal;
         totalEnabled = currentPageEnabled;
     }
-    
+
     const tStats = typeof window.t === 'function' ? window.t : (k) => k;
     const pinnedCount = countUserAlwaysVisibleTools();
     statsEl.innerHTML = `
@@ -1850,30 +1930,30 @@ async function applySettings() {
         document.querySelectorAll('.form-group input').forEach(input => {
             input.classList.remove('error');
         });
-        
+
         // 验证必填字段
         const provider = document.getElementById('openai-provider')?.value || 'openai';
         const apiKey = document.getElementById('openai-api-key').value.trim();
         const baseUrl = document.getElementById('openai-base-url').value.trim();
         const model = document.getElementById('openai-model').value.trim();
-        
+
         let hasError = false;
-        
+
         if (!apiKey) {
             document.getElementById('openai-api-key').classList.add('error');
             hasError = true;
         }
-        
+
         if (!baseUrl) {
             document.getElementById('openai-base-url').classList.add('error');
             hasError = true;
         }
-        
+
         if (!model) {
             document.getElementById('openai-model').classList.add('error');
             hasError = true;
         }
-        
+
         if (hasError) {
             const msg = (typeof window !== 'undefined' && typeof window.t === 'function')
                 ? window.t('settings.apply.fillRequired')
@@ -1889,11 +1969,11 @@ async function applySettings() {
             alert((typeof window.t === 'function') ? window.t('settingsBasic.visionModelRequired') : '启用视觉分析时请填写视觉模型名称');
             return;
         }
-        
+
         // 收集配置
         const knowledgeEnabledCheckbox = document.getElementById('knowledge-enabled');
         const knowledgeEnabled = knowledgeEnabledCheckbox ? knowledgeEnabledCheckbox.checked : true;
-        
+
         // 收集知识库配置
         const c2EnabledCheckbox = document.getElementById('c2-enabled');
         const c2Enabled = c2EnabledCheckbox ? c2EnabledCheckbox.checked : true;
@@ -1958,18 +2038,22 @@ async function applySettings() {
                 };
             })()
         };
-        
+
         const wecomAgentIdVal = document.getElementById('robot-wecom-agent-id')?.value.trim();
         if (!currentConfig) currentConfig = {};
         currentConfig.ai = ensureAIConfigShape(currentConfig);
         const activeChannelId = normalizeAIChannelId(selectedAIChannelId || currentConfig.ai.default_channel || 'default');
         currentConfig.ai.channels[activeChannelId] = readAIChannelFromMainForm(activeChannelId);
+        await detectChannelContextForSave(activeChannelId, currentConfig.ai.channels[activeChannelId]);
         currentConfig.ai.default_channel = activeChannelId;
+        currentConfig.ai = normalizeAIConfigProviderProfiles(currentConfig.ai);
         renderAIChannelSelect();
         const activeChannel = currentConfig.ai.channels[activeChannelId] || {};
         const prevOpenai = activeChannel;
         const prevRobots = (currentConfig && currentConfig.robots) ? currentConfig.robots : {};
         const prevHitl = (currentConfig && currentConfig.hitl) ? currentConfig.hitl : {};
+        const auditTemperatureInput = document.getElementById('hitl-audit-model-temperature');
+        if (auditTemperatureInput && !auditTemperatureInput.reportValidity()) return;
         const hitlRetentionRaw = document.getElementById('hitl-retention-days')?.value;
         const hitlRetention = parseInt(hitlRetentionRaw, 10);
         const hitlWhitelistRaw = document.getElementById('hitl-tool-whitelist')?.value || '';
@@ -1979,7 +2063,7 @@ async function applySettings() {
                 return String(s || '').split(/[\n,，]/).map(v => v.trim()).filter(Boolean);
             };
         const config = {
-            ai: currentConfig.ai,
+            ai: normalizeAIConfigProviderProfiles(currentConfig.ai),
             vision: visionPayload,
             fofa: {
                 api_key: document.getElementById('fofa-api-key')?.value.trim() || '',
@@ -1999,12 +2083,15 @@ async function applySettings() {
             },
             hitl: {
                 ...prevHitl,
+                audit_backend: document.getElementById('hitl-audit-backend')?.value === 'typesafe' ? 'typesafe' : 'openai',
                 audit_model: {
                     ...(prevHitl.audit_model || {}),
                     provider: document.getElementById('hitl-audit-model-provider')?.value || '',
                     base_url: document.getElementById('hitl-audit-model-base-url')?.value.trim() || '',
                     api_key: document.getElementById('hitl-audit-model-api-key')?.value.trim() || '',
-                    model: document.getElementById('hitl-audit-model-name')?.value.trim() || ''
+                    model: document.getElementById('hitl-audit-model-name')?.value.trim() || '',
+                    temperature: document.getElementById('hitl-audit-model-temperature')?.value.trim()
+                        ? Number(document.getElementById('hitl-audit-model-temperature').value) : null
                 },
                 default_reviewer: document.getElementById('hitl-default-reviewer')?.value === 'audit_agent' ? 'audit_agent' : 'human',
                 retention_days: Number.isNaN(hitlRetention) ? 90 : Math.max(0, hitlRetention),
@@ -2024,36 +2111,27 @@ async function applySettings() {
                 const peRaw = document.getElementById('multi-agent-pe-loop')?.value;
                 const peParsed = parseInt(peRaw, 10);
                 const peLoop = Number.isNaN(peParsed) ? 0 : Math.max(0, peParsed);
-                const ledgerRaw = document.getElementById('summarization-user-ledger-max-runes')?.value;
-                const ledgerParsed = parseInt(ledgerRaw, 10);
-                const ledgerMax = Number.isNaN(ledgerParsed) ? 0 : Math.max(0, ledgerParsed);
-                const ledgerEntryRaw = document.getElementById('summarization-user-ledger-entry-max-runes')?.value;
-                const ledgerEntryParsed = parseInt(ledgerEntryRaw, 10);
-                const ledgerEntryMax = Number.isNaN(ledgerEntryParsed) ? 0 : Math.max(0, ledgerEntryParsed);
-                const latestRaw = document.getElementById('latest-user-message-max-runes')?.value;
-                const latestParsed = parseInt(latestRaw, 10);
-                const latestMax = Number.isNaN(latestParsed) ? 0 : Math.max(0, latestParsed);
-                const latestHeadRaw = document.getElementById('latest-user-message-head-runes')?.value;
-                const latestHeadParsed = parseInt(latestHeadRaw, 10);
-                const latestHead = Number.isNaN(latestHeadParsed) ? 0 : Math.max(0, latestHeadParsed);
-                const latestTailRaw = document.getElementById('latest-user-message-tail-runes')?.value;
-                const latestTailParsed = parseInt(latestTailRaw, 10);
-                const latestTail = Number.isNaN(latestTailParsed) ? 0 : Math.max(0, latestTailParsed);
                 const maEnabled = document.getElementById('multi-agent-enabled')?.checked === true;
-                let robotMode = document.getElementById('multi-agent-robot-mode')?.value || 'eino_single';
-                if (!maEnabled && ['deep', 'plan_execute', 'supervisor'].indexOf(robotMode) >= 0) {
-                    robotMode = 'eino_single';
-                }
+                let robotMode = document.getElementById('multi-agent-robot-mode')?.value || 'single';
+                if (!maEnabled && ['deep', 'plan_execute', 'supervisor'].indexOf(robotMode) >= 0) robotMode = 'single';
+                const parseNonNegativeInt = function (id) {
+                    const raw = document.getElementById(id)?.value;
+                    const parsed = parseInt(raw, 10);
+                    return Number.isNaN(parsed) ? 0 : Math.max(0, parsed);
+                };
+                const failoverChannelsRaw = document.getElementById('pi-model-failover-channels')?.value || '';
+                const failoverChannels = Array.from(new Set(
+                    failoverChannelsRaw.split(/[\n,，]/).map(s => s.trim()).filter(Boolean)
+                ));
                 return {
                     enabled: maEnabled,
                     robot_default_agent_mode: robotMode,
                     batch_use_multi_agent: currentConfig?.multi_agent?.batch_use_multi_agent === true,
                     plan_execute_loop_max_iterations: peLoop,
-                    summarization_user_intent_ledger_max_runes: ledgerMax,
-                    summarization_user_intent_ledger_entry_max_runes: ledgerEntryMax,
-                    latest_user_message_max_runes: latestMax,
-                    latest_user_message_head_runes: latestHead,
-                    latest_user_message_tail_runes: latestTail
+                    model_retry_max_retries: parseNonNegativeInt('pi-model-retry-max-retries'),
+                    model_retry_max_backoff_sec: parseNonNegativeInt('pi-model-retry-max-backoff-sec'),
+                    model_failover_channels: failoverChannels,
+                    model_failover_max_retries: parseNonNegativeInt('pi-model-failover-max-retries'),
                 };
             })(),
             knowledge: knowledgeConfig,
@@ -2131,11 +2209,11 @@ async function applySettings() {
             },
             tools: []
         };
-        
+
         // 收集工具启用状态
         // 先保存当前页的状态到全局映射
         saveCurrentPageToolStates();
-        
+
         // 获取所有工具列表以获取完整状态（遍历所有页面）
         // 注意：无论是否在搜索状态下，都要获取所有工具的状态，以确保完整保存
         try {
@@ -2143,18 +2221,18 @@ async function applySettings() {
             let page = 1;
             let hasMore = true;
             const pageSize = 100; // 使用合理的页面大小
-            
+
             // 遍历所有页面获取所有工具（不使用搜索关键词，获取全部工具）
             while (hasMore) {
                 const url = `/api/config/tools?page=${page}&page_size=${pageSize}`;
-                
+
                 const pageResponse = await apiFetch(url);
                 if (!pageResponse.ok) {
                     throw new Error('获取工具列表失败');
                 }
-                
+
                 const pageResult = await pageResponse.json();
-                
+
                 // 将工具添加到映射中
                 // 优先使用全局状态映射中的状态（用户修改过的），否则使用服务器返回的状态
                 pageResult.tools.forEach(tool => {
@@ -2167,7 +2245,7 @@ async function applySettings() {
                         external_mcp: savedState ? savedState.external_mcp : (tool.external_mcp || '')
                     });
                 });
-                
+
                 // 检查是否还有更多页面
                 if (page >= pageResult.total_pages) {
                     hasMore = false;
@@ -2175,7 +2253,7 @@ async function applySettings() {
                     page++;
                 }
             }
-            
+
             // 将所有工具添加到配置中
             allToolsMap.forEach((tool, toolKey) => {
                 config.tools.push({
@@ -2199,7 +2277,7 @@ async function applySettings() {
                 });
             });
         }
-        
+
         // 更新配置
         const updateResponse = await apiFetch('/api/config', {
             method: 'PUT',
@@ -2208,7 +2286,7 @@ async function applySettings() {
             },
             body: JSON.stringify(config)
         });
-        
+
         if (!updateResponse.ok) {
             const error = await updateResponse.json();
             const fallback = (typeof window !== 'undefined' && typeof window.t === 'function')
@@ -2216,12 +2294,12 @@ async function applySettings() {
                 : '应用配置失败';
             throw new Error(error.error || fallback);
         }
-        
+
         // 应用配置
         const applyResponse = await apiFetch('/api/config/apply', {
             method: 'POST'
         });
-        
+
         if (!applyResponse.ok) {
             const error = await applyResponse.json();
             const fallback = (typeof window !== 'undefined' && typeof window.t === 'function')
@@ -2229,7 +2307,7 @@ async function applySettings() {
                 : '应用配置失败';
             throw new Error(error.error || fallback);
         }
-        
+
         const successMsg = (typeof window !== 'undefined' && typeof window.t === 'function')
             ? window.t('settings.apply.applySuccess')
             : '配置已成功应用！';
@@ -2500,6 +2578,43 @@ function normalizeAIChannelId(name) {
     return id || 'default';
 }
 
+function aiChannelBaseURLHost(baseUrl) {
+    const raw = String(baseUrl || '').trim();
+    if (!raw) return '';
+    try {
+        return new URL(raw).hostname.toLowerCase().replace(/^www\./, '');
+    } catch (e) {
+        try {
+            return new URL(`https://${raw.replace(/^\/+/, '')}`).hostname.toLowerCase().replace(/^www\./, '');
+        } catch (_) {
+            return '';
+        }
+    }
+}
+
+function isOfficialDeepSeekBaseURL(baseUrl) {
+    return aiChannelBaseURLHost(baseUrl) === 'api.deepseek.com';
+}
+
+function normalizeAIChannelProviderProfile(channel) {
+    if (!channel || typeof channel !== 'object') return channel;
+    if (isOfficialDeepSeekBaseURL(channel.base_url)) {
+        channel.reasoning = {
+            ...(channel.reasoning || {}),
+            profile: 'deepseek'
+        };
+    }
+    return channel;
+}
+
+function normalizeAIConfigProviderProfiles(ai) {
+    if (!ai || typeof ai !== 'object' || !ai.channels || typeof ai.channels !== 'object') return ai;
+    Object.keys(ai.channels).forEach((id) => {
+        ai.channels[id] = normalizeAIChannelProviderProfile(ai.channels[id] || {});
+    });
+    return ai;
+}
+
 function escapeAIChannelHtml(value) {
     return String(value == null ? '' : value)
         .replace(/&/g, '&amp;')
@@ -2523,16 +2638,43 @@ function ensureAIConfigShape(cfg) {
             model: oa.model || '',
             max_total_tokens: oa.max_total_tokens || 120000,
             max_completion_tokens: oa.max_completion_tokens || 0,
+            context_window: oa.context_window || 0,
+            context_profile: oa.context_profile || '',
             reasoning: oa.reasoning || {}
         };
     }
-    return { default_channel: def, channels };
+    return normalizeAIConfigProviderProfiles({ default_channel: def, channels });
+}
+
+// parseCustomHeadersInput 把「每行一条 KEY=VALUE」的文本解析为请求头对象。
+// 空行与 # 开头的行会被忽略；键或值为空的行直接跳过。
+function parseCustomHeadersInput() {
+    const el = document.getElementById('openai-custom-headers');
+    if (!el) return {};
+    const out = {};
+    String(el.value || '').split(/\r?\n/).forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.charAt(0) === '#') return;
+        const idx = trimmed.indexOf('=');
+        if (idx <= 0) return;
+        const key = trimmed.slice(0, idx).trim();
+        const value = trimmed.slice(idx + 1).trim();
+        if (!key || !value) return;
+        out[key] = value;
+    });
+    return out;
+}
+
+// formatCustomHeaders 把请求头对象写回「每行一条 KEY=VALUE」的文本。
+function formatCustomHeaders(headers) {
+    if (!headers || typeof headers !== 'object') return '';
+    return Object.keys(headers).sort().map((k) => k + '=' + headers[k]).join('\n');
 }
 
 function readAIChannelFromMainForm(id) {
     const prev = currentConfig?.ai?.channels?.[id] || {};
     const maxCompletionTokens = parseInt(document.getElementById('openai-max-completion-tokens')?.value, 10) || 32768;
-    return {
+    const channel = normalizeAIChannelProviderProfile({
         ...prev,
         name: (document.getElementById('ai-channel-name')?.value || '').trim() || prev.name || id,
         provider: document.getElementById('openai-provider')?.value || 'openai',
@@ -2541,6 +2683,8 @@ function readAIChannelFromMainForm(id) {
         model: document.getElementById('openai-model')?.value.trim() || '',
         max_total_tokens: parseInt(document.getElementById('openai-max-total-tokens')?.value, 10) || 120000,
         max_completion_tokens: maxCompletionTokens,
+        headers: parseCustomHeadersInput(),
+        context_window: parseInt(document.getElementById('openai-context-window')?.value, 10) || 0,
         reasoning: {
             ...(prev.reasoning || {}),
             mode: document.getElementById('openai-reasoning-mode')?.value || 'auto',
@@ -2548,7 +2692,11 @@ function readAIChannelFromMainForm(id) {
             profile: document.getElementById('openai-reasoning-profile')?.value || 'auto',
             allow_client_reasoning: document.getElementById('openai-reasoning-allow-client')?.checked !== false
         }
-    };
+    });
+    if (channel.context_profile === 'local_auto' && ['provider', 'base_url', 'model'].some(key => channel[key] !== prev[key])) {
+        channel.context_profile = '';
+    }
+    return channel;
 }
 
 function writeAIChannelToMainForm(id) {
@@ -2561,6 +2709,7 @@ function writeAIChannelToMainForm(id) {
     if (providerEl) {
         const provider = (ch.provider === 'openai' || !ch.provider) ? 'openai_compatible' : ch.provider;
         providerEl.value = provider;
+        syncSettingsCustomSelect(providerEl);
     }
     const keyEl = document.getElementById('openai-api-key');
     if (keyEl) keyEl.value = ch.api_key || '';
@@ -2572,13 +2721,26 @@ function writeAIChannelToMainForm(id) {
     if (maxTokensEl) maxTokensEl.value = ch.max_total_tokens || 120000;
     const maxCompletionTokensEl = document.getElementById('openai-max-completion-tokens');
     if (maxCompletionTokensEl) maxCompletionTokensEl.value = ch.max_completion_tokens || 32768;
+    const customHeadersEl = document.getElementById('openai-custom-headers');
+    if (customHeadersEl) customHeadersEl.value = formatCustomHeaders(ch.headers);
+    const contextWindowEl = document.getElementById('openai-context-window');
+    if (contextWindowEl) contextWindowEl.value = ch.context_window || '';
     const r = ch.reasoning || {};
     const modeEl = document.getElementById('openai-reasoning-mode');
-    if (modeEl) modeEl.value = ['auto', 'on', 'off'].includes(String(r.mode || '').toLowerCase()) ? String(r.mode).toLowerCase() : 'auto';
+    if (modeEl) {
+        modeEl.value = ['auto', 'on', 'off'].includes(String(r.mode || '').toLowerCase()) ? String(r.mode).toLowerCase() : 'auto';
+        syncSettingsCustomSelect(modeEl);
+    }
     const effEl = document.getElementById('openai-reasoning-effort');
-    if (effEl) effEl.value = ['', 'low', 'medium', 'high', 'max', 'xhigh'].includes(String(r.effort || '').toLowerCase()) ? String(r.effort || '').toLowerCase() : '';
+    if (effEl) {
+        effEl.value = ['', 'low', 'medium', 'high', 'max', 'xhigh'].includes(String(r.effort || '').toLowerCase()) ? String(r.effort || '').toLowerCase() : '';
+        syncSettingsCustomSelect(effEl);
+    }
     const profileEl = document.getElementById('openai-reasoning-profile');
-    if (profileEl) profileEl.value = ['auto', 'deepseek_compat', 'openai_compat', 'output_config_effort'].includes(String(r.profile || '').toLowerCase()) ? String(r.profile || '').toLowerCase() : 'auto';
+    if (profileEl) {
+        profileEl.value = ['auto', 'deepseek', 'deepseek_compat', 'openai_compat', 'output_config_effort'].includes(String(r.profile || '').toLowerCase()) ? String(r.profile || '').toLowerCase() : 'auto';
+        syncSettingsCustomSelect(profileEl);
+    }
     const allowEl = document.getElementById('openai-reasoning-allow-client');
     if (allowEl) allowEl.checked = r.allow_client_reasoning !== false;
     syncModelListFetchButtons();
@@ -2667,7 +2829,11 @@ function bindAIChannelEditorPreviewSync() {
         'openai-provider',
         'openai-api-key',
         'openai-base-url',
-        'openai-model'
+        'openai-model',
+        'openai-custom-headers',
+        'openai-max-total-tokens',
+        'openai-max-completion-tokens',
+        'openai-context-window'
     ];
     ids.forEach((fieldId) => {
         const el = document.getElementById(fieldId);
@@ -2896,6 +3062,7 @@ async function persistAIChannelsToServer(successMessage, options = {}) {
     renderAIChannelSelect();
     showAIChannelSaveHint(settingsT('settingsBasic.aiChannelSaving', '正在保存通道...'), true);
     try {
+        await detectChannelContextForSave(id, channelPayload);
         const shouldMergeLatest = options.mergeLatest !== false;
         const latestResponse = shouldMergeLatest ? await apiFetch('/api/config') : null;
         if (latestResponse && latestResponse.ok) {
@@ -2910,6 +3077,7 @@ async function persistAIChannelsToServer(successMessage, options = {}) {
                 currentConfig.ai.default_channel = latestAI.default_channel || id;
             }
         }
+        currentConfig.ai = normalizeAIConfigProviderProfiles(currentConfig.ai);
         const updateResponse = await apiFetch('/api/config', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -2934,10 +3102,41 @@ async function persistAIChannelsToServer(successMessage, options = {}) {
     }
 }
 
+async function detectChannelContextForSave(id, channel) {
+    if (!['', 'auto', 'local_auto'].includes(channel.context_profile || '') || ['claude', 'anthropic'].includes(channel.provider)) return;
+    // These public services already have a known policy. Unknown endpoints
+    // are identified by metadata, including local services behind proxies.
+    if (['api.deepseek.com', 'api.openai.com', 'api.anthropic.com'].includes(aiChannelBaseURLHost(channel.base_url))) return;
+    try {
+        const response = await apiFetch('/api/config/detect-context', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(9000),
+            body: JSON.stringify({ ...channel, channel_id: id })
+        });
+        const result = await response.json();
+        if (response.ok && result.success) applyChannelContextDetection(channel, result);
+    } catch (_) {
+        // Metadata discovery is best-effort. Saving a working channel is valid
+        // when the server is offline or does not publish runtime metadata.
+    }
+}
+
+function applyChannelContextDetection(channel, result) {
+    if (!channel || !result) return;
+    if (['', 'auto', 'local_auto'].includes(channel.context_profile || '') && ['', 'local_auto'].includes(result.context_profile)) {
+        channel.context_profile = result.context_profile;
+    }
+    if (result.context_window > 0 && !result.context_runtime_unknown &&
+        (!channel.context_window || (channel.context_profile === 'local_auto' && channel.context_window > result.context_window))) {
+        channel.context_window = result.context_window;
+    }
+}
+
 async function persistAIConfigOnlyToServer(successMessage) {
     if (typeof requirePermission === 'function' && !requirePermission('config:write')) return false;
     if (!currentConfig) return false;
     currentConfig.ai = ensureAIConfigShape(currentConfig);
+    currentConfig.ai = normalizeAIConfigProviderProfiles(currentConfig.ai);
     showAIChannelSaveHint(settingsT('settingsBasic.aiChannelSaving', '正在保存通道...'), true);
     try {
         const updateResponse = await apiFetch('/api/config', {
@@ -3013,6 +3212,8 @@ function createAIChannelFromForm() {
         model: '',
         max_total_tokens: 120000,
         max_completion_tokens: 32768,
+        context_window: 0,
+        context_profile: '',
         reasoning: { mode: 'auto', effort: '', profile: 'auto', allow_client_reasoning: true }
     };
     selectedAIChannelId = id;
@@ -3104,16 +3305,23 @@ async function probeSelectedAIChannels() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     provider: ch.provider || 'openai_compatible',
+                    channel_id: id,
                     base_url: ch.base_url || '',
                     api_key: ch.api_key || '',
-                    model: ch.model || ''
+                    model: ch.model || '',
+                    headers: ch.headers || {},
+                    max_total_tokens: parseInt(ch.max_total_tokens, 10) || 0,
+                    max_completion_tokens: parseInt(ch.max_completion_tokens, 10) || 0,
+                    context_profile: ch.context_profile || ''
                 })
             });
             const result = await response.json().catch(() => ({}));
             if (response.ok && result.success) {
+                applyChannelContextDetection(ch, result);
                 okCount += 1;
                 const latency = result.latency_ms ? ` ${result.latency_ms}ms` : '';
-                aiChannelProbeResults[id] = { status: 'ready', message: settingsT('settingsBasic.aiChannelReadyWithLatency', '可用{latency}').replace('{latency}', latency) };
+                const context = result.context_window ? ` · ${result.context_window} tokens` : '';
+                aiChannelProbeResults[id] = { status: 'ready', message: settingsT('settingsBasic.aiChannelReadyWithLatency', '可用{latency}').replace('{latency}', latency) + context };
             } else {
                 aiChannelProbeResults[id] = { status: 'failed', message: formatConnectionTestError(result.error || settingsT('settingsBasic.testFailed', '连接失败')).message };
             }
@@ -3175,6 +3383,7 @@ if (typeof window !== 'undefined') {
     window.copyAIChannelFromForm = copyAIChannelFromForm;
     window.deleteSelectedAIChannel = deleteSelectedAIChannel;
     window.probeSelectedAIChannels = probeSelectedAIChannels;
+    window.detectAIContext = detectAIContext;
     window.deleteCheckedAIChannels = deleteCheckedAIChannels;
 }
 
@@ -3203,6 +3412,15 @@ function initModelListControls() {
     if (hitlAuditProv && !hitlAuditProv.dataset.modelListBound) {
         hitlAuditProv.dataset.modelListBound = '1';
         hitlAuditProv.addEventListener('change', syncModelListFetchButtons);
+    }
+    const hitlAuditBackend = document.getElementById('hitl-audit-backend');
+    if (hitlAuditBackend && !hitlAuditBackend.dataset.backendBound) {
+        hitlAuditBackend.dataset.backendBound = '1';
+        hitlAuditBackend.addEventListener('change', function () {
+            syncHitlAuditBackendUI();
+            syncModelListFetchButtons();
+        });
+        syncHitlAuditBackendUI();
     }
     const knowledgeEmbeddingProv = document.getElementById('knowledge-embedding-provider');
     if (knowledgeEmbeddingProv && !knowledgeEmbeddingProv.dataset.modelListBound) {
@@ -3423,6 +3641,12 @@ function populateModelSelect(scope, models, currentValue) {
 async function fetchModelList(scope) {
     const tFn = typeof window.t === 'function' ? window.t : (k) => k;
     const creds = resolveModelListCredentials(scope);
+    creds.credential_scope = scope;
+    if (scope === 'openai') creds.channel_id = selectedAIChannelId;
+    const keyInputByScope = {vision: 'vision-api-key', hitlAudit: 'hitl-audit-model-api-key', knowledgeEmbedding: 'knowledge-embedding-api-key'};
+    if (keyInputByScope[scope] && !document.getElementById(keyInputByScope[scope])?.value.trim()) {
+        creds.channel_id = selectedAIChannelId;
+    }
     const modelListUiIds = {
         openai: {
             btnId: 'fetch-openai-models-btn',
@@ -3537,7 +3761,7 @@ async function testVisionConnection() {
         const response = await apiFetch('/api/config/test-vision', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vision: vision, openai: openai })
+            body: JSON.stringify({ vision: vision, openai: openai, channel_id: selectedAIChannelId })
         });
         const result = await response.json();
         if (result.success) {
@@ -3555,6 +3779,48 @@ async function testVisionConnection() {
     }
 }
 
+function isHitlAuditTypeSafe() {
+    const v = (document.getElementById('hitl-audit-backend')?.value || '').trim().toLowerCase();
+    return v === 'typesafe' || v === 'jev';
+}
+
+function syncHitlAuditBackendUI() {
+    const ts = isHitlAuditTypeSafe();
+    const providerGroup = document.getElementById('hitl-audit-openai-provider-group');
+    if (providerGroup) providerGroup.style.display = ts ? 'none' : '';
+    const fetchBtn = document.getElementById('fetch-hitl-audit-models-btn');
+    if (fetchBtn) fetchBtn.style.display = ts ? 'none' : '';
+    const openaiHint = document.getElementById('hitl-audit-model-openai-hint');
+    const tsHint = document.getElementById('hitl-audit-model-typesafe-hint');
+    if (openaiHint) openaiHint.hidden = ts;
+    if (tsHint) tsHint.hidden = !ts;
+    const promptHint = document.getElementById('hitl-audit-prompt-typesafe-hint');
+    if (promptHint) promptHint.hidden = !ts;
+
+    const tFn = function (key, fallback) {
+        return typeof settingsT === 'function' ? settingsT(key, fallback) : (fallback || key);
+    };
+    const baseUrlEl = document.getElementById('hitl-audit-model-base-url');
+    const apiKeyEl = document.getElementById('hitl-audit-model-api-key');
+    const modelEl = document.getElementById('hitl-audit-model-name');
+    if (baseUrlEl) {
+        baseUrlEl.placeholder = ts
+            ? tFn('settings.hitl.auditModelTypeSafeBaseUrlPlaceholder', '留空使用 https://api.typesafe.ai')
+            : tFn('settings.hitl.auditModelBaseUrlPlaceholder', '留空则复用主模型 Base URL');
+    }
+    if (apiKeyEl) {
+        apiKeyEl.placeholder = ts
+            ? tFn('settings.hitl.auditModelTypeSafeApiKeyPlaceholder', 'TypeSafe API Key（必填，不复用主模型）')
+            : tFn('settings.hitl.auditModelApiKeyPlaceholder', '留空则复用主模型 API Key');
+    }
+    if (modelEl) {
+        modelEl.placeholder = ts
+            ? tFn('settings.hitl.auditModelTypeSafeNamePlaceholder', '留空使用 jev-latest')
+            : tFn('settings.hitl.auditModelNamePlaceholder', '留空则复用主模型；建议填写小模型');
+    }
+}
+window.syncHitlAuditBackendUI = syncHitlAuditBackendUI;
+
 function collectHitlAuditModelEffectiveConfig() {
     const main = {
         provider: document.getElementById('openai-provider')?.value || 'openai',
@@ -3562,20 +3828,48 @@ function collectHitlAuditModelEffectiveConfig() {
         base_url: document.getElementById('openai-base-url')?.value.trim() || '',
         model: document.getElementById('openai-model')?.value.trim() || ''
     };
+    const auditProvider = document.getElementById('hitl-audit-model-provider')?.value || '';
+    const auditKey = document.getElementById('hitl-audit-model-api-key')?.value.trim() || '';
+    const overriddenBaseUrl = document.getElementById('hitl-audit-model-base-url')?.value.trim() || '';
+    const mainChannelId = normalizeAIChannelId(selectedAIChannelId || currentConfig?.ai?.default_channel || 'default');
+    const mainHeaders = currentConfig?.ai?.channels?.[mainChannelId]?.headers || {};
+    const auditHeaders = currentConfig?.hitl?.audit_model?.headers || {};
     return {
         provider: document.getElementById('hitl-audit-model-provider')?.value || main.provider,
-        base_url: document.getElementById('hitl-audit-model-base-url')?.value.trim() || main.base_url,
+        base_url: overriddenBaseUrl || main.base_url,
         api_key: document.getElementById('hitl-audit-model-api-key')?.value.trim() || main.api_key,
-        model: document.getElementById('hitl-audit-model-name')?.value.trim() || main.model
+        model: document.getElementById('hitl-audit-model-name')?.value.trim() || main.model,
+        // 审计模型留空即复用主渠道，自定义请求头必须一起跟随，否则私有鉴权头的供应商测试必然失败。
+        headers: Object.keys(auditHeaders).length ? auditHeaders : ((overriddenBaseUrl || auditProvider || auditKey) ? {} : mainHeaders)
     };
 }
 
 async function testHitlAuditModelConnection() {
     const btn = document.getElementById('test-hitl-audit-model-btn');
     const resultEl = document.getElementById('test-hitl-audit-model-result');
+    const typeSafe = isHitlAuditTypeSafe();
     const cfg = collectHitlAuditModelEffectiveConfig();
+    const apiKey = typeSafe
+        ? (document.getElementById('hitl-audit-model-api-key')?.value.trim() || '')
+        : cfg.api_key;
+    const baseUrl = typeSafe
+        ? (document.getElementById('hitl-audit-model-base-url')?.value.trim() || '')
+        : cfg.base_url;
+    const model = typeSafe
+        ? (document.getElementById('hitl-audit-model-name')?.value.trim() || 'jev-latest')
+        : cfg.model;
 
-    if (!cfg.base_url || !cfg.api_key || !cfg.model) {
+    if (typeSafe) {
+        if (!apiKey) {
+            if (resultEl) {
+                resultEl.style.color = 'var(--danger-color, #e53e3e)';
+                resultEl.textContent = typeof settingsT === 'function'
+                    ? settingsT('settings.hitl.testTypeSafeFillRequired', '请先填写 TypeSafe API Key')
+                    : '请先填写 TypeSafe API Key';
+            }
+            return;
+        }
+    } else if (!cfg.base_url || !cfg.api_key || !cfg.model) {
         if (resultEl) {
             resultEl.style.color = 'var(--danger-color, #e53e3e)';
             resultEl.textContent = typeof window.t === 'function' ? window.t('settingsBasic.testFillRequired') : '请先填写 Base URL、API Key 和模型';
@@ -3593,10 +3887,16 @@ async function testHitlAuditModelConnection() {
     }
 
     try {
-        const response = await apiFetch('/api/config/test-openai', {
+        const endpoint = typeSafe ? '/api/config/test-typesafe' : '/api/config/test-openai';
+        const payload = typeSafe
+            ? { base_url: baseUrl, api_key: apiKey, model: model }
+            : cfg;
+        payload.credential_scope = 'hitlAudit';
+        if (!document.getElementById('hitl-audit-model-api-key')?.value.trim()) payload.channel_id = selectedAIChannelId;
+        const response = await apiFetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cfg)
+            body: JSON.stringify(payload)
         });
         const result = await response.json();
 
@@ -3678,6 +3978,120 @@ function showConnectionTestFailure(resultEl, errorText) {
 }
 
 // 测试OpenAI连接
+function contextWarningText(code) {
+    const messages = {
+        local_context_window_unknown: settingsT('settingsBasic.contextWarnWindowUnknown', '本地档位未填写窗口，按 32768 估算'),
+        local_context_window_small: settingsT('settingsBasic.contextWarnWindowSmall', '窗口小于 16384，带工具的 agent 可能无法稳定运行'),
+        max_total_tokens_clamped: settingsT('settingsBasic.contextWarnBudgetClamped', '最大上下文预算已按模型窗口收紧'),
+        max_completion_tokens_clamped: settingsT('settingsBasic.contextWarnCompletionClamped', '最大输出 Token 数已按模型窗口收紧'),
+        configured_budget_exceeds_context_window: settingsT('settingsBasic.contextWarnBudgetExceedsWindow', '填写的预算超过模型窗口，运行时会自动收紧'),
+        ollama_v1_ignores_num_ctx: settingsT('settingsBasic.contextWarnOllamaV1', 'Ollama 的 /v1 接口忽略 num_ctx，请在服务端设置 OLLAMA_CONTEXT_LENGTH 或 Modelfile'),
+        ollama_runtime_context_unknown: settingsT('settingsBasic.contextWarnOllamaRuntime', 'Ollama 可能按显存把窗口压到模型上限以下，建议启动后查看 ollama ps'),
+        context_runtime_unknown: settingsT('settingsBasic.contextWarnRuntimeUnknown', '无法确认运行时窗口，可能小于模型上限'),
+        llamacpp_parallel_slots: settingsT('settingsBasic.contextWarnLlamaCppSlots', 'llama.cpp 配置了多个并行槽位，单请求可用窗口可能小于 n_ctx；请按 --parallel/KV 模式确认'),
+        context_window_unknown: settingsT('settingsBasic.contextWarnUnknown', '未检测到上下文窗口，请手动填写')
+    };
+    return messages[code] || code;
+}
+
+function formatDetectedContext(result) {
+    if (!result || !result.context_window) return '';
+    const parts = [settingsT('settingsBasic.detectedContext', '检测到 {tokens} tokens').replace('{tokens}', String(result.context_window))];
+    if (result.effective_max_total_tokens) {
+        parts.push(settingsT('settingsBasic.effectiveBudget', '有效预算 {tokens} tokens').replace('{tokens}', String(result.effective_max_total_tokens)));
+    }
+    if (result.context_backend) parts.push(result.context_backend);
+    if (result.context_source) parts.push(result.context_source);
+    if (Array.isArray(result.context_warnings)) {
+        result.context_warnings.forEach((code) => parts.push(contextWarningText(code)));
+    }
+    return parts.join(' · ');
+}
+
+function applyDetectedContext(result, force) {
+    if (!result) return;
+    const channel = currentConfig?.ai?.channels?.[selectedAIChannelId];
+    applyChannelContextDetection(channel, result);
+    if (!result.context_window) return;
+    const input = document.getElementById('openai-context-window');
+    // Explicit auto-detect overwrites the field so the effective-budget preview
+    // matches what will be saved; a connection test only fills an empty field.
+    if (input && !result.context_runtime_unknown && (force || !String(input.value || '').trim() ||
+        (channel?.context_profile === 'local_auto' && Number(input.value) > result.context_window))) {
+        input.value = String(result.context_window);
+    }
+    const resultEl = document.getElementById('detect-context-result');
+    if (resultEl) {
+        resultEl.textContent = formatDetectedContext(result);
+        resultEl.className = 'form-inline-result is-success';
+    }
+}
+
+async function detectAIContext() {
+    const btn = document.getElementById('detect-context-btn');
+    const resultEl = document.getElementById('detect-context-result');
+    const provider = document.getElementById('openai-provider')?.value || 'openai_compatible';
+    const baseUrl = document.getElementById('openai-base-url')?.value.trim() || '';
+    const apiKey = document.getElementById('openai-api-key')?.value.trim() || '';
+    const model = document.getElementById('openai-model')?.value.trim() || '';
+    const channelId = normalizeAIChannelId(selectedAIChannelId || currentConfig?.ai?.default_channel || 'default');
+    const isCurrentRequest = () => selectedAIChannelId === channelId &&
+        document.getElementById('openai-base-url')?.value.trim() === baseUrl &&
+        document.getElementById('openai-model')?.value.trim() === model;
+    if (!baseUrl || !model) {
+        if (resultEl) {
+            resultEl.textContent = settingsT('settingsBasic.detectContextFillRequired', '请先填写 Base URL 和模型');
+            resultEl.className = 'form-inline-result is-error';
+        }
+        return;
+    }
+    if (btn) {
+        btn.style.pointerEvents = 'none';
+        btn.style.opacity = '0.5';
+    }
+    if (resultEl) {
+        resultEl.textContent = settingsT('settingsBasic.testing', '测试中...');
+        resultEl.className = 'form-inline-result is-muted';
+    }
+    try {
+        const response = await apiFetch('/api/config/detect-context', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                provider: provider,
+                channel_id: channelId,
+                base_url: baseUrl,
+                api_key: apiKey,
+                model: model,
+                headers: parseCustomHeadersInput(),
+                max_total_tokens: parseInt(document.getElementById('openai-max-total-tokens')?.value, 10) || 0,
+                max_completion_tokens: parseInt(document.getElementById('openai-max-completion-tokens')?.value, 10) || 0,
+                context_profile: currentConfig?.ai?.channels?.[channelId]?.context_profile || ''
+            })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!isCurrentRequest()) return;
+        if (result.success) applyDetectedContext(result, true);
+        if (!result.success || !result.context_window) {
+            const message = result.error || contextWarningText('context_window_unknown');
+            if (resultEl) {
+                resultEl.textContent = formatConnectionTestError(message).message;
+                resultEl.className = 'form-inline-result is-error';
+            }
+        }
+    } catch (error) {
+        if (resultEl) {
+            resultEl.textContent = formatConnectionTestError(error.message || '测试出错').message;
+            resultEl.className = 'form-inline-result is-error';
+        }
+    } finally {
+        if (btn) {
+            btn.style.pointerEvents = '';
+            btn.style.opacity = '';
+        }
+    }
+}
+
 async function testOpenAIConnection() {
     const btn = document.getElementById('test-openai-btn');
     const resultEl = document.getElementById('test-openai-result');
@@ -3687,7 +4101,9 @@ async function testOpenAIConnection() {
     const apiKey = document.getElementById('openai-api-key').value.trim();
     const model = document.getElementById('openai-model').value.trim();
     const channelId = normalizeAIChannelId(selectedAIChannelId || currentConfig?.ai?.default_channel || 'default');
-    const isTestingSameChannel = () => normalizeAIChannelId(selectedAIChannelId || currentConfig?.ai?.default_channel || 'default') === channelId;
+    const isTestingSameChannel = () => normalizeAIChannelId(selectedAIChannelId || currentConfig?.ai?.default_channel || 'default') === channelId &&
+        document.getElementById('openai-base-url')?.value.trim() === baseUrl &&
+        document.getElementById('openai-model')?.value.trim() === model;
 
     if (!baseUrl || !apiKey || !model) {
         const message = typeof window.t === 'function' ? window.t('settingsBasic.testFillRequired') : '请先填写 Base URL、API Key 和模型';
@@ -3716,9 +4132,14 @@ async function testOpenAIConnection() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 provider: provider,
+                channel_id: channelId,
                 base_url: baseUrl,
                 api_key: apiKey,
-                model: model
+                model: model,
+                headers: currentConfig?.ai?.channels?.[channelId]?.headers || {},
+                max_total_tokens: parseInt(document.getElementById('openai-max-total-tokens')?.value, 10) || 0,
+                max_completion_tokens: parseInt(document.getElementById('openai-max-completion-tokens')?.value, 10) || 0,
+                context_profile: currentConfig?.ai?.channels?.[channelId]?.context_profile || ''
             })
         });
 
@@ -3727,9 +4148,11 @@ async function testOpenAIConnection() {
         if (result.success) {
             const latency = result.latency_ms ? ` (${result.latency_ms}ms)` : '';
             const modelInfo = result.model ? ` [${result.model}]` : '';
-            const message = (typeof window.t === 'function' ? window.t('settingsBasic.testSuccess') : '连接成功') + modelInfo + latency;
+            const contextInfo = result.context_window ? ` · ${result.context_window} tokens` : '';
+            const message = (typeof window.t === 'function' ? window.t('settingsBasic.testSuccess') : '连接成功') + modelInfo + latency + contextInfo;
             aiChannelProbeResults[channelId] = { status: 'ready', message };
             if (isTestingSameChannel()) {
+                applyDetectedContext(result);
                 setConnectionTestResult(resultEl, 'is-success', message);
             }
         } else {
@@ -3761,47 +4184,47 @@ async function saveToolsConfig() {
     try {
         // 先保存当前页的状态到全局映射
         saveCurrentPageToolStates();
-        
+
         // 获取当前配置（只获取工具部分）
         const response = await apiFetch('/api/config');
         if (!response.ok) {
             throw new Error('获取配置失败');
         }
-        
+
         const currentConfig = await response.json();
-        
+
         // 构建只包含工具配置的配置对象
         const config = {
             ai: ensureAIConfigShape(currentConfig || {}),
             agent: currentConfig.agent || {},
             multi_agent: {
                 enabled: currentConfig?.multi_agent?.enabled === true,
-                robot_default_agent_mode: currentConfig?.multi_agent?.robot_default_agent_mode || 'eino_single',
+                robot_default_agent_mode: currentConfig?.multi_agent?.robot_default_agent_mode || 'single',
                 batch_use_multi_agent: currentConfig?.multi_agent?.batch_use_multi_agent === true,
                 plan_execute_loop_max_iterations: Number(currentConfig?.multi_agent?.plan_execute_loop_max_iterations || 0),
                 tool_search_always_visible_tools: getAlwaysVisibleForSave()
             },
             tools: []
         };
-        
+
         // 收集工具启用状态（与applySettings中的逻辑相同）
         try {
             const allToolsMap = new Map();
             let page = 1;
             let hasMore = true;
             const pageSize = 100;
-            
+
             // 遍历所有页面获取所有工具
             while (hasMore) {
                 const url = `/api/config/tools?page=${page}&page_size=${pageSize}`;
-                
+
                 const pageResponse = await apiFetch(url);
                 if (!pageResponse.ok) {
                     throw new Error('获取工具列表失败');
                 }
-                
+
                 const pageResult = await pageResponse.json();
-                
+
                 // 将工具添加到映射中
                 pageResult.tools.forEach(tool => {
                     const toolKey = getToolKey(tool);
@@ -3813,7 +4236,7 @@ async function saveToolsConfig() {
                         external_mcp: savedState ? savedState.external_mcp : (tool.external_mcp || '')
                     });
                 });
-                
+
                 // 检查是否还有更多页面
                 if (page >= pageResult.total_pages) {
                     hasMore = false;
@@ -3821,7 +4244,7 @@ async function saveToolsConfig() {
                     page++;
                 }
             }
-            
+
             // 将所有工具添加到配置中
             allToolsMap.forEach((tool, toolKey) => {
                 config.tools.push({
@@ -3845,7 +4268,7 @@ async function saveToolsConfig() {
                 });
             });
         }
-        
+
         // 更新配置
         const updateResponse = await apiFetch('/api/config', {
             method: 'PUT',
@@ -3854,24 +4277,24 @@ async function saveToolsConfig() {
             },
             body: JSON.stringify(config)
         });
-        
+
         if (!updateResponse.ok) {
             const error = await updateResponse.json();
             throw new Error(error.error || '更新配置失败');
         }
-        
+
         // 应用配置
         const applyResponse = await apiFetch('/api/config/apply', {
             method: 'POST'
         });
-        
+
         if (!applyResponse.ok) {
             const error = await applyResponse.json();
             throw new Error(error.error || '应用配置失败');
         }
-        
+
         alert(typeof window.t === 'function' ? window.t('mcp.toolsConfigSaved') : '工具配置已成功保存！');
-        
+
         // 重新加载工具列表以反映最新状态
         if (typeof loadToolsList === 'function') {
             await loadToolsList(toolsPagination.page, toolsSearchKeyword);
@@ -3882,6 +4305,28 @@ async function saveToolsConfig() {
     }
 }
 
+function setPasswordFieldError(input, message) {
+    if (!input) return;
+    input.classList.toggle('error', !!message);
+    input.setAttribute('aria-invalid', message ? 'true' : 'false');
+    const error = document.getElementById(input.id + '-error');
+    if (error) {
+        error.textContent = message || '';
+        error.hidden = !message;
+        input.setAttribute('aria-describedby', error.id);
+    }
+}
+
+function passwordValidationText(key, fallback) {
+    return typeof window.t === 'function' ? window.t('settingsSecurity.' + key) : fallback;
+}
+
+function clearPasswordFieldError(input) {
+    setPasswordFieldError(input, '');
+    const error = document.getElementById('password-form-error');
+    if (error) { error.textContent = ''; error.hidden = true; }
+}
+
 function resetPasswordForm() {
     const currentInput = document.getElementById('auth-current-password');
     const newInput = document.getElementById('auth-new-password');
@@ -3890,9 +4335,11 @@ function resetPasswordForm() {
     [currentInput, newInput, confirmInput].forEach(input => {
         if (input) {
             input.value = '';
-            input.classList.remove('error');
+            setPasswordFieldError(input, '');
         }
     });
+    const error = document.getElementById('password-form-error');
+    if (error) { error.textContent = ''; error.hidden = true; }
 }
 
 async function changePassword() {
@@ -3901,7 +4348,9 @@ async function changePassword() {
     const confirmInput = document.getElementById('auth-confirm-password');
     const submitBtn = document.querySelector('.change-password-submit');
 
-    [currentInput, newInput, confirmInput].forEach(input => input && input.classList.remove('error'));
+    [currentInput, newInput, confirmInput].forEach(input => setPasswordFieldError(input, ''));
+    const formError = document.getElementById('password-form-error');
+    if (formError) { formError.textContent = ''; formError.hidden = true; }
 
     const currentPassword = currentInput?.value.trim() || '';
     const newPassword = newInput?.value.trim() || '';
@@ -3910,22 +4359,22 @@ async function changePassword() {
     let hasError = false;
 
     if (!currentPassword) {
-        currentInput?.classList.add('error');
+        setPasswordFieldError(currentInput, passwordValidationText('currentRequired', '请输入当前密码'));
         hasError = true;
     }
 
     if (!newPassword || newPassword.length < 8) {
-        newInput?.classList.add('error');
+        setPasswordFieldError(newInput, passwordValidationText('newTooShort', '新密码至少需要 8 位'));
         hasError = true;
     }
 
     if (newPassword !== confirmPassword) {
-        confirmInput?.classList.add('error');
+        setPasswordFieldError(confirmInput, passwordValidationText('confirmMismatch', '两次输入的新密码不一致'));
         hasError = true;
     }
 
     if (hasError) {
-        alert(typeof window.t === 'function' ? window.t('settings.security.fillPasswordHint') : '请正确填写当前密码和新密码，新密码至少 8 位且需要两次输入一致。');
+        [currentInput, newInput, confirmInput].find(input => input && input.getAttribute('aria-invalid') === 'true')?.focus();
         return;
     }
 
@@ -3957,6 +4406,7 @@ async function changePassword() {
         closeSettings();
     } catch (error) {
         console.error('修改密码失败:', error);
+        if (formError) { formError.textContent = error.message; formError.hidden = false; }
         alert((typeof window.t === 'function' ? window.t('settings.security.changePasswordFailed') : '修改密码失败') + ': ' + error.message);
     } finally {
         if (submitBtn) {
@@ -4076,7 +4526,7 @@ function renderExternalMCPList(servers) {
     const list = document.getElementById('external-mcp-list');
     if (!list) return;
     const layout = document.querySelector('.mcp-management-layout');
-    
+
     if (Object.keys(servers).length === 0) {
         if (layout) layout.classList.add('external-empty');
         const emptyT = typeof window.t === 'function' ? window.t : (k) => k;
@@ -4084,22 +4534,22 @@ function renderExternalMCPList(servers) {
         return;
     }
     if (layout) layout.classList.remove('external-empty');
-    
+
     let html = '<div class="external-mcp-items">';
     for (const [name, server] of Object.entries(servers)) {
         const status = server.status || 'disconnected';
-        const statusClass = status === 'connected' ? 'status-connected' : 
+        const statusClass = status === 'connected' ? 'status-connected' :
                            status === 'connecting' ? 'status-connecting' :
                            status === 'error' ? 'status-error' :
                            status === 'disabled' ? 'status-disabled' : 'status-disconnected';
         const statusT = typeof window.t === 'function' ? window.t : (k) => k;
-        const statusText = status === 'connected' ? statusT('mcp.connected') : 
+        const statusText = status === 'connected' ? statusT('mcp.connected') :
                           status === 'connecting' ? statusT('mcp.connecting') :
                           status === 'error' ? statusT('mcp.connectionFailed') :
                           status === 'disabled' ? statusT('mcp.disabled') : statusT('mcp.disconnected');
         const transport = server.config.type || server.config.transport || (server.config.command ? 'stdio' : 'http');
         const transportIcon = transport === 'stdio' ? '⚙️' : '🌐';
-        
+
         const hasTools = server.tool_count !== undefined && server.tool_count > 0;
         const cardClickTitle = hasTools
             ? escapeHtml(statusT('mcp.clickToViewTools', { name }))
@@ -4178,12 +4628,12 @@ function renderExternalMCPList(servers) {
 function renderExternalMCPStats(stats) {
     const statsEl = document.getElementById('external-mcp-stats');
     if (!statsEl) return;
-    
+
     const total = stats.total || 0;
     const enabled = stats.enabled || 0;
     const disabled = stats.disabled || 0;
     const connected = stats.connected || 0;
-    
+
     const statsT = typeof window.t === 'function' ? window.t : (k) => k;
     statsEl.innerHTML = `
         <span title="${statsT('mcp.totalCount')}">📊 ${statsT('mcp.totalCount')}: <strong>${total}</strong></span>
@@ -4247,7 +4697,7 @@ async function editExternalMCP(name) {
 function formatExternalMCPJSON() {
     const jsonTextarea = document.getElementById('external-mcp-json');
     const errorDiv = document.getElementById('external-mcp-json-error');
-    
+
     try {
         const jsonStr = jsonTextarea.value.trim();
         if (!jsonStr) {
@@ -4256,7 +4706,7 @@ function formatExternalMCPJSON() {
             jsonTextarea.classList.add('error');
             return;
         }
-        
+
         const parsed = JSON.parse(jsonStr);
         const formatted = JSON.stringify(parsed, null, 2);
         jsonTextarea.value = formatted;
@@ -4297,7 +4747,7 @@ function loadExternalMCPExample() {
             url: "http://127.0.0.1:8081/mcp/sse"
         }
     };
-    
+
     document.getElementById('external-mcp-json').value = JSON.stringify(example, null, 2);
     document.getElementById('external-mcp-json-error').style.display = 'none';
     document.getElementById('external-mcp-json').classList.remove('error');
@@ -4309,7 +4759,7 @@ async function saveExternalMCP() {
     const jsonTextarea = document.getElementById('external-mcp-json');
     const jsonStr = jsonTextarea.value.trim();
     const errorDiv = document.getElementById('external-mcp-json-error');
-    
+
     if (!jsonStr) {
         errorDiv.textContent = (typeof window.t === 'function' ? window.t('mcp.jsonEmpty') : 'JSON不能为空');
         errorDiv.style.display = 'block';
@@ -4317,7 +4767,7 @@ async function saveExternalMCP() {
         jsonTextarea.focus();
         return;
     }
-    
+
     let configObj;
     try {
         configObj = JSON.parse(jsonStr);
@@ -4328,7 +4778,7 @@ async function saveExternalMCP() {
         jsonTextarea.focus();
         return;
     }
-    
+
     const t = (typeof window.t === 'function' ? window.t : function (k, opts) { return k; });
     // 验证必须是对象格式
     if (typeof configObj !== 'object' || Array.isArray(configObj) || configObj === null) {
@@ -4337,7 +4787,7 @@ async function saveExternalMCP() {
         jsonTextarea.classList.add('error');
         return;
     }
-    
+
     // 获取所有配置名称
     const names = Object.keys(configObj);
     if (names.length === 0) {
@@ -4346,7 +4796,7 @@ async function saveExternalMCP() {
         jsonTextarea.classList.add('error');
         return;
     }
-    
+
     // 验证每个配置
     for (const name of names) {
         if (!name || name.trim() === '') {
@@ -4355,7 +4805,7 @@ async function saveExternalMCP() {
             jsonTextarea.classList.add('error');
             return;
         }
-        
+
         const config = configObj[name];
         if (typeof config !== 'object' || Array.isArray(config) || config === null) {
             errorDiv.textContent = t('mcp.configMustBeObj', { name: name });
@@ -4363,10 +4813,10 @@ async function saveExternalMCP() {
             jsonTextarea.classList.add('error');
             return;
         }
-        
+
         // 移除 external_mcp_enable 字段（由按钮控制，但保留 enabled/disabled 用于向后兼容）
         delete config.external_mcp_enable;
-        
+
         // 验证配置内容（同时支持官方 type 字段和旧版 transport 字段）
         const transport = config.type || config.transport || (config.command ? 'stdio' : config.url ? 'http' : '');
         if (!transport) {
@@ -4375,21 +4825,21 @@ async function saveExternalMCP() {
             jsonTextarea.classList.add('error');
             return;
         }
-        
+
         if (transport === 'stdio' && !config.command) {
             errorDiv.textContent = t('mcp.configStdioNeedCommand', { name: name });
             errorDiv.style.display = 'block';
             jsonTextarea.classList.add('error');
             return;
         }
-        
+
         if (transport === 'http' && !config.url) {
             errorDiv.textContent = t('mcp.configHttpNeedUrl', { name: name });
             errorDiv.style.display = 'block';
             jsonTextarea.classList.add('error');
             return;
         }
-        
+
         if (transport === 'sse' && !config.url) {
             errorDiv.textContent = t('mcp.configSseNeedUrl', { name: name });
             errorDiv.style.display = 'block';
@@ -4397,11 +4847,11 @@ async function saveExternalMCP() {
             return;
         }
     }
-    
+
     // 清除错误提示
     errorDiv.style.display = 'none';
     jsonTextarea.classList.remove('error');
-    
+
     try {
         // 如果是编辑模式，只更新当前编辑的配置
         if (currentEditingMCPName) {
@@ -4411,7 +4861,7 @@ async function saveExternalMCP() {
                 jsonTextarea.classList.add('error');
                 return;
             }
-            
+
             const response = await apiFetch(`/api/external-mcp/${encodeURIComponent(currentEditingMCPName)}`, {
                 method: 'PUT',
                 headers: {
@@ -4419,7 +4869,7 @@ async function saveExternalMCP() {
                 },
                 body: JSON.stringify({ config: configObj[currentEditingMCPName] }),
             });
-            
+
             if (!response.ok) {
                 const error = await response.json();
                 throw new Error(error.error || '保存失败');
@@ -4435,14 +4885,14 @@ async function saveExternalMCP() {
                     },
                     body: JSON.stringify({ config }),
                 });
-                
+
                 if (!response.ok) {
                     const error = await response.json();
                     throw new Error(`保存 "${name}" 失败: ${error.error || '未知错误'}`);
                 }
             }
         }
-        
+
         closeExternalMCPModal();
         await loadExternalMCPs();
         if (typeof window !== 'undefined' && typeof window.refreshMentionTools === 'function') {
@@ -4464,17 +4914,17 @@ async function deleteExternalMCP(name) {
     if (!confirm((typeof window.t === 'function' ? window.t('mcp.deleteExternalConfirm', { name: name }) : `确定要删除外部MCP "${name}" 吗？`))) {
         return;
     }
-    
+
     try {
         const response = await apiFetch(`/api/external-mcp/${encodeURIComponent(name)}`, {
             method: 'DELETE',
         });
-        
+
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || '删除失败');
         }
-        
+
         await loadExternalMCPs();
         // 刷新对话界面的工具列表，移除已删除的MCP工具
         if (typeof window !== 'undefined' && typeof window.refreshMentionTools === 'function') {
@@ -4492,7 +4942,7 @@ async function toggleExternalMCP(name, currentStatus) {
     const action = currentStatus === 'connected' ? 'stop' : 'start';
     const buttonId = `btn-toggle-${name}`;
     const button = document.getElementById(buttonId);
-    
+
     // 如果是启动操作，显示加载状态
     if (action === 'start' && button) {
         button.disabled = true;
@@ -4500,19 +4950,19 @@ async function toggleExternalMCP(name, currentStatus) {
         button.style.cursor = 'not-allowed';
         button.innerHTML = '⏳ 连接中...';
     }
-    
+
     try {
         const response = await apiFetch(`/api/external-mcp/${encodeURIComponent(name)}/${action}`, {
             method: 'POST',
         });
-        
+
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || '操作失败');
         }
-        
+
         const result = await response.json();
-        
+
         // 如果是启动操作，先立即检查一次状态
         if (action === 'start') {
             // 立即检查一次状态（可能已经连接）
@@ -4521,7 +4971,7 @@ async function toggleExternalMCP(name, currentStatus) {
                 if (statusResponse.ok) {
                     const statusData = await statusResponse.json();
                     const status = statusData.status || 'disconnected';
-                    
+
                     if (status === 'connected') {
                         await loadExternalMCPs();
                         if (typeof window !== 'undefined' && typeof window.refreshMentionTools === 'function') {
@@ -4536,7 +4986,7 @@ async function toggleExternalMCP(name, currentStatus) {
             } catch (error) {
                 console.error('检查状态失败:', error);
             }
-            
+
             // 如果还未连接，开始轮询
             await pollExternalMCPStatus(name, 30); // 最多轮询30次（约30秒）
         } else {
@@ -4551,7 +5001,7 @@ async function toggleExternalMCP(name, currentStatus) {
     } catch (error) {
         console.error('切换外部MCP状态失败:', error);
         alert((typeof window.t === 'function' ? window.t('mcp.operationFailed') : '操作失败') + ': ' + error.message);
-        
+
         // 恢复按钮状态
         if (button) {
             button.disabled = false;
@@ -4559,7 +5009,7 @@ async function toggleExternalMCP(name, currentStatus) {
             button.style.cursor = 'pointer';
             button.innerHTML = '▶ 启动';
         }
-        
+
         // 刷新状态
         await loadExternalMCPs();
         // 刷新对话界面的工具列表
@@ -4573,20 +5023,20 @@ async function toggleExternalMCP(name, currentStatus) {
 async function pollExternalMCPStatus(name, maxAttempts = 30) {
     let attempts = 0;
     const pollInterval = 1000; // 1秒轮询一次
-    
+
     while (attempts < maxAttempts) {
         await new Promise(resolve => setTimeout(resolve, pollInterval));
-        
+
         try {
             const response = await apiFetch(`/api/external-mcp/${encodeURIComponent(name)}`);
             if (response.ok) {
                 const data = await response.json();
                 const status = data.status || 'disconnected';
-                
+
                 // 更新按钮状态
                 const buttonId = `btn-toggle-${name}`;
                 const button = document.getElementById(buttonId);
-                
+
                 if (status === 'connected') {
                     await loadExternalMCPs();
                     if (typeof window !== 'undefined' && typeof window.refreshMentionTools === 'function') {
@@ -4616,10 +5066,10 @@ async function pollExternalMCPStatus(name, maxAttempts = 30) {
         } catch (error) {
             console.error('轮询状态失败:', error);
         }
-        
+
         attempts++;
     }
-    
+
     // 超时，刷新列表
     await loadExternalMCPs();
     // 刷新对话界面的工具列表
@@ -4633,7 +5083,9 @@ async function pollExternalMCPStatus(name, maxAttempts = 30) {
 const originalOpenSettings = openSettings;
 openSettings = async function() {
     await originalOpenSettings();
-    await loadExternalMCPs();
+    if (typeof hasPermission !== 'function' || hasPermission('config:read')) {
+        await loadExternalMCPs();
+    }
 };
 
 // 语言切换后重新渲染 MCP 管理页中由 JS 写入的区块（innerHTML 不会随 data-i18n 自动更新）

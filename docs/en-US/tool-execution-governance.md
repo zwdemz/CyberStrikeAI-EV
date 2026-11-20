@@ -2,7 +2,7 @@
 
 [Back to English documentation](README.md)
 
-This document describes how CyberStrikeAI governs long-running tools, blocking MCP calls, oversized outputs, cancellation, and context restore. The goal is to preserve standard Agent/Eino tool semantics while preventing tool hangs, context blowups, oversized database records, and unsafe resume behavior.
+This document describes how CyberStrikeAI governs long-running tools, blocking MCP calls, oversized outputs, cancellation, and context restore. The goal is to preserve standard Agent/Pi tool semantics while preventing tool hangs, context blowups, oversized database records, and unsafe resume behavior.
 
 ## Goals
 
@@ -15,7 +15,7 @@ This document describes how CyberStrikeAI governs long-running tools, blocking M
 
 ## Execution Model
 
-Tool calls still appear to Eino/Agent as standard tool invocations, but the blocking work runs in a worker:
+Tool calls still appear to Pi/Agent as standard tool invocations, but the blocking work runs in a worker:
 
 ```text
 Agent calls tool
@@ -67,7 +67,7 @@ Typical flow:
 4. If still incomplete, continue waiting or call cancel_tool_execution
 ```
 
-`tool_wait_timeout_seconds` applies to internal MCP tools, external MCP tools, and Eino filesystem's streaming `execute`. Eino's non-streaming filesystem tools such as `ls/read_file/write_file/edit_file/glob/grep` are recorded in execution monitoring, but they are not converted into resumable background workers.
+`tool_wait_timeout_seconds` applies to internal MCP tools, external MCP tools, and Pi filesystem's streaming `execute`. Pi's non-streaming filesystem tools such as `ls/read_file/write_file/edit_file/glob/grep` are recorded in execution monitoring, but they are not converted into resumable background workers.
 
 ## Cancellation and Session Cleanup
 
@@ -98,11 +98,11 @@ agent:
 
 ## Output Governance
 
-CyberStrikeAI uses `multi_agent.eino_middleware.reduction_max_length_for_trunc` as the unified tool result cap. The example configuration uses 50000 bytes.
+CyberStrikeAI uses `multi_agent.runtime.reduction_max_length_for_trunc` as the unified tool result cap. The example configuration uses 50000 bytes.
 
 ```yaml
 multi_agent:
-  eino_middleware:
+  runtime:
     reduction_enable: true
     reduction_max_length_for_trunc: 50000
 ```
@@ -114,7 +114,7 @@ Coverage:
 | Agent-facing tool result | Uses the canonical capped result |
 | DB / monitor storage | Stores the same canonical result |
 | `get_tool_execution` / `wait_tool_execution` | Reads the same canonical result |
-| Eino `execute` / filesystem monitor records | Capped before completion is persisted |
+| Pi `execute` / filesystem monitor records | Capped before completion is persisted |
 | Non-streaming `exec` stdout/stderr | Source-side bounded buffer |
 | Streaming `exec` stdout/stderr | Streamed UI output is also bounded |
 | PTY execution path | Uses the same output cap |
@@ -176,7 +176,7 @@ agent:
   shell_no_output_timeout_seconds: 1200
 
 multi_agent:
-  eino_middleware:
+  runtime:
     reduction_enable: true
     reduction_max_length_for_trunc: 50000
 ```
@@ -219,3 +219,37 @@ Expected behavior:
 
 - CyberStrikeAI cannot control how a remote external MCP server collects output internally; it caps results after they enter CyberStrikeAI and protects calls with concurrency limits and circuit breakers.
 - Oversized tool output is spilled to local `tmp/reduction/.../trunc/<id>` (or `reduction_root_dir`) before truncation; the bounded result includes an absolute path for `read_file`.
+
+## Task-owned process lifetime
+
+Each task has a distinct `runId`. Local commands and detached MCP workers retain ownership through context values. Managed `exec ... &` and Pi background execution return promptly but cannot outlive task cleanup. Unowned background launches are rejected. Cleanup seals process and worker admission, cancels workers, terminates processes and waits for reaping. Interrupt-and-continue retains ownership; SSE disconnection does not end the task. Failed cleanup retains the conversation slot and reports `cleanup_failed`; a 15-second sweep retries it.
+
+Set `CS_CLEANUP_GRACE`, `CS_CLEANUP_KILL`, and `CS_CLEANUP_GUARD` to positive Go durations (for example, `10s`) to tune the graceful exit wait, post-SIGKILL wait, and isolation backend wait. Each defaults to 3 seconds when unset or invalid.
+
+On Linux, only-zombie process groups count as exited once the direct child has been reaped. With the process group watchdog, if cleanup times out and every surviving member is in uninterruptible sleep (D) with SIGKILL pending, the task reports `cleanup_unconfirmed` after local workers finish. The service log records the run ID and PGID. The kernel delivers the pending signal when the process can exit. The cgroup and Windows Job Object backends still require their own exit verification.
+
+### Kernel containment and crash recovery
+
+- **Linux with a delegated cgroup v2 root:** each task gets a cgroup with process, memory and optional CPU limits. Go uses `clone3(CLONE_INTO_CGROUP)` to assign membership at creation. A separate guardian uses `cgroup.kill` on owner pipe EOF and checks `populated=0`. Startup exclusively locks the delegated root and recovers stale task groups. `setsid` does not escape this scope.
+- **Windows:** a guardian joins a Job Object before task commands are created. Commands inherit the Job atomically through the parent-process attribute. Kill-on-close, explicit termination and active-process accounting cover cleanup, with process/memory/CPU limits.
+- **macOS and Unix without configured cgroups:** a separate process-group guardian acknowledges registration before a gated child executes user code. Owner death triggers EOF cleanup. This fallback cannot contain deliberate `setsid` escapes and is not strong kernel isolation.
+
+These are lifecycle controls, not a sandbox against code with the same privileges as the supervisor. Protect cgroup control files, process handles and the host/guardian using appropriate identities or containers. Container deployments should use an init process to reap orphans. Required mode fails closed when containment is unavailable.
+
+### Deployment and verification
+
+For Linux production, configure a dedicated systemd service with `Delegate=cpu memory pids`, `KillMode=control-group` and `Restart=on-failure`. Set `security.process_isolation.mode: required` and `security.process_isolation.cgroup_root: auto` in the existing application configuration. Linux requires kernel 5.14+, cgroup v2, clone3 permission and delegation of CPU/memory/pids controllers. `cgroup_root: auto` resolves the dedicated systemd unit root; never use the entire host hierarchy root. Settings take effect after restart. Windows required mode uses an empty cgroup root. macOS rejects required mode.
+
+Startup probes actual process creation and cleanup before accepting requests. Run the probe without starting HTTP/MCP services:
+
+```sh
+./cyberstrike-ai --check-process-isolation -config config.yaml
+```
+
+The result reports `cgroup_v2`, `windows_job`, or `process_group_watchdog`; task APIs expose the actual `isolationBackend`. Systemd's `KillMode=control-group` and restart policy add service-wide recovery.
+
+Ordinary remote MCP cancellation is a notification, not a shutdown receipt. Adapters can implement `ExternalCancellationConfirmer` using server-side state, leases or cancellation receipts. Without acknowledgement, execution records persist as `orphaned`, and after local cleanup task history reports `cleanup_unconfirmed` instead of claiming success. Workers which have not returned remain tracked as cleanup failures.
+
+Run `go test -race ./internal/processguard ./internal/mcp ./internal/handler ./internal/security`. The `Process isolation` GitHub Actions workflow also runs the Linux cgroup integration test with commands embedded in `.github/workflows/process-isolation.yml`. The Linux integration fixture uses a disposable private-cgroup container with no host cgroup or Docker socket mounts. Tests cover owner SIGKILL, launch admission, setsid, limits, stale-group recovery and remote cancellation semantics. Windows tests are included in cross-platform CI; cross-compilation is not a Windows runtime test.
+
+References: [cgroup v2](https://cdn.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html), [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects), [MCP cancellation](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation).

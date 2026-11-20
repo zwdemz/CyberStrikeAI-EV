@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,6 +11,8 @@ import (
 
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/rolepolicy"
+	"cyberstrike-ai/internal/database"
 
 	"gopkg.in/yaml.v3"
 
@@ -23,7 +26,10 @@ type RoleHandler struct {
 	configPath string
 	logger     *zap.Logger
 	audit      *audit.Service
+	db         *database.DB
 }
+
+func (h *RoleHandler) SetDB(db *database.DB) { h.db = db }
 
 // SetAudit wires platform audit logging.
 func (h *RoleHandler) SetAudit(s *audit.Service) {
@@ -105,6 +111,24 @@ func (h *RoleHandler) UpdateRole(c *gin.Context) {
 	// 确保角色名称与请求中的name一致
 	if req.Name == "" {
 		req.Name = roleName
+	}
+	// Older clients omit tool_policy; preserve the server-side policy on edits.
+	if old, exists := h.config.Roles[roleName]; exists && req.ToolPolicy.Profile == "" {
+		req.ToolPolicy = old.ToolPolicy
+	}
+	if _, err := rolepolicy.With(context.Background(), req.ToolPolicy, req.Tools); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.validateRole(req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Name != roleName {
+		if _, exists := h.config.Roles[req.Name]; exists {
+			c.JSON(http.StatusConflict, gin.H{"error": "角色已存在"})
+			return
+		}
 	}
 
 	// 初始化Roles map
@@ -198,8 +222,12 @@ func (h *RoleHandler) CreateRole(c *gin.Context) {
 		return
 	}
 
-	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "角色名称不能为空"})
+	if err := h.validateRole(req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := rolepolicy.With(context.Background(), req.ToolPolicy, req.Tools); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 

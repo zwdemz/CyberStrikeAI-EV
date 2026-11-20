@@ -4,6 +4,32 @@
 
 Use this guide for maintainers and operators preparing upgrades or releases.
 
+## EV Versioning and Publication Rules
+
+- Maintain changes directly on `dev`; publish to `main` through a same-repository `dev → main` PR after the required checks pass. Never push directly to `main`.
+- Use SemVer tag names such as `v1.7.21`, with English prerelease suffixes such as `-rc.1` when needed. EV versions may advance independently of upstream; always name the upstream repository, release, and commit separately.
+- Create an SSH- or OpenPGP-signed annotated tag pointing to the verified release commit on `main`. Register the public key as a GitHub signing key, verify the commit and tag locally, and check GitHub's Verified status after pushing. SSH authentication for a push alone does not verify a commit or tag signature.
+- Write tag annotations, Release titles, and Release notes in English. A title can be the version alone or the version plus an English summary; the tag annotation must summarize concrete changes and reference the corresponding Release notes.
+- Do not move or reuse a published tag for later fixes or documentation edits. Collect those changes in local release drafts, then publish a new version when ready. A documentation PR alone does not require a new tag.
+- Keep credentials, private hosts, deployment paths, runtime logs, personal data, and other sensitive environment details out of public release metadata and artifacts.
+
+## Required English Release-Note Sections
+
+| Section | Required content |
+| --- | --- |
+| Upstream Baseline | Upstream release URL and commit, distinguished from the EV version and release commit. |
+| Updates | Added features, behavior/configuration changes, and documentation updates. |
+| Optimizations | Concrete reliability, performance, or usability improvements; give measurements only when measured. |
+| Bug Fixes | Corrected behavior and the conditions that triggered the bug. |
+| Security Fixes | Resolved vulnerabilities or affected dependencies, with advisory/fixed-version links where available. |
+| Hardening | Changes to authorization, role restrictions, input validation, isolation, audit, or safe defaults. |
+| Validation | Tests, builds, scans, tested platforms, and any checks or scenarios not verified. |
+| Upgrade and Rollback | Compatibility changes, backups, migration steps, and rollback limitations. |
+
+Keep every section; write `No changes in this release.` when a change category is empty. Validation must describe actual results, including limitations, rather than using a generic success claim. A clean dependency scan does not establish that the entire application is vulnerability-free. Link the relevant PRs and the comparison with the preceding EV release.
+
+For a release: finalize changes on `dev`, merge their PR to `main`, verify the release commit and checks, sign and verify the tag, push it, and publish an English Release from that tag. Existing published tags remain immutable. This is a maintainer workflow; no automated language enforcement is currently installed.
+
 ## Pre-Release Checklist
 
 - README and docs updated.
@@ -53,6 +79,7 @@ SQLite migrations must be:
 ```bash
 go test ./internal/...
 go test ./cmd/...
+bash scripts/build-pi-runtime.sh
 go build -o cyberstrike-ai ./cmd/server
 ```
 

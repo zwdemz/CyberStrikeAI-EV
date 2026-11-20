@@ -16,13 +16,14 @@ const (
 	StatusCancelled    = "cancelled"
 	StatusAwaitingHITL = "awaiting_hitl"
 
-	ReasonVerified        = "verified"
-	ReasonPendingTools    = "pending_tool_executions"
-	ReasonEmptyResponse   = "empty_response"
-	ReasonAwaitingHITL    = "awaiting_hitl"
-	ReasonFailed          = "failed"
-	ReasonCancelled       = "cancelled"
-	ReasonMissingEvidence = "missing_execution_evidence"
+	ReasonVerified              = "verified"
+	ReasonPendingTools          = "pending_tool_executions"
+	ReasonPendingToolsCancelled = "pending_tool_executions_cancelled"
+	ReasonEmptyResponse         = "empty_response"
+	ReasonAwaitingHITL          = "awaiting_hitl"
+	ReasonFailed                = "failed"
+	ReasonCancelled             = "cancelled"
+	ReasonMissingEvidence       = "missing_execution_evidence"
 )
 
 // Decision is the single contract that may promote an agent run to a final
@@ -59,17 +60,17 @@ type Input struct {
 
 func FromRunResult(db *database.DB, result *multiagent.RunResult, in Input) Decision {
 	if result != nil {
+		if in.Status == "" && result.RuntimeStatus != "" {
+			in.Status = result.RuntimeStatus
+		}
+		if in.CompletionReason == "" && result.RuntimeCompletionReason != "" {
+			in.CompletionReason = result.RuntimeCompletionReason
+		}
 		if strings.TrimSpace(in.Response) == "" {
 			in.Response = result.Response
 		}
 		if len(in.MCPExecutionIDs) == 0 {
 			in.MCPExecutionIDs = result.MCPExecutionIDs
-		}
-		if strings.TrimSpace(in.Status) == "" {
-			in.Status = result.Status
-		}
-		if strings.TrimSpace(in.CompletionReason) == "" {
-			in.CompletionReason = result.CompletionReason
 		}
 	}
 	d := Decide(db, in)
@@ -114,13 +115,6 @@ func Decide(db *database.DB, in Input) Decision {
 		d.MissingChecks = append(d.MissingChecks, "workflow is awaiting HITL approval")
 		return d
 	}
-	if isEmptyCandidate(text) {
-		d.Status = StatusBlocked
-		d.CompletionReason = ReasonEmptyResponse
-		d.EvidenceVerified = false
-		d.MissingChecks = append(d.MissingChecks, "assistant final text is empty or only an empty-response placeholder")
-		return d
-	}
 	switch status {
 	case StatusInProgress, StatusBlocked, StatusFailed, StatusCancelled, StatusAwaitingHITL:
 		d.Status = status
@@ -129,6 +123,14 @@ func Decide(db *database.DB, in Input) Decision {
 			d.CompletionReason = status
 		}
 		d.MissingChecks = append(d.MissingChecks, "agent run status is "+status)
+		return d
+	}
+
+	if isEmptyCandidate(text) {
+		d.Status = StatusBlocked
+		d.CompletionReason = ReasonEmptyResponse
+		d.EvidenceVerified = false
+		d.MissingChecks = append(d.MissingChecks, "assistant final text is empty or only an empty-response placeholder")
 		return d
 	}
 

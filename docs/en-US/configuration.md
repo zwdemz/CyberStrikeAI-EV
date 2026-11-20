@@ -68,13 +68,37 @@ ai:
 | `ai.default_channel` | Default channel ID for new conversations and requests without an explicit channel. |
 | `ai.channels.<id>` | Channel config. IDs are normalized to lowercase letters, digits, and hyphens. |
 | `name` | Display name in the Web UI; falls back to the ID. |
-| `provider` | `openai_compatible` or `claude`. OpenAI-compatible channels map to runtime `openai`; Claude channels bridge to Anthropic Messages API. |
+| `provider` | `openai_compatible` or `claude`. OpenAI-compatible channels map to runtime `openai`; Claude channels use Pi's native Anthropic Messages API component. |
 | `base_url/api_key/model` | Required. Base URL usually includes a version path such as `/v1`. |
 | `max_total_tokens` | Shared context budget for compression, attack-chain generation, multi-agent summaries, and similar paths. |
 | `max_completion_tokens` | Per-response output cap; default is used when empty. |
+| `context_window` | Runtime context window, or 0 when unknown. Channel saves can fill the detected value and retain a smaller configured window. |
+| `context_profile` | Background policy, default `auto`. Recognized local backends use `local_auto`. Configuration files also accept manual `local`, explicit `economy` savings, and `custom` runtime settings. |
 | `reasoning` | Default reasoning fields for the channel. Gateway support varies; try `mode: off` first when a provider rejects requests. |
 
 The chat page reads saved channels into the “AI Channel” selector. A non-empty request `aiChannelId` selects a channel for that run/session without sending API credentials through the prompt path. Empty `aiChannelId` follows `ai.default_channel`.
+
+### Automatic input savings
+
+DeepSeek endpoints, explicit DeepSeek reasoning profiles and model names containing DeepSeek enable input savings automatically. With at least 16 tools, discovery declares six catalog entries, core tools and explicitly pinned tools. JSON tool results lose formatting whitespace. When an authorized local reader is available, results over 8,000 bytes become previews backed by the full output. Provider-reported reasoning tokens are shown separately within completion usage.
+
+Channel saves and connection tests probe metadata from Ollama, llama.cpp, LM Studio, vLLM and oMLX. oMLX is identified by `owned_by: omlx`. Its matching model or alias in `/v1/models/status` supplies the preferred window, with the model list as a fallback when status access is unavailable. Generic compatible responses and private IP addresses alone do not select local optimization. Failed probes allow the channel to be saved.
+
+The local input budget is capped at 60% of the window and 131,072 tokens, with output room reserved. An unknown window uses 32,768 tokens. Local policies tighten tool discovery and result limits, and use the `max_tokens` output field. New channels reporting only an architecture maximum retain an unknown runtime window. Changing a model or endpoint clears the previous automatic classification. These policies are applied in the background.
+
+Compare complete tasks using input, cache hits, output and call counts to measure savings. Tool discovery and evidence readback may add calls. Explicit configuration-file overrides remain supported.
+
+### Disabling reasoning by provider and model
+
+Use `reasoning.mode: off` (or **Reasoning → Off** in chat) to disable reasoning. The request format depends on the channel:
+
+- On `https://api.openai.com/v1`, with an OpenAI-compatible provider and the `auto` or `openai_compat` profile, known models that support `none` send `reasoning_effort: "none"`. This covers GPT-5.5, GPT-5.6 (Sol/Terra/Luna and the `gpt-5.6` alias), GPT-6 Sol/Luna, and their dated snapshots. These models also accept `reasoning.effort: none` in configuration or the request. Planner requests retain explicit `none` through forced tool selection.
+- DeepSeek channels using the `auto` or `deepseek_compat` profile retain `thinking: {type: disabled}` when off. An explicit profile takes precedence over automatic detection.
+- Other models and third-party gateways retain the existing behavior: off omits reasoning fields. A gateway using an OpenAI model name is not automatically treated as the native OpenAI service.
+
+For GPT-5.6 and GPT-6 Sol/Luna function tools on Chat Completions, choose **Off** explicitly; leaving effort unspecified uses the model's default reasoning and does not disable it. Requests combining these tools with reasoning return guidance to turn reasoning off instead of silently changing the requested effort. GPT-6.1 Sol and GPT-6 Astra require the Responses API for tools and do not support `none`; this Chat Completions backend reports that limitation and requires selecting a compatible model. Changing only `base_url` to a Responses URL does not adapt the protocol. See the [official reasoning guide](https://developers.openai.com/api/docs/guides/reasoning).
+
+When `allow_client_reasoning: false`, chat/request reasoning overrides are ignored and the channel's settings apply.
 
 Common Web UI operations:
 
@@ -103,7 +127,9 @@ Common Web UI operations:
 ## Fallback Relationships
 
 - `vision.api_key/base_url/provider` can inherit from the resolved default AI channel.
-- `hitl.audit_model` can inherit from the resolved default AI channel.
+- `hitl.audit_backend` chooses `openai` (default) or `typesafe` (TypeSafe Jev).
+- `hitl.audit_model` can inherit from the resolved default AI channel when `audit_backend` is `openai`. TypeSafe keys are never inherited.
+- `hitl.audit_agent_prompt` is a chat system prompt on `openai`, and a Jev `operatorPolicy` overlay on `typesafe`. The built-in default prompt is not copied into Jev state.
 - `knowledge.embedding.base_url/api_key` can inherit from model settings.
 - rerank config can inherit from embedding/openai.
 - `database.knowledge_db_path` can be separate or reuse the main DB.
@@ -121,6 +147,40 @@ When debugging, inspect both the child config and the fallback parent.
 | `retrieval.top_k` | 3-5 | 8-12 | context budget |
 | `similarity_threshold` | 0.35-0.45 | 0.5+ | recall vs precision |
 | `audit.retention_days` | 15-30 | 90+ | compliance and disk |
+
+## Runtime storage cleanup
+
+```yaml
+storage:
+  auto_clean: false
+  interval_minutes: 60
+  orphan_grace_days: 1
+  active_grace_hours: 24
+  categories:
+    workspace:
+      enabled: true
+      retention_days: 30
+```
+
+Reclaims disk space used by runtime artifacts. Manage it from **System settings → Storage cleanup**, or trigger it with `POST /api/storage/cleanup`.
+
+Saving the retention policy uses `PUT /api/storage/policy` with `storage:write`; it updates only the `storage` section of `config.yaml` and applies to the next cleanup without a restart. Other configuration still requires `config:write`.
+
+- `auto_clean` is off by default: upgrading never deletes existing data behind an administrator's back. Manual preview and cleanup still work while it is off.
+- `interval_minutes` is the background sweep interval (floor 5). `orphan_grace_days` is the minimum age before a directory whose conversation/project no longer exists is reclaimed. Sessions active within `active_grace_hours` are always skipped.
+- A category `retention_days` of 0 disables age-based cleanup, but **orphaned directories are still reclaimed** — a directory whose session is gone has no retention value.
+- Deletion is irreversible. The API requires `dry_run=false` together with `confirm=true` for a real cleanup; omitting `dry_run` is treated as a preview.
+
+| Category | Default retention | Target directory |
+| --- | --- | --- |
+| `workspace` | 30 days | agent workspaces, `tmp/workspace` |
+| `reduction` | 7 days | oversized tool-output spill, `tmp/reduction` |
+| `conversation_artifacts` | 30 days | summaries and user-input ledger, `data/conversation_artifacts` |
+| `plantask` | 30 days | multi-agent plan boards, `skills/.pi/plantask` |
+| `c2_artifacts` | 30 days | C2 results/uploads/downstream/payloads, `tmp/c2` (cleaning a payload invalidates its download link) |
+| `chat_uploads` | 90 days | conversation attachments, `chat_uploads` |
+| `workflow_checkpoints` | 7 days | workflow run checkpoints, `data/workflow-checkpoints` |
+| `diagnostic_logs` | 14 days | diagnostic logs, `log/diagnostic-*.log` |
 
 ## Change Template
 
@@ -143,3 +203,9 @@ After changing, validate the specific subsystem rather than trusting the save me
 - Config API and apply: `internal/handler/config.go`
 - Route registration: `internal/app/app.go`
 - C2 reconciliation: `internal/app/c2_lifecycle.go`
+
+## Diagnostic logs
+
+Alongside `log.output` (controlled by `log.level`), warnings and errors are saved as JSON Lines in `log/diagnostic-YYYY-MM-DD.log`, using the server’s local date. This independent warn-and-above output preserves existing context, caller information, and error stack traces; ordinary info/debug records are excluded and no extra request bodies or tool output are collected.
+
+Configure `log.diagnostic_dir` (default `log`, relative to the working directory), `log.diagnostic_retention_days` (default 14, including today; nonpositive values use the default), or `log.diagnostic_disabled: true` to disable it. Restart after changing these settings. Files are created only when a diagnostic record is written; the first write each day removes expired files matching `diagnostic-YYYY-MM-DD.log`. Cleanup does not run while no diagnostic records are written. Write failures are reported to stderr without interrupting the primary log output.

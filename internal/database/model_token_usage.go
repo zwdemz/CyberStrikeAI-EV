@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const modelTokenUsageEventType = "eino_usage_summary"
+const modelTokenUsageEventType = "agent_usage_summary"
 
 // ModelTokenUsage records one model-usage summary emitted by an Agent run.
 type ModelTokenUsage struct {
@@ -30,6 +30,7 @@ type ModelTokenUsage struct {
 	PromptTokens     int64     `json:"promptTokens"`
 	CompletionTokens int64     `json:"completionTokens"`
 	TotalTokens      int64     `json:"totalTokens"`
+	CacheWriteTokens int64     `json:"cacheWriteTokens"`
 	CachedTokens     int64     `json:"cachedTokens"`
 	ReasoningTokens  int64     `json:"reasoningTokens"`
 	CreatedAt        time.Time `json:"createdAt"`
@@ -43,6 +44,7 @@ type ModelTokenUsageSummary struct {
 	PromptTokens     int64 `json:"promptTokens"`
 	CompletionTokens int64 `json:"completionTokens"`
 	TotalTokens      int64 `json:"totalTokens"`
+	CacheWriteTokens int64 `json:"cacheWriteTokens"`
 	CachedTokens     int64 `json:"cachedTokens"`
 	ReasoningTokens  int64 `json:"reasoningTokens"`
 }
@@ -56,6 +58,7 @@ type ModelTokenUsageBreakdown struct {
 	PromptTokens     int64  `json:"promptTokens"`
 	CompletionTokens int64  `json:"completionTokens"`
 	TotalTokens      int64  `json:"totalTokens"`
+	CacheWriteTokens int64  `json:"cacheWriteTokens"`
 	CachedTokens     int64  `json:"cachedTokens"`
 	ReasoningTokens  int64  `json:"reasoningTokens"`
 }
@@ -100,6 +103,7 @@ func modelTokenUsageFromProcessDetail(messageID, conversationID, processDetailID
 		CompletionTokens: usageInt64(m["completionTokens"]),
 		TotalTokens:      usageInt64(m["totalTokens"]),
 		CachedTokens:     usageInt64(m["cachedTokens"]),
+		CacheWriteTokens: usageInt64(m["cacheWriteTokens"]),
 		ReasoningTokens:  usageInt64(m["reasoningTokens"]),
 	}
 	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
@@ -108,7 +112,7 @@ func modelTokenUsageFromProcessDetail(messageID, conversationID, processDetailID
 	if usage.ProcessDetailID == "" || usage.MessageID == "" || usage.ConversationID == "" {
 		return ModelTokenUsage{}, false
 	}
-	if usage.ModelCalls == 0 && usage.TotalTokens == 0 && usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.CachedTokens == 0 && usage.ReasoningTokens == 0 {
+	if usage.ModelCalls == 0 && usage.TotalTokens == 0 && usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.CachedTokens == 0 && usage.CacheWriteTokens == 0 && usage.ReasoningTokens == 0 {
 		return ModelTokenUsage{}, false
 	}
 	return usage, true
@@ -184,7 +188,7 @@ func usageInt64(v interface{}) int64 {
 }
 
 func (db *DB) maybeRecordModelTokenUsage(messageID, conversationID, processDetailID, eventType string, data interface{}) {
-	if db == nil || eventType != modelTokenUsageEventType {
+	if db == nil || (eventType != modelTokenUsageEventType && eventType != "eino_usage_summary") {
 		return
 	}
 	usage, ok := modelTokenUsageFromProcessDetail(messageID, conversationID, processDetailID, data)
@@ -221,31 +225,32 @@ func (db *DB) UpsertModelTokenUsage(usage ModelTokenUsage) error {
 		projectValue = strings.TrimSpace(projectID.String)
 	}
 	_, err := db.Exec(`
- INSERT INTO model_token_usage (
- 	id, process_detail_id, message_id, conversation_id, project_id,
- 	source, orchestration, reason, model, model_calls,
- 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
- 	created_at, updated_at
- ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
- ON CONFLICT(process_detail_id) DO UPDATE SET
- 	message_id = excluded.message_id,
- 	conversation_id = excluded.conversation_id,
- 	project_id = excluded.project_id,
- 	source = excluded.source,
- 	orchestration = excluded.orchestration,
- 	reason = excluded.reason,
- 	model = excluded.model,
- 	model_calls = excluded.model_calls,
- 	prompt_tokens = excluded.prompt_tokens,
- 	completion_tokens = excluded.completion_tokens,
- 	total_tokens = excluded.total_tokens,
- 	cached_tokens = excluded.cached_tokens,
- 	reasoning_tokens = excluded.reasoning_tokens,
- 	created_at = excluded.created_at,
- 	updated_at = excluded.updated_at`,
+INSERT INTO model_token_usage (
+	id, process_detail_id, message_id, conversation_id, project_id,
+	source, orchestration, reason, model, model_calls,
+	prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens,
+	created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(process_detail_id) DO UPDATE SET
+	message_id = excluded.message_id,
+	conversation_id = excluded.conversation_id,
+	project_id = excluded.project_id,
+	source = excluded.source,
+	orchestration = excluded.orchestration,
+	reason = excluded.reason,
+	model = excluded.model,
+	model_calls = excluded.model_calls,
+	prompt_tokens = excluded.prompt_tokens,
+	completion_tokens = excluded.completion_tokens,
+	total_tokens = excluded.total_tokens,
+	cached_tokens = excluded.cached_tokens,
+	cache_write_tokens = excluded.cache_write_tokens,
+	reasoning_tokens = excluded.reasoning_tokens,
+	created_at = excluded.created_at,
+	updated_at = excluded.updated_at`,
 		usage.ID, usage.ProcessDetailID, usage.MessageID, usage.ConversationID, projectValue,
 		usage.Source, usage.Orchestration, usage.Reason, usage.Model, usage.ModelCalls,
-		usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.CachedTokens, usage.ReasoningTokens,
+		usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.CachedTokens, usage.CacheWriteTokens, usage.ReasoningTokens,
 		createdAt, now,
 	)
 	if err != nil {
@@ -260,11 +265,11 @@ func (db *DB) BackfillModelTokenUsageFromProcessDetails() error {
 		return nil
 	}
 	rows, err := db.Query(`
- SELECT pd.id, pd.message_id, pd.conversation_id, pd.data, pd.created_at
- FROM process_details pd
- LEFT JOIN model_token_usage mtu ON mtu.process_detail_id = pd.id
- WHERE pd.event_type = ?
- 	AND (mtu.id IS NULL OR mtu.created_at != pd.created_at)`, modelTokenUsageEventType)
+SELECT pd.id, pd.message_id, pd.conversation_id, pd.data, pd.created_at
+FROM process_details pd
+LEFT JOIN model_token_usage mtu ON mtu.process_detail_id = pd.id
+WHERE pd.event_type IN (?, ?)
+	AND (mtu.id IS NULL OR mtu.created_at != pd.created_at)`, modelTokenUsageEventType, "eino_usage_summary")
 	if err != nil {
 		return fmt.Errorf("查询历史模型Token用量失败: %w", err)
 	}
@@ -318,7 +323,7 @@ func (db *DB) GetModelTokenUsageStats(filter ModelTokenUsageFilter) (*ModelToken
 		return nil, err
 	}
 	byDay, err := db.queryModelTokenUsageBreakdown(
-		"SELECT date(mtu.created_at) AS k, date(mtu.created_at) AS label, "+modelTokenUsageSummarySelect("mtu")+" FROM model_token_usage mtu JOIN conversations c ON c.id = mtu.conversation_id"+where+" GROUP BY date(mtu.created_at) ORDER BY k DESC LIMIT ?",
+		"SELECT date(mtu.created_at, 'localtime') AS k, date(mtu.created_at, 'localtime') AS label, "+modelTokenUsageSummarySelect("mtu")+" FROM model_token_usage mtu JOIN conversations c ON c.id = mtu.conversation_id"+where+" GROUP BY date(mtu.created_at, 'localtime') ORDER BY k DESC LIMIT ?",
 		append(args, filter.Days)...,
 	)
 	if err != nil {
@@ -358,12 +363,13 @@ func modelTokenUsageSummarySelect(alias string) string {
 		p = alias + "."
 	}
 	return fmt.Sprintf(`COUNT(%sid),
- COALESCE(SUM(%smodel_calls), 0),
- COALESCE(SUM(%sprompt_tokens), 0),
- COALESCE(SUM(%scompletion_tokens), 0),
- COALESCE(SUM(%stotal_tokens), 0),
- COALESCE(SUM(%scached_tokens), 0),
- COALESCE(SUM(%sreasoning_tokens), 0)`, p, p, p, p, p, p, p)
+COALESCE(SUM(%smodel_calls), 0),
+COALESCE(SUM(%sprompt_tokens), 0),
+COALESCE(SUM(%scompletion_tokens), 0),
+COALESCE(SUM(%stotal_tokens), 0),
+COALESCE(SUM(%scached_tokens), 0),
+COALESCE(SUM(%scache_write_tokens), 0),
+COALESCE(SUM(%sreasoning_tokens), 0)`, p, p, p, p, p, p, p, p)
 }
 
 func buildModelTokenUsageWhere(filter ModelTokenUsageFilter, usageAlias, convAlias string) (string, []interface{}) {
@@ -394,7 +400,7 @@ func (db *DB) queryModelTokenUsageSummary(query string, args ...interface{}) (Mo
 	var s ModelTokenUsageSummary
 	err := db.QueryRow(query, args...).Scan(
 		&s.Events, &s.ModelCalls, &s.PromptTokens, &s.CompletionTokens,
-		&s.TotalTokens, &s.CachedTokens, &s.ReasoningTokens,
+		&s.TotalTokens, &s.CachedTokens, &s.CacheWriteTokens, &s.ReasoningTokens,
 	)
 	if err != nil {
 		return s, fmt.Errorf("查询模型Token用量汇总失败: %w", err)
@@ -413,7 +419,7 @@ func (db *DB) queryModelTokenUsageBreakdown(query string, args ...interface{}) (
 		var row ModelTokenUsageBreakdown
 		if err := rows.Scan(
 			&row.Key, &row.Label, &row.Events, &row.ModelCalls, &row.PromptTokens,
-			&row.CompletionTokens, &row.TotalTokens, &row.CachedTokens, &row.ReasoningTokens,
+			&row.CompletionTokens, &row.TotalTokens, &row.CachedTokens, &row.CacheWriteTokens, &row.ReasoningTokens,
 		); err != nil {
 			return nil, fmt.Errorf("扫描模型Token用量分组失败: %w", err)
 		}
@@ -435,14 +441,14 @@ func (db *DB) ListModelTokenUsage(filter ModelTokenUsageFilter) ([]ModelTokenUsa
 	where, args := buildModelTokenUsageWhere(filter, "mtu", "c")
 	args = append(args, filter.Limit)
 	rows, err := db.Query(`
- SELECT mtu.id, mtu.process_detail_id, mtu.message_id, mtu.conversation_id,
- 	COALESCE(mtu.project_id, ''), mtu.source, mtu.orchestration, mtu.reason, mtu.model,
- 	mtu.model_calls, mtu.prompt_tokens, mtu.completion_tokens, mtu.total_tokens,
- 	mtu.cached_tokens, mtu.reasoning_tokens, mtu.created_at, mtu.updated_at
- FROM model_token_usage mtu
- JOIN conversations c ON c.id = mtu.conversation_id`+where+`
- ORDER BY mtu.created_at DESC, mtu.rowid DESC
- LIMIT ?`, args...)
+SELECT mtu.id, mtu.process_detail_id, mtu.message_id, mtu.conversation_id,
+	COALESCE(mtu.project_id, ''), mtu.source, mtu.orchestration, mtu.reason, mtu.model,
+	mtu.model_calls, mtu.prompt_tokens, mtu.completion_tokens, mtu.total_tokens,
+	mtu.cached_tokens, mtu.cache_write_tokens, mtu.reasoning_tokens, mtu.created_at, mtu.updated_at
+FROM model_token_usage mtu
+JOIN conversations c ON c.id = mtu.conversation_id`+where+`
+ORDER BY mtu.created_at DESC, mtu.rowid DESC
+LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询模型Token用量明细失败: %w", err)
 	}
@@ -455,7 +461,7 @@ func (db *DB) ListModelTokenUsage(filter ModelTokenUsageFilter) ([]ModelTokenUsa
 			&u.ID, &u.ProcessDetailID, &u.MessageID, &u.ConversationID, &u.ProjectID,
 			&u.Source, &u.Orchestration, &u.Reason, &u.Model, &u.ModelCalls,
 			&u.PromptTokens, &u.CompletionTokens, &u.TotalTokens, &u.CachedTokens,
-			&u.ReasoningTokens, &createdAt, &updatedAt,
+			&u.CacheWriteTokens, &u.ReasoningTokens, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("扫描模型Token用量明细失败: %w", err)
 		}

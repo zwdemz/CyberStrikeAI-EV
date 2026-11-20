@@ -1,5 +1,5 @@
 const AGENT_MODES = [
-  { id: 'eino_single', label: 'Eino Single (ADK)', path: '/api/eino-agent/stream' },
+  { id: 'single', label: 'Pi Single', path: '/api/eino-agent/stream' },
   { id: 'deep', label: 'Deep (DeepAgent)', path: '/api/multi-agent/stream', orchestration: 'deep' },
   { id: 'plan_execute', label: 'Plan-Execute', path: '/api/multi-agent/stream', orchestration: 'plan_execute' },
   { id: 'supervisor', label: 'Supervisor', path: '/api/multi-agent/stream', orchestration: 'supervisor' },
@@ -39,11 +39,15 @@ async function apiFetch(baseUrl, path, options = {}) {
   return json;
 }
 
-async function loginAndValidate(baseUrl, password, signal) {
+async function loginAndValidate(baseUrl, username, password, signal) {
+  username = username.trim();
+  if (!username || [...username].length > 64) {
+    throw new Error('Username is required and must not exceed 64 characters');
+  }
   const login = await apiFetch(baseUrl, '/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ username, password }),
     signal,
   });
   const token = login && login.token;

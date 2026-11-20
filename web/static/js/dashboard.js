@@ -66,10 +66,12 @@ async function refreshDashboard() {
         setDashboardOverviewPlaceholder('…');
         setEl('dashboard-kpi-tools-calls', '…');
         setEl('dashboard-kpi-success-rate', '…');
+        setEl('dashboard-kpi-token-usage', '…');
         setKpiSubText('dashboard-kpi-tasks-sub-text', '…');
         setKpiSubText('dashboard-kpi-vuln-sub-text', '…');
         setKpiSubText('dashboard-kpi-tools-sub-text', '…');
         setKpiSubText('dashboard-kpi-rate-sub-text', '…');
+        setKpiSubText('dashboard-kpi-token-sub-text', '…');
         hideEl('dashboard-kpi-vuln-critical-badge');
         hideEl('dashboard-alert-banner');
         setRecentVulnsLoading();
@@ -127,7 +129,7 @@ async function refreshDashboard() {
             hitlPendingRes, notificationsRes, externalMcpStatsRes,
             webshellRes,
             c2ListenersRes, c2SessionsRes, c2TasksRes,
-            projectSummaryRes, severityFilteredStatsRes
+            projectSummaryRes, severityFilteredStatsRes, tokenUsageRes
         ] = await Promise.all([
             fetchJson('/api/agent-loop/tasks'),
             fetchJson('/api/vulnerabilities/stats'),
@@ -159,7 +161,8 @@ async function refreshDashboard() {
             fetchJson(dashboardProjectScopedUrl('/api/c2/sessions?limit=500')),
             fetchJson(dashboardProjectScopedUrl('/api/c2/tasks?page=1&page_size=1')),
             fetchJson('/api/projects/dashboard-summary?fact_limit=10'),
-            selectedSeverityStatus ? fetchJson('/api/vulnerabilities/stats?status=' + encodeURIComponent(selectedSeverityStatus)) : Promise.resolve(null)
+            selectedSeverityStatus ? fetchJson('/api/vulnerabilities/stats?status=' + encodeURIComponent(selectedSeverityStatus)) : Promise.resolve(null),
+            fetchJson('/api/usage/tokens?days=7&limit=20')
         ]);
 
         // 如果在 await 期间 controller 已被 abort，说明又有新刷新启动了，丢弃本次结果
@@ -330,6 +333,8 @@ async function refreshDashboard() {
             renderDashboardToolsBar(null);
         }
 
+        renderDashboardTokenUsage(tokenUsageRes);
+
         // 「能力总览 → MCP 工具」用配置总数（包含未被调用过的工具）；专项接口失败时回落到 monitor 的 names.length
         if (toolsConfigRes && typeof toolsConfigRes.total === 'number') {
             setEl('dashboard-resource-tools', formatNumber(toolsConfigRes.total));
@@ -435,10 +440,13 @@ async function refreshDashboard() {
         setDashboardOverviewPlaceholder('-');
         setEl('dashboard-kpi-success-rate', '-');
         setEl('dashboard-kpi-tools-calls', '-');
+        setEl('dashboard-kpi-token-usage', '-');
+        setKpiSubText('dashboard-kpi-token-sub-text', '-');
         setKpiSubText('dashboard-kpi-tasks-sub-text', '-');
         setKpiSubText('dashboard-kpi-vuln-sub-text', '-');
         setKpiSubText('dashboard-kpi-tools-sub-text', '-');
         setKpiSubText('dashboard-kpi-rate-sub-text', '-');
+        setKpiSubText('dashboard-kpi-token-sub-text', '-');
         ['tools', 'skills', 'knowledge', 'roles', 'agents'].forEach(function (k) {
             setEl('dashboard-resource-' + k, '-');
         });
@@ -698,6 +706,133 @@ function setKpiRateBadge(id, rate, failedCount) {
         el.textContent = dt('dashboard.degradedStatus', null, '需要关注') + (failedCount > 0 ? ' · ' + dt('dashboard.failedNCalls', { count: failedCount }, failedCount + ' 失败') : '');
         el.classList.add('is-danger');
     }
+}
+
+function renderDashboardTokenUsage(res) {
+    const summary = res && res.summary ? res.summary : null;
+    if (!summary) {
+        setEl('dashboard-kpi-token-usage', '-');
+        setKpiSubText('dashboard-kpi-token-sub-text', '-');
+        return;
+    }
+    const cacheRate = tokenUsageCacheRate(summary);
+    const total = Number(summary.totalTokens || 0);
+    if (!Number.isFinite(total) || total <= 0) {
+        setEl('dashboard-kpi-token-usage', '0');
+        setKpiSubText('dashboard-kpi-token-sub-text', dt('dashboard.noTokenUsageInRange', null, '全部可见项目近 7 天无已记录用量'));
+        return;
+    }
+    setEl('dashboard-kpi-token-usage', formatTokenUsageCompact(total));
+    setKpiSubText('dashboard-kpi-token-sub-text',
+        dt('dashboard.tokenUsageSub', {
+            rate: cacheRate
+        }, '缓存命中 ' + cacheRate));
+}
+
+function formatTokenUsageCompact(num) {
+    const n = Number(num || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0';
+    if (n >= 1000000) {
+        return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+    }
+    if (n >= 1000) {
+        return (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'K';
+    }
+    return String(Math.trunc(n));
+}
+
+// Open accessible token details without navigating away from the dashboard. Requests
+// retain the selected project scope, abort on close/change, and never display errors as zero usage.
+function openDashboardTokenUsage() {
+    const existing = document.getElementById('dashboard-token-dialog');
+    if (existing) { existing.focus(); return; }
+    const english = !(document.documentElement.lang || 'zh').startsWith('zh');
+    const label = (zh, en) => english ? en : zh;
+    const make = (tag, text, className) => {
+        const node = document.createElement(tag);
+        if (text !== undefined) node.textContent = text;
+        if (className) node.className = className;
+        return node;
+    };
+    const number = value => {
+        const n = Number(value);
+        return Number.isFinite(n) && n >= 0 ? Math.trunc(n).toLocaleString() : '—';
+    };
+    const dialog = make('dialog', undefined, 'dashboard-token-dialog');
+    dialog.id = 'dashboard-token-dialog';
+    dialog.setAttribute('aria-labelledby', 'dashboard-token-title');
+    const header = make('header');
+    const title = make('h3', label('Token 用量统计', 'Token usage statistics'));
+    title.id = 'dashboard-token-title';
+    const close = make('button', label('关闭', 'Close'), 'btn-secondary');
+    close.type = 'button'; close.onclick = () => dialog.close();
+    header.append(title, close);
+    const controls = make('div', undefined, 'dashboard-token-controls');
+    const rangeLabel = make('label', label('统计范围', 'Time range'));
+    const range = make('select'); range.id = 'dashboard-token-range'; rangeLabel.htmlFor = range.id;
+    [7, 30, 90].forEach(days => {
+        const option = make('option', label('近 ' + days + ' 天', 'Last ' + days + ' days'));
+        option.value = String(days); range.append(option);
+    });
+    const retry = make('button', label('刷新', 'Refresh'), 'btn-secondary'); retry.type = 'button';
+    controls.append(rangeLabel, range, retry);
+    const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+    const content = make('div', undefined, 'dashboard-token-content');
+    const scopeURL = dashboardProjectScopedUrl('/api/usage/tokens?limit=100');
+    const scopeLabel = make('label', label('项目范围', 'Project scope'));
+    const scope = make('select'); scope.id = 'dashboard-token-scope'; scopeLabel.htmlFor = scope.id;
+    [['all', label('全部有权查看的项目', 'All accessible projects')], ['current', label('当前活动项目', 'Current active project')]].forEach(([value, text]) => { const option = make('option', text); option.value = value; scope.append(option); });
+    controls.insertBefore(scopeLabel, retry); controls.insertBefore(scope, retry);
+    const note = make('p', label('默认统计全部有权查看的项目；选择“当前活动项目”才使用打开弹窗时的活动项目。仅统计已记录用量。缓存与推理为细分项，不额外累加到总量；这不是计费账单。', 'Defaults to all accessible projects. Current active project uses the project at opening. Only recorded usage is counted. Cache and reasoning are breakdowns, not additions to the total; this is not a billing statement.'), 'dashboard-token-note');
+    dialog.append(header, controls, note, status, content);
+    document.body.append(dialog);
+    let controller, timeout, generation = 0;
+    dialog.addEventListener('close', () => { generation++; if (controller) controller.abort(); clearTimeout(timeout); dialog.remove(); });
+    dialog.addEventListener('click', event => { if (event.target === dialog) { const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close(); } });
+    function table(titleText, rows, keyTitle) {
+        content.append(make('h4', titleText));
+        if (!Array.isArray(rows) || !rows.length) { content.append(make('p', label('暂无记录', 'No records'))); return; }
+        const wrapper = make('div', undefined, 'dashboard-token-table');
+        const element = make('table'); const head = make('thead'); const heading = make('tr');
+        [keyTitle, label('调用次数', 'Calls'), label('输入', 'Input'), label('输出', 'Output'), label('总 Token', 'Total tokens')].forEach(text => { const th = make('th', text); th.scope = 'col'; heading.append(th); });
+        head.append(heading); element.append(head); const body = make('tbody');
+        rows.slice(0, 100).forEach(row => {
+            const tr = make('tr');
+            [row.label || row.key || '—', number(row.modelCalls), number(row.promptTokens), number(row.completionTokens), number(row.totalTokens)].forEach(text => tr.append(make('td', text)));
+            body.append(tr);
+        });
+        element.append(body); wrapper.append(element); content.append(wrapper);
+    }
+    async function load() {
+        const request = ++generation;
+        if (controller) controller.abort(); clearTimeout(timeout);
+        controller = new AbortController(); const activeController = controller; const signal = activeController.signal;
+        timeout = setTimeout(() => activeController.abort(), 15000);
+        content.replaceChildren(); status.textContent = label('正在加载统计…', 'Loading statistics…');
+        try {
+            const response = await apiFetch((scope.value === 'all' ? '/api/usage/tokens?limit=100' : scopeURL) + '&days=' + range.value, {signal});
+            if (!response.ok) throw new Error(response.status === 403 ? label('没有查看用量的权限。', 'You do not have permission to view usage.') : label('统计加载失败，请稍后重试。', 'Could not load usage. Please retry.'));
+            const data = await response.json();
+            if (request !== generation || signal.aborted) return;
+            if (!data || !data.summary) throw new Error(label('统计响应不完整，请重试。', 'Incomplete usage response. Please retry.'));
+            const summary = data.summary;
+            status.textContent = Number(summary.events || summary.modelCalls || summary.totalTokens) > 0 ? '' : label('所选范围内暂无已记录的 Token 用量。', 'No recorded token usage in this range.');
+            const metrics = make('dl', undefined, 'dashboard-token-metrics');
+            [[label('总 Token', 'Total tokens'), 'totalTokens'], [label('模型调用', 'Model calls'), 'modelCalls'], [label('输入 Token', 'Input tokens'), 'promptTokens'], [label('输出 Token', 'Output tokens'), 'completionTokens'], [label('缓存 Token', 'Cached tokens'), 'cachedTokens'], [label('缓存写入 Token', 'Cache write tokens'), 'cacheWriteTokens'], [label('推理 Token', 'Reasoning tokens'), 'reasoningTokens']].forEach(([text, key]) => {
+                const card = make('div'); card.append(make('dt', text), make('dd', number(summary[key]))); metrics.append(card);
+            });
+            content.append(metrics);
+            table(label('按日期统计', 'Daily usage'), data.byDay, label('日期（数据库日期分组）', 'Date (database grouping)'));
+            table(label('按模型统计（最多 100 项）', 'Models (up to 100)'), data.byModel, label('模型', 'Model'));
+        } catch (error) {
+            if (request !== generation) return;
+            status.textContent = signal.aborted ? label('统计请求超时，请点击刷新重试。', 'Usage request timed out. Refresh to retry.') : error.message;
+        } finally {
+            if (request === generation) clearTimeout(timeout);
+        }
+    }
+    range.onchange = load; scope.onchange = load; retry.onclick = load;
+    dialog.showModal(); load();
 }
 
 // sessionStorage：告警条「×」忽略记录 + 最近一次**实际展示过**的 reason 片段（不含 level），
@@ -1147,12 +1282,12 @@ function stopDashboardAutoRefresh() {
 
 // 严重度配色及中文标签
 var SEVERITY_LABELS_FALLBACK = {
-    critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息'
+    critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息', pending: '待验证'
 };
 
 function severityShortLabel(id) {
     const key = 'dashboard.severity' + id.charAt(0).toUpperCase() + id.slice(1);
-    return t(key, null, SEVERITY_LABELS_FALLBACK[id] || id);
+    return dt(key, null, SEVERITY_LABELS_FALLBACK[id] || id);
 }
 
 // 友好的相对时间："5 分钟前" / "2 小时前" / "昨天" / "3 天前"

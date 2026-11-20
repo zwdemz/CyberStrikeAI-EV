@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/disintegration/imaging"
+	"image/draw"
 )
 
 func TestPreprocessImageFile_scalesAndLimitsPayload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.png")
-	img := imaging.New(3000, 2000, color.White)
-	if err := imaging.Save(img, path); err != nil {
+	img := newTestImage(3000, 2000, color.White)
+	if err := saveTestPNG(img, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,7 +46,7 @@ func TestPreprocessImageFile_scalesAndLimitsPayload(t *testing.T) {
 func TestPreprocessImageFile_passthroughSmallPNG(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "small.png")
-	if err := imaging.Save(imaging.New(400, 300, color.White), path); err != nil {
+	if err := saveTestPNG(newTestImage(400, 300, color.White), path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,7 +73,7 @@ func TestPreprocessImageFile_passthroughSmallPNG(t *testing.T) {
 func TestPreprocessImageFile_passthroughDisabled(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "small.png")
-	if err := imaging.Save(imaging.New(100, 100, color.White), path); err != nil {
+	if err := saveTestPNG(newTestImage(100, 100, color.White), path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,4 +106,18 @@ func TestPreprocessImageFile_rejectsOversizeFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when file exceeds max_image_bytes")
 	}
+}
+
+func newTestImage(width, height int, fill color.Color) image.Image {
+	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(img, img.Bounds(), image.NewUniform(fill), image.Point{}, draw.Src)
+	return img
+}
+func saveTestPNG(img image.Image, path string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return png.Encode(file, img)
 }

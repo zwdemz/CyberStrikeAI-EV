@@ -2,13 +2,39 @@
 
 本文用于维护者或部署者发布、升级和回滚 CyberStrikeAI。
 
+## EV 版本与发布规则
+
+- 直接在 `dev` 维护修改，必需检查通过后经本仓库 `dev → main` PR 发布，禁止直推 `main`。
+- Tag 名称采用 SemVer，例如 `v1.7.21`，预发布使用 `-rc.1` 等英文后缀。EV 版本可以独立于上游递增，须另列上游仓库、版本链接与提交。
+- 正式 Tag 必须为 SSH 或 OpenPGP 签名的附注标签，指向 `main` 上已经验证的发布提交；公钥须登记为 GitHub 签名密钥，推送前在本地验证提交和标签，推送后核对 GitHub 的 Verified 状态。仅通过 SSH 身份认证推送并不等于提交或标签已签名。
+- Tag 附注、Release 标题、Release 正文统一使用英语。标题可仅为版本号，也可附英文摘要；Tag 附注应概述具体变更并指向对应 Release 说明。
+- 已发布 Tag 不因后续修复或文档修改而移动、复用。后续变更先记入本地发布草稿，准备好后发布新版本；单独的文档 PR 不要求新建 Tag。
+- 公开发布信息和制品不得包含凭据、私有主机、部署路径、运行日志、个人信息及其他敏感环境详情。
+
+## 英文 Release 固定分类
+
+| 英文分类 | 应记录的内容 |
+| --- | --- |
+| Upstream Baseline | 上游版本链接及提交，与 EV 版本和发布提交分别说明。 |
+| Updates | 新增功能、行为与配置变化、文档更新。 |
+| Optimizations | 稳定性、性能或体验优化；只有实际测量过才写量化收益。 |
+| Bug Fixes | 修复前的触发条件及修复后的行为。 |
+| Security Fixes | 已修复漏洞或受影响依赖，尽可能链接公告及修复版本。 |
+| Hardening | 权限、角色限制、参数校验、隔离、审计或安全默认值的变化。 |
+| Validation | 测试、构建、扫描、已验证平台及尚未验证的场景。 |
+| Upgrade and Rollback | 兼容性、备份、迁移步骤与回滚限制。 |
+
+每个分类均须保留；没有变更的变更类分类写 `No changes in this release.`。验证分类必须记录真实结果及限制，不能使用笼统成功结论；依赖扫描通过不代表应用不存在任何漏洞。关联相关 PR 和与上一 EV 版本的比较链接。
+
+发布顺序为：在 `dev` 完成修改，经 PR 合入 `main`，核对发布提交与检查结果，签名并验证 Tag，推送后以该 Tag 发布英文 Release。既有公开标签保持不变。这是维护流程规范，当前没有自动语言检查机制。
+
 ## 版本准备
 
 发布前检查：
 
 - `README.md` 和 `README_CN.md` 的功能说明是否更新。
 - `docs/` 是否补充新功能文档。
-- `config.yaml` 示例是否包含新增配置。
+- `config.example.yaml` 示例是否包含新增配置。
 - OpenAPI 是否包含新增接口。
 - 中英文 i18n 是否同步。
 - 高风险功能是否有安全说明。
@@ -25,6 +51,7 @@ go test ./internal/...
 
 ```bash
 go test ./cmd/...
+bash scripts/build-pi-runtime.sh
 go build -o cyberstrike-ai ./cmd/server
 ```
 
@@ -39,6 +66,7 @@ go build -o cyberstrike-ai ./cmd/server
 ## 构建
 
 ```bash
+bash scripts/build-pi-runtime.sh
 go build -o cyberstrike-ai ./cmd/server
 ```
 
@@ -47,7 +75,7 @@ go build -o cyberstrike-ai ./cmd/server
 - `cyberstrike-ai`
 - `web/templates/`
 - `web/static/`
-- `config.yaml` 示例。
+- `config.example.yaml` 示例。
 - `tools/`
 - `roles/`
 - `skills/`
@@ -98,7 +126,7 @@ go build -o cyberstrike-ai ./cmd/server
 
 如果新版已修改数据库结构，必须恢复数据库备份，不能只替换二进制。
 
-## Changelog 建议
+## Release 说明建议
 
 每个版本记录：
 
@@ -157,6 +185,7 @@ SQLite 迁移要考虑：
 ```bash
 go test ./internal/...
 go test ./cmd/...
+bash scripts/build-pi-runtime.sh
 go build -o cyberstrike-ai ./cmd/server
 ```
 

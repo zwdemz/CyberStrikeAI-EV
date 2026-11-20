@@ -740,7 +740,7 @@ function renderProjectFactActions(keyEsc, idEsc, confidence) {
 
 function formatSeverityBadge(severity) {
     const s = (severity || 'info').toLowerCase();
-    const cls = 'projects-severity--' + (['critical', 'high', 'medium', 'low', 'info'].includes(s) ? s : 'info');
+    const cls = 'projects-severity--' + (['pending', 'critical', 'high', 'medium', 'low', 'info'].includes(s) ? s : 'info');
     return `<span class="projects-severity ${cls}">${escapeHtml(severity || '—')}</span>`;
 }
 
@@ -1135,6 +1135,7 @@ function renderProjectAssetsPagination() {
             <button type="button" class="btn-secondary" onclick="loadProjectAssets(${totalPages})" ${atLast ? 'disabled' : ''}>${escapeHtml(tpFmt('skillsPage.lastPage', '尾页'))}</button>
         </div>
     </div>`;
+    if (typeof initPaginationSelects === 'function') initPaginationSelects(root);
 }
 
 function changeProjectAssetsPageSize(value) {
@@ -1518,7 +1519,7 @@ async function loadProjectFacts() {
         const keyEsc = escapeHtml(f.fact_key);
         const idEsc = escapeHtml(f.id);
         const vulnLink = f.related_vulnerability_id
-            ? `<span class="projects-fact-vuln-link" title="${escapeHtml(tp('projects.relatedVulnIdTitle'))}">${escapeHtml(f.related_vulnerability_id.slice(0, 8))}…</span>`
+            ? `<span class="projects-fact-vuln-link" title="${escapeHtml(tp('projects.relatedVulnIdTitle') + ': ' + f.related_vulnerability_id)}">${escapeHtml(tp('projects.relatedVulnIdTitle'))}: ${escapeHtml(f.related_vulnerability_id.slice(0, 8))}…</span>`
             : '';
         const pinBadge = f.pinned
             ? `<span class="projects-list-item-badge" title="${escapeHtml(tp('projects.pinned'))}">${escapeHtml(tp('projects.pinned'))}</span>`
@@ -1529,7 +1530,7 @@ async function loadProjectFacts() {
                 ? `<span class="projects-fact-link-badge" title="${escapeHtml(tp('projects.linkCountsTitle'))}">↑${lc.outgoing || 0} ↓${lc.incoming || 0}</span>`
                 : '<span class="projects-fact-link-badge projects-fact-link-badge--empty">—</span>';
         return `<tr>
-            <td class="cell-fact-key"><code class="projects-fact-key-chip" title="${keyEsc}">${keyEsc}</code>${pinBadge}${vulnLink}</td>
+            <td class="cell-fact-key"><code class="projects-fact-key-chip" title="${keyEsc}">${keyEsc}</code>${pinBadge || vulnLink ? `<div class="projects-fact-meta">${pinBadge}${vulnLink}</div>` : ''}</td>
             <td class="cell-fact-category">${formatCategoryBadge(f.category)}</td>
             <td class="cell-summary" title="${escapeHtml(f.summary)}">${escapeHtml(f.summary)}</td>
             <td class="cell-fact-links">${linkBadge}</td>
@@ -1901,28 +1902,16 @@ function openVulnerabilityDetail(vulnId) {
 
 async function viewFactsForVulnerability(vulnId) {
     if (!currentProjectId) return;
-    switchProjectTab('facts');
-    const searchEl = document.getElementById('project-facts-search');
-    const catEl = document.getElementById('project-facts-filter-category');
-    const confEl = document.getElementById('project-facts-filter-confidence');
-    const sparseEl = document.getElementById('project-facts-filter-sparse');
-    const hideDepEl = document.getElementById('project-facts-filter-hide-deprecated');
-    if (searchEl) searchEl.value = '';
-    if (catEl) catEl.value = '';
-    if (confEl) confEl.value = '';
-    if (sparseEl) sparseEl.checked = false;
-    if (hideDepEl) hideDepEl.checked = true;
     const params = new URLSearchParams({ limit: '50', related_vulnerability_id: vulnId });
     const res = await apiFetch(`/api/projects/${currentProjectId}/facts?${params}`);
     if (!res.ok) return alert(tp('projects.loadRelatedFactsFailed'));
     const facts = await res.json();
     if (!facts.length) {
         alert(tp('projects.noFactsForVulnerability'));
-        loadProjectFacts();
         return;
     }
     if (facts.length === 1) {
-        viewProjectFactBody(facts[0].fact_key);
+        await viewProjectFactBody(facts[0].fact_key);
         return;
     }
     const pick = prompt(
@@ -1933,12 +1922,10 @@ async function viewFactsForVulnerability(vulnId) {
         }) || `This vulnerability is linked to ${facts.length} facts. Enter index to view:\n${facts.map((f, i) => `${i + 1}. ${f.fact_key}`).join('\n')}`,
     );
     if (pick == null || pick === '') {
-        loadProjectFacts();
         return;
     }
     const idx = parseInt(pick, 10) - 1;
-    if (facts[idx]) viewProjectFactBody(facts[idx].fact_key);
-    else loadProjectFacts();
+    if (facts[idx]) await viewProjectFactBody(facts[idx].fact_key);
 }
 
 function openProjectsOverlay(id, opts) {
@@ -2099,6 +2086,8 @@ function insertProjectScopeExample() {
 
 async function saveProjectSettings() {
     if (!currentProjectId || !requireProjectWrite()) return;
+    const name = document.getElementById('project-edit-name').value.trim();
+    if (!name) return alert(tp('projects.enterProjectName'));
     const scopeRaw = document.getElementById('project-edit-scope').value.trim();
     if (scopeRaw) {
         try {
@@ -2109,7 +2098,7 @@ async function saveProjectSettings() {
         }
     }
     const body = {
-        name: document.getElementById('project-edit-name').value.trim(),
+        name,
         description: clampProjectDescription(document.getElementById('project-edit-description').value),
         scope_json: scopeRaw,
         status: document.getElementById('project-edit-status')?.value || 'active',
@@ -2923,7 +2912,7 @@ function ensureProjectFolderPreview() {
             <span class="project-folder-preview-title"></span>
         </div>
         <div class="project-folder-preview-stats">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 12a8.5 8.5 0 0 1-9 8.48A8.5 8.5 0 1 1 20.48 11H21v5l-2-2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.5"/></svg>
             <span></span>
         </div>
         <div class="project-folder-preview-details">
@@ -3072,7 +3061,7 @@ function formatProjectConversationPreviewAge(value) {
 function getProjectConversationModeLabel(conversation) {
     const mode = String(conversation?.agentMode || conversation?.agent_mode || '').trim().toLowerCase();
     const labels = {
-        eino_single: ['chat.agentModeEinoSingle', 'Eino 单代理（ADK）'],
+        single: ['chat.agentModePiSingle', 'Pi 单代理'],
         deep: ['chat.agentModeDeep', 'Deep（DeepAgent）'],
         plan_execute: ['chat.agentModePlanExecuteLabel', 'Plan-Execute'],
         supervisor: ['chat.agentModeSupervisorLabel', 'Supervisor（专家路由）'],
@@ -3082,6 +3071,15 @@ function getProjectConversationModeLabel(conversation) {
         conversation?.roleName || conversation?.role_name || pickerMessage(tp, 'chat.conversationPreviewDefaultMode', '默认'),
         80
     );
+}
+
+function getProjectConversationModeIconClass(conversation) {
+    const mode = String(conversation?.agentMode || conversation?.agent_mode || '').trim().toLowerCase();
+    if (mode === 'single') return 'pi';
+    if (mode === 'deep') return 'deep';
+    if (mode === 'plan_execute') return 'plan';
+    if (mode === 'supervisor') return 'supervisor';
+    return 'default';
 }
 
 function ensureProjectConversationPreview() {
@@ -3102,7 +3100,7 @@ function ensureProjectConversationPreview() {
             <span class="project-conversation-preview-project"></span>
         </div>
         <div class="project-conversation-preview-meta">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="6" cy="5" r="2" stroke="currentColor" stroke-width="1.7"/><circle cx="6" cy="19" r="2" stroke="currentColor" stroke-width="1.7"/><circle cx="18" cy="9" r="2" stroke="currentColor" stroke-width="1.7"/><path d="M6 7v10M8 15c5 0 3-6 8-6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span class="project-conversation-preview-mode-icon agent-mode-logo agent-mode-logo--default" aria-hidden="true"><svg class="agent-mode-logo__svg" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><path d="M8 16h.01"/><path d="M16 16h.01"/></svg></span>
             <span class="project-conversation-preview-mode"></span>
             <span class="project-conversation-preview-separator" aria-hidden="true">·</span>
             <span class="project-conversation-preview-status"></span>
@@ -3165,6 +3163,10 @@ function showProjectConversationPreview(conversation, project, row) {
     ageEl.hidden = !ageEl.textContent;
     preview.querySelector('.project-conversation-preview-project').textContent = project?.name
         || pickerMessage(tp, 'chat.conversationPreviewNoProject', '未绑定项目');
+    const modeIcon = preview.querySelector('.project-conversation-preview-mode-icon');
+    if (modeIcon) {
+        modeIcon.className = 'project-conversation-preview-mode-icon agent-mode-logo agent-mode-logo--' + getProjectConversationModeIconClass(conversation);
+    }
     preview.querySelector('.project-conversation-preview-mode').textContent = getProjectConversationModeLabel(conversation);
     statusEl.textContent = status;
     statusEl.className = 'project-conversation-preview-status'
@@ -3352,15 +3354,17 @@ function appendChatProjectConversationItem(list, conversation, project) {
     });
     button.appendChild(label);
 
-    button.addEventListener('click', async () => {
+    button.addEventListener('click', async (event) => {
+        const targetConversationId = String(event.currentTarget && event.currentTarget.dataset.conversationId || '').trim();
+        if (!targetConversationId) return;
         projectConversationPreviewSuppressedUntil = Date.now() + 700;
         hideProjectConversationPreview(true);
-        selectChatProjectConversationItem(conversation.id);
+        selectChatProjectConversationItem(targetConversationId);
         if (typeof window.loadConversation === 'function') {
-            await window.loadConversation(conversation.id);
+            await window.loadConversation(targetConversationId);
         }
-        if (window.currentConversationId === conversation.id && completed) {
-            markProjectConversationViewed(conversation.id, completed.completedAt);
+        if (window.currentConversationId === targetConversationId && completed) {
+            markProjectConversationViewed(targetConversationId, completed.completedAt);
             renderChatProjectFolders(projectsCacheAll);
         }
     });

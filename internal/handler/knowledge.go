@@ -370,76 +370,29 @@ func (h *KnowledgeHandler) StartIndex(c *gin.Context) {
 
 // ScanKnowledgeBase 扫描知识库
 func (h *KnowledgeHandler) ScanKnowledgeBase(c *gin.Context) {
+	if err := h.indexer.TryBeginIndexRun(); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "已有索引任务正在进行，请等待完成"})
+		return
+	}
 	itemsToIndex, err := h.manager.ScanKnowledgeBase()
 	if err != nil {
+		h.indexer.FinishIndexRun()
 		h.logger.Error("扫描知识库失败", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "扫描知识库失败"})
 		return
 	}
-
 	if len(itemsToIndex) == 0 {
-		c.JSON(http.StatusOK, gin.H{"message": "扫描完成，没有需要索引的新项或更新项"})
+		h.indexer.FinishIndexRun()
+		c.JSON(http.StatusOK, gin.H{"message": "扫描完成，没有新增、更新或缺失向量索引的知识项", "items_to_index": 0})
 		return
 	}
-
-	// 异步索引新添加或更新的项（增量索引）
 	go func() {
-		ctx := context.Background()
-		h.logger.Info("开始增量索引", zap.Int("count", len(itemsToIndex)))
-		failedCount := 0
-		consecutiveFailures := 0
-		var firstFailureItemID string
-		var firstFailureError error
-
-		for i, itemID := range itemsToIndex {
-			if err := h.indexer.IndexItem(ctx, itemID); err != nil {
-				failedCount++
-				consecutiveFailures++
-
-				// 只在第一个失败时记录详细日志
-				if consecutiveFailures == 1 {
-					firstFailureItemID = itemID
-					firstFailureError = err
-					h.logger.Warn("索引知识项失败",
-						zap.String("itemId", itemID),
-						zap.Int("totalItems", len(itemsToIndex)),
-						zap.Error(err),
-					)
-				}
-
-				// 如果连续失败 2 次，立即停止增量索引
-				if consecutiveFailures >= 2 {
-					h.logger.Error("连续索引失败次数过多，立即停止增量索引",
-						zap.Int("consecutiveFailures", consecutiveFailures),
-						zap.Int("totalItems", len(itemsToIndex)),
-						zap.Int("processedItems", i+1),
-						zap.String("firstFailureItemId", firstFailureItemID),
-						zap.Error(firstFailureError),
-					)
-					break
-				}
-				continue
-			}
-
-			// 成功时重置连续失败计数
-			if consecutiveFailures > 0 {
-				consecutiveFailures = 0
-				firstFailureItemID = ""
-				firstFailureError = nil
-			}
-
-			// 减少进度日志频率
-			if (i+1)%10 == 0 || i+1 == len(itemsToIndex) {
-				h.logger.Info("索引进度", zap.Int("current", i+1), zap.Int("total", len(itemsToIndex)), zap.Int("failed", failedCount))
-			}
+		defer h.indexer.FinishIndexRun()
+		if err := h.indexer.RunIndexItems(context.Background(), itemsToIndex); err != nil {
+			h.logger.Error("增量索引失败", zap.Error(err))
 		}
-		h.logger.Info("增量索引完成", zap.Int("totalItems", len(itemsToIndex)), zap.Int("failedCount", failedCount))
 	}()
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":        fmt.Sprintf("扫描完成，开始索引 %d 个新添加或更新的知识项", len(itemsToIndex)),
-		"items_to_index": len(itemsToIndex),
-	})
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("扫描完成，开始索引 %d 个新增、更新或缺失索引的知识项", len(itemsToIndex)), "items_to_index": len(itemsToIndex)})
 }
 
 // GetRetrievalLogs 获取检索日志
@@ -489,13 +442,8 @@ func (h *KnowledgeHandler) GetIndexStatus(c *gin.Context) {
 	// 获取索引器的错误信息
 	if h.indexer != nil {
 		lastError, lastErrorTime := h.indexer.GetLastError()
-		if lastError != "" {
-			// 如果错误是最近发生的（5 分钟内），则返回错误信息
-			if time.Since(lastErrorTime) < 5*time.Minute {
-				status["last_error"] = lastError
-				status["last_error_time"] = lastErrorTime.Format(time.RFC3339)
-			}
-		}
+		// Keep a failed operation visible until the indexer clears it for the next run.
+		appendKnowledgeIndexError(status, lastError, lastErrorTime)
 
 		// 获取重建索引状态
 		isRebuilding, totalItems, current, failed, lastItemID, lastChunks, startTime := h.indexer.GetRebuildStatus()
@@ -531,7 +479,7 @@ func (h *KnowledgeHandler) Search(c *gin.Context) {
 		return
 	}
 
-	// Retriever.Search 经 Eino VectorEinoRetriever，与 MCP 工具链一致。
+	// Retriever.Search 经 Agent VectorRetriever，与 MCP 工具链一致。
 	results, err := h.retriever.Search(c.Request.Context(), &req)
 	if err != nil {
 		h.logger.Error("搜索知识库失败", zap.Error(err))
@@ -563,4 +511,12 @@ func parseInt(s string) (int, error) {
 	var result int
 	_, err := fmt.Sscanf(s, "%d", &result)
 	return result, err
+}
+
+func appendKnowledgeIndexError(status map[string]interface{}, message string, occurredAt time.Time) {
+	if message == "" {
+		return
+	}
+	status["last_error"] = message
+	status["last_error_time"] = occurredAt.Format(time.RFC3339)
 }

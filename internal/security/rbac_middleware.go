@@ -102,11 +102,18 @@ func permissionForRequest(method, fullPath string) string {
 			return "rbac:read"
 		}
 		return "rbac:write"
+	case strings.HasPrefix(path, "/system/update"):
+		// Reading the version of the installation is a read. Applying an update replaces the
+		// program that is answering the request, so it is not a flavour of write.
+		if method == http.MethodGet || method == http.MethodHead {
+			return "update:read"
+		}
+		return "update:apply"
 	case strings.HasPrefix(path, "/robot/wechat/status"):
 		return "robot:read"
 	case strings.HasPrefix(path, "/robot"):
 		return "robot:write"
-	case strings.HasPrefix(path, "/eino-agent"), strings.HasPrefix(path, "/multi-agent"):
+	case path == "/agent", strings.HasPrefix(path, "/agent/"), strings.HasPrefix(path, "/eino-agent"), strings.HasPrefix(path, "/multi-agent"):
 		if strings.Contains(path, "/markdown-agents") {
 			return crudPermission(method, "agents")
 		}
@@ -118,10 +125,10 @@ func permissionForRequest(method, fullPath string) string {
 		return "hitl:write"
 	case strings.HasPrefix(path, "/agent-loop"), strings.HasPrefix(path, "/batch-tasks"):
 		return crudPermission(method, "tasks")
+	case path == "/usage/tokens":
+		return "dashboard:read"
 	case strings.HasPrefix(path, "/conversations"), strings.HasPrefix(path, "/messages"), strings.HasPrefix(path, "/process-details"):
 		return crudPermission(method, "chat")
-	case strings.HasPrefix(path, "/groups"):
-		return crudPermission(method, "group")
 	case strings.HasPrefix(path, "/monitor"):
 		return crudPermission(method, "monitor")
 	case strings.HasPrefix(path, "/notifications"):
@@ -129,12 +136,18 @@ func permissionForRequest(method, fullPath string) string {
 			return "notification:read"
 		}
 		return "notification:write"
+	case path == "/tool-guard/test" && method == http.MethodPost:
+		return "config:read"
+	case path == "/tool-guard":
+		return crudPermission(method, "config")
 	case strings.HasPrefix(path, "/config"):
 		return crudPermission(method, "config")
 	case strings.HasPrefix(path, "/tool-guard"):
 		return crudPermission(method, "config")
 	case strings.HasPrefix(path, "/usage/tokens"):
 		return "dashboard:read"
+	case strings.HasPrefix(path, "/storage"):
+		return crudPermission(method, "storage")
 	case strings.HasPrefix(path, "/terminal"):
 		return "terminal:execute"
 	case strings.HasPrefix(path, "/audit"):
@@ -212,6 +225,8 @@ func resourceAllowed(c *gin.Context, db *database.DB) bool {
 	}
 	path := strings.TrimPrefix(c.FullPath(), "/api")
 	switch {
+	case path == "/tool-guard" && isMutationMethod(c.Request.Method):
+		return session.Scope == database.RBACScopeAll
 	case path == "/monitor/stats", path == "/monitor/calls-timeline":
 		// These APIs currently operate on process-global state. Until every MCP
 		// invocation and persisted execution record carries an immutable owner,
@@ -219,7 +234,7 @@ func resourceAllowed(c *gin.Context, db *database.DB) bool {
 		return session.Scope == database.RBACScopeAll
 	case strings.HasPrefix(path, "/c2/profiles") && c.Request.Method != http.MethodGet:
 		return session.Scope == database.RBACScopeAll
-	case (strings.HasPrefix(path, "/hitl/tool-whitelist") || strings.HasPrefix(path, "/hitl/default-reviewer") || strings.HasPrefix(path, "/hitl/audit-strategy")) && c.Request.Method != http.MethodGet:
+	case (strings.HasPrefix(path, "/hitl/tool-whitelist") || strings.HasPrefix(path, "/hitl/default-config") || strings.HasPrefix(path, "/hitl/default-reviewer") || strings.HasPrefix(path, "/hitl/audit-strategy")) && c.Request.Method != http.MethodGet:
 		return session.Scope == database.RBACScopeAll
 	case isMutationMethod(c.Request.Method) && isProcessGlobalMutationPath(path):
 		// These definitions/configurations are shared by every user and do not
@@ -265,6 +280,14 @@ func isMutationMethod(method string) bool {
 }
 
 func isProcessGlobalMutationPath(path string) bool {
+	if path == "/storage/policy" || path == "/storage/cleanup" {
+		return true
+	}
+	if strings.HasPrefix(path, "/system/update") {
+		// One installation, one source tree: an assigned/own-scoped session must not be able to
+		// move the code every other user is running.
+		return true
+	}
 	if strings.HasPrefix(path, "/roles") || strings.HasPrefix(path, "/skills") ||
 		strings.HasPrefix(path, "/tool-guard") ||
 		strings.HasPrefix(path, "/external-mcp") || strings.HasPrefix(path, "/robot") {
@@ -280,7 +303,7 @@ func isProcessGlobalMutationPath(path string) bool {
 	if strings.HasPrefix(path, "/knowledge") {
 		return path != "/knowledge/search"
 	}
-	if strings.HasPrefix(path, "/eino-agent/markdown-agents") || strings.HasPrefix(path, "/multi-agent/markdown-agents") {
+	if strings.HasPrefix(path, "/agent/markdown-agents") || strings.HasPrefix(path, "/multi-agent/markdown-agents") {
 		return true
 	}
 	return false

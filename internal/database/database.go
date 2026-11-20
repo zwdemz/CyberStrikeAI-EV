@@ -15,8 +15,10 @@ import (
 
 const (
 	// SQLite 在 WAL 模式下建议使用较保守的连接数，降低长读快照导致 checkpoint 饥饿的概率。
-	sqliteMaxOpenConns = 25
-	sqliteMaxIdleConns = 5
+	sqliteMaxOpenConns = 8
+	sqliteMaxIdleConns = 4
+	// A waiting writer can use this entire interval before the bounded asset retry.
+	sqliteBusyTimeoutMS = 10000
 	// 以页为单位的自动 checkpoint 触发阈值（默认 1000 页，约 4MB @ 4KB/page）。
 	sqliteWALAutoCheckpointPages = 1000
 	// 控制 WAL 目标上限，避免异常场景持续膨胀（256MB）。
@@ -24,6 +26,13 @@ const (
 	// 定时执行 PASSIVE checkpoint，平滑推进 WAL 回收。
 	sqlitePassiveCheckpointInterval = 300 * time.Second
 )
+
+func sqliteOpenDSN(path string) string {
+	// Reserve the writer at Begin, before read-modify-write transactions take a
+	// snapshot. DEFERRED upgrades may fail immediately without busy_timeout.
+	// EV retains its bounded asset retry and ten-second per-wait budget.
+	return fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=%d&_synchronous=NORMAL&_txlock=immediate", path, sqliteBusyTimeoutMS)
+}
 
 // configureDBPool 设置 SQLite 连接池参数，提升并发稳定性
 func configureDBPool(db *sql.DB) {
@@ -49,16 +58,20 @@ type DB struct {
 	*sql.DB
 	logger                   *zap.Logger
 	conversationArtifactsDir string
-	einoPlantaskBaseDir      string // skills_dir + plantask_rel_dir (per-conversation subdirs)
-	einoCheckpointBaseDir    string // checkpoint_dir root (per-conversation subdirs)
-	einoReductionRootDir     string // reduction_root_dir or default tmp/reduction (conversations/<id> subdirs)
-	einoWorkspaceRootDir     string // workspace_root_dir or default tmp/workspace (projects|conversations/<id> subdirs)
+	agentPlantaskBaseDir     string // skills_dir + plantask_rel_dir (per-conversation subdirs)
+	agentCheckpointBaseDir   string // checkpoint_dir root (per-conversation subdirs)
+	agentReductionRootDir    string // reduction_root_dir or default tmp/reduction (conversations/<id> subdirs)
+	agentWorkspaceRootDir    string // workspace_root_dir or default tmp/workspace (projects|conversations/<id> subdirs)
+	chatUploadsDir           string // chat_uploads root (<date>/<conversationID> subdirs)
 	checkpointLoopName       string
 	checkpointStop           chan struct{}
 	checkpointDone           chan struct{}
 	closeOnce                sync.Once
 	closeErr                 error
 	vulnerabilityCreatedHook func(*Vulnerability)
+	planIndexMu              sync.Mutex
+	planIndex                *planTaskIndex
+	planIndexClosed          bool
 }
 
 // startPassiveCheckpointLoop 启动后台 PASSIVE checkpoint 循环。
@@ -122,7 +135,7 @@ func (db *DB) runPassiveCheckpoint(trigger string) {
 
 // NewDB 创建数据库连接
 func NewDB(dbPath string, logger *zap.Logger) (*DB, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=5000&_synchronous=NORMAL")
+	db, err := sql.Open("sqlite3", sqliteOpenDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
@@ -155,27 +168,53 @@ func NewDB(dbPath string, logger *zap.Logger) (*DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("初始化表失败: %w", err)
 	}
+	if err := database.initPlanTaskEvidenceTable(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize task evidence: %w", err)
+	}
+	if err := database.initAgentRuns(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := database.migrateLegacyToolGuardBlocks(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("迁移历史安全拦截记录失败: %w", err)
+	}
 	database.startPassiveCheckpointLoop("conversations")
 
 	return database, nil
 }
 
-// SetEinoConversationDirs configures best-effort filesystem cleanup on DeleteConversation.
+// SetAgentConversationDirs configures best-effort filesystem cleanup on DeleteConversation.
 // plantaskBase is skills_root/plantask_rel (no conversation id); checkpointBase is checkpoint_dir root.
 // reductionRoot is reduction_root_dir from config; empty uses tmp/reduction (conversation-scoped subdirs only).
 // workspaceRoot is agent.workspace_root_dir from config; empty uses tmp/workspace.
-func (db *DB) SetEinoConversationDirs(plantaskBase, checkpointBase, reductionRoot, workspaceRoot string) {
+func (db *DB) SetAgentConversationDirs(plantaskBase, checkpointBase, reductionRoot, workspaceRoot string) {
 	if db == nil {
 		return
 	}
-	db.einoPlantaskBaseDir = strings.TrimSpace(plantaskBase)
-	db.einoCheckpointBaseDir = strings.TrimSpace(checkpointBase)
-	db.einoReductionRootDir = strings.TrimSpace(reductionRoot)
-	db.einoWorkspaceRootDir = strings.TrimSpace(workspaceRoot)
+	db.agentPlantaskBaseDir = strings.TrimSpace(plantaskBase)
+	db.agentCheckpointBaseDir = strings.TrimSpace(checkpointBase)
+	db.agentReductionRootDir = strings.TrimSpace(reductionRoot)
+	db.agentWorkspaceRootDir = strings.TrimSpace(workspaceRoot)
+}
+
+// SetChatUploadsDir configures the chat_uploads root so DeleteConversation can remove
+// uploaded attachment files. Their chat_upload_artifacts rows already disappear via
+// ON DELETE CASCADE; without this the files themselves would linger forever.
+func (db *DB) SetChatUploadsDir(dir string) {
+	if db == nil {
+		return
+	}
+	db.chatUploadsDir = strings.TrimSpace(dir)
 }
 
 // initTables 初始化数据库表
 func (db *DB) initTables() error {
+	if err := db.reconcileSchema(applicationSchema); err != nil {
+		return err
+	}
+
 	// 创建对话表（last_react_input / last_react_output 存「代理消息轨迹」JSON 与助手摘要，列名保留以兼容已有库）
 	createConversationsTable := `
 	CREATE TABLE IF NOT EXISTS conversations (
@@ -216,7 +255,7 @@ func (db *DB) initTables() error {
 		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 	);`
 
-	// 结构化记录模型 Token 用量；过程详情仍作为完整时间线保留。
+	// 创建模型 Token 用量表：process_details 负责时间线回放，本表负责结构化聚合统计。
 	createModelTokenUsageTable := `
 	CREATE TABLE IF NOT EXISTS model_token_usage (
 		id TEXT PRIMARY KEY,
@@ -327,29 +366,6 @@ func (db *DB) initTables() error {
 		created_at DATETIME NOT NULL,
 		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL,
 		FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
-	);`
-
-	// 创建对话分组表
-	createConversationGroupsTable := `
-	CREATE TABLE IF NOT EXISTS conversation_groups (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		icon TEXT,
-		owner_user_id TEXT,
-		created_at DATETIME NOT NULL,
-		updated_at DATETIME NOT NULL
-	);`
-
-	// 创建对话分组映射表
-	createConversationGroupMappingsTable := `
-	CREATE TABLE IF NOT EXISTS conversation_group_mappings (
-		id TEXT PRIMARY KEY,
-		conversation_id TEXT NOT NULL,
-		group_id TEXT NOT NULL,
-		created_at DATETIME NOT NULL,
-		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-		FOREIGN KEY (group_id) REFERENCES conversation_groups(id) ON DELETE CASCADE,
-		UNIQUE(conversation_id, group_id)
 	);`
 
 	// 机器人会话绑定表（用于跨重启保持「平台+租户+用户」到 conversation 的映射）
@@ -487,6 +503,7 @@ func (db *DB) initTables() error {
 		title TEXT,
 		role TEXT,
 		agent_mode TEXT NOT NULL DEFAULT 'eino_single',
+		hitl_policy TEXT NOT NULL DEFAULT '',
 		schedule_mode TEXT NOT NULL DEFAULT 'manual',
 		cron_expr TEXT,
 		next_run_at DATETIME,
@@ -742,9 +759,11 @@ func (db *DB) initTables() error {
 	// 创建索引
 	createIndexes := `
 	CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+	CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_process_details_message_id ON process_details(message_id);
 	CREATE INDEX IF NOT EXISTS idx_process_details_conversation_id ON process_details(conversation_id);
+	CREATE INDEX IF NOT EXISTS idx_process_details_conversation_event_time ON process_details(conversation_id, event_type, created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_model_token_usage_created_at ON model_token_usage(created_at);
 	CREATE INDEX IF NOT EXISTS idx_model_token_usage_conversation ON model_token_usage(conversation_id);
 	CREATE INDEX IF NOT EXISTS idx_model_token_usage_project ON model_token_usage(project_id);
@@ -759,8 +778,6 @@ func (db *DB) initTables() error {
 	CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_logs_conversation ON knowledge_retrieval_logs(conversation_id);
 	CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_logs_message ON knowledge_retrieval_logs(message_id);
 	CREATE INDEX IF NOT EXISTS idx_knowledge_retrieval_logs_created_at ON knowledge_retrieval_logs(created_at);
-	CREATE INDEX IF NOT EXISTS idx_conversation_group_mappings_conversation ON conversation_group_mappings(conversation_id);
-	CREATE INDEX IF NOT EXISTS idx_conversation_group_mappings_group ON conversation_group_mappings(group_id);
 	CREATE INDEX IF NOT EXISTS idx_robot_user_sessions_updated_at ON robot_user_sessions(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_conversations_pinned ON conversations(pinned);
 	CREATE INDEX IF NOT EXISTS idx_vulnerabilities_conversation_id ON vulnerabilities(conversation_id);
@@ -835,6 +852,7 @@ func (db *DB) initTables() error {
 	if _, err := db.Exec(createProcessDetailsTable); err != nil {
 		return fmt.Errorf("创建process_details表失败: %w", err)
 	}
+
 	if _, err := db.Exec(createModelTokenUsageTable); err != nil {
 		return fmt.Errorf("创建model_token_usage表失败: %w", err)
 	}
@@ -863,13 +881,6 @@ func (db *DB) initTables() error {
 		return fmt.Errorf("创建knowledge_retrieval_logs表失败: %w", err)
 	}
 
-	if _, err := db.Exec(createConversationGroupsTable); err != nil {
-		return fmt.Errorf("创建conversation_groups表失败: %w", err)
-	}
-
-	if _, err := db.Exec(createConversationGroupMappingsTable); err != nil {
-		return fmt.Errorf("创建conversation_group_mappings表失败: %w", err)
-	}
 	if _, err := db.Exec(createRobotUserSessionsTable); err != nil {
 		return fmt.Errorf("创建robot_user_sessions表失败: %w", err)
 	}
@@ -944,10 +955,16 @@ func (db *DB) initTables() error {
 	for tableName, ddl := range map[string]string{
 		"c2_listeners": createC2ListenersTable,
 		"c2_sessions":  createC2SessionsTable,
-		"c2_tasks":     createC2TasksTable,
-		"c2_files":     createC2FilesTable,
-		"c2_events":    createC2EventsTable,
-		"c2_profiles":  createC2ProfilesTable,
+		"c2_http_session_auth": `CREATE TABLE IF NOT EXISTS c2_http_session_auth (
+          implant_uuid TEXT PRIMARY KEY,
+          listener_id TEXT NOT NULL,
+          token_hash TEXT NOT NULL,
+          FOREIGN KEY (listener_id) REFERENCES c2_listeners(id) ON DELETE CASCADE
+        );`,
+		"c2_tasks":    createC2TasksTable,
+		"c2_files":    createC2FilesTable,
+		"c2_events":   createC2EventsTable,
+		"c2_profiles": createC2ProfilesTable,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			return fmt.Errorf("创建%s表失败: %w", tableName, err)
@@ -962,16 +979,6 @@ func (db *DB) initTables() error {
 
 	if err := db.migrateMessagesTable(); err != nil {
 		db.logger.Warn("迁移messages表失败", zap.Error(err))
-		// 不返回错误，允许继续运行
-	}
-
-	if err := db.migrateConversationGroupsTable(); err != nil {
-		db.logger.Warn("迁移conversation_groups表失败", zap.Error(err))
-		// 不返回错误，允许继续运行
-	}
-
-	if err := db.migrateConversationGroupMappingsTable(); err != nil {
-		db.logger.Warn("迁移conversation_group_mappings表失败", zap.Error(err))
 		// 不返回错误，允许继续运行
 	}
 
@@ -1013,6 +1020,16 @@ func (db *DB) initTables() error {
 
 	if _, err := db.Exec(createIndexes); err != nil {
 		return fmt.Errorf("创建索引失败: %w", err)
+	}
+
+	if err := db.migrateVulnerabilityAssessment(); err != nil {
+		return err
+	}
+	if err := db.migrateVulnerabilityDedup(); err != nil {
+		return fmt.Errorf("initialize vulnerability deduplication: %w", err)
+	}
+	if err := db.backfillVulnerabilityTargets(); err != nil {
+		return fmt.Errorf("回填漏洞目标失败: %w", err)
 	}
 	if err := db.BackfillModelTokenUsageFromProcessDetails(); err != nil {
 		return fmt.Errorf("回填模型Token用量失败: %w", err)
@@ -1235,54 +1252,6 @@ func (db *DB) migrateConversationsTable() error {
 	return nil
 }
 
-// migrateConversationGroupsTable 迁移conversation_groups表，添加新字段
-func (db *DB) migrateConversationGroupsTable() error {
-	// 检查pinned字段是否存在
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('conversation_groups') WHERE name='pinned'").Scan(&count)
-	if err != nil {
-		// 如果查询失败，尝试添加字段
-		if _, addErr := db.Exec("ALTER TABLE conversation_groups ADD COLUMN pinned INTEGER DEFAULT 0"); addErr != nil {
-			// 如果字段已存在，忽略错误
-			errMsg := strings.ToLower(addErr.Error())
-			if !strings.Contains(errMsg, "duplicate column") && !strings.Contains(errMsg, "already exists") {
-				db.logger.Warn("添加pinned字段失败", zap.Error(addErr))
-			}
-		}
-	} else if count == 0 {
-		// 字段不存在，添加它
-		if _, err := db.Exec("ALTER TABLE conversation_groups ADD COLUMN pinned INTEGER DEFAULT 0"); err != nil {
-			db.logger.Warn("添加pinned字段失败", zap.Error(err))
-		}
-	}
-
-	return nil
-}
-
-// migrateConversationGroupMappingsTable 迁移conversation_group_mappings表，添加新字段
-func (db *DB) migrateConversationGroupMappingsTable() error {
-	// 检查pinned字段是否存在
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('conversation_group_mappings') WHERE name='pinned'").Scan(&count)
-	if err != nil {
-		// 如果查询失败，尝试添加字段
-		if _, addErr := db.Exec("ALTER TABLE conversation_group_mappings ADD COLUMN pinned INTEGER DEFAULT 0"); addErr != nil {
-			// 如果字段已存在，忽略错误
-			errMsg := strings.ToLower(addErr.Error())
-			if !strings.Contains(errMsg, "duplicate column") && !strings.Contains(errMsg, "already exists") {
-				db.logger.Warn("添加pinned字段失败", zap.Error(addErr))
-			}
-		}
-	} else if count == 0 {
-		// 字段不存在，添加它
-		if _, err := db.Exec("ALTER TABLE conversation_group_mappings ADD COLUMN pinned INTEGER DEFAULT 0"); err != nil {
-			db.logger.Warn("添加pinned字段失败", zap.Error(err))
-		}
-	}
-
-	return nil
-}
-
 // migrateBatchTaskQueuesTable 迁移batch_task_queues表，补充新字段
 func (db *DB) migrateBatchTaskQueuesTable() error {
 	// 检查title字段是否存在
@@ -1463,6 +1432,16 @@ func (db *DB) migrateBatchTaskQueuesTable() error {
 		}
 	}
 
+	var hitlPolicyCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('batch_task_queues') WHERE name='hitl_policy'").Scan(&hitlPolicyCount); err != nil {
+		return fmt.Errorf("检查队列审批字段失败: %w", err)
+	}
+	if hitlPolicyCount == 0 {
+		if _, err := db.Exec("ALTER TABLE batch_task_queues ADD COLUMN hitl_policy TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("添加队列审批字段失败: %w", err)
+		}
+	}
+
 	var concurrencyCount int
 	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('batch_task_queues') WHERE name='concurrency'").Scan(&concurrencyCount)
 	if err != nil {
@@ -1515,122 +1494,6 @@ func (db *DB) migrateProjectsTable() error {
 func (db *DB) dropProjectFactVersionsTable() error {
 	_, err := db.Exec(`DROP TABLE IF EXISTS project_fact_versions`)
 	return err
-}
-
-// migrateVulnerabilitiesConversationFK 将 vulnerabilities.conversation_id 外键改为 ON DELETE SET NULL，删除对话时保留漏洞记录。
-func (db *DB) migrateVulnerabilitiesConversationFK() error {
-	ok, err := vulnerabilitiesConversationFKOnDeleteSetNull(db.DB)
-	if err != nil {
-		return err
-	}
-	if ok {
-		return nil
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	const createNew = `
-	CREATE TABLE vulnerabilities_new (
-		id TEXT PRIMARY KEY,
-		conversation_id TEXT,
-		conversation_tag TEXT,
-		task_tag TEXT,
-		title TEXT NOT NULL,
-		description TEXT,
-		severity TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'open',
-		vulnerability_type TEXT,
-		target TEXT,
-		preconditions TEXT,
-		reproduction_steps TEXT,
-		evidence TEXT,
-		impact TEXT,
-		recommendation TEXT,
-		retest_notes TEXT,
-		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		project_id TEXT,
-		FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
-	);`
-	if _, err := tx.Exec(createNew); err != nil {
-		return fmt.Errorf("创建 vulnerabilities_new 失败: %w", err)
-	}
-
-	const copyRows = `
-	INSERT INTO vulnerabilities_new (
-		id, conversation_id, conversation_tag, task_tag, title, description,
-		severity, status, vulnerability_type, target, preconditions, reproduction_steps,
-		evidence, impact, recommendation, retest_notes,
-		created_at, updated_at, project_id
-	)
-	SELECT
-		id, conversation_id, conversation_tag, task_tag, title, description,
-		severity, status, vulnerability_type, target,
-		COALESCE(preconditions, ''), COALESCE(reproduction_steps, ''),
-		COALESCE(evidence, ''), impact, recommendation, COALESCE(retest_notes, ''),
-		created_at, updated_at, project_id
-	FROM vulnerabilities;`
-	if _, err := tx.Exec(copyRows); err != nil {
-		return fmt.Errorf("复制 vulnerabilities 数据失败: %w", err)
-	}
-	if _, err := tx.Exec(`DROP TABLE vulnerabilities`); err != nil {
-		return fmt.Errorf("删除旧 vulnerabilities 表失败: %w", err)
-	}
-	if _, err := tx.Exec(`ALTER TABLE vulnerabilities_new RENAME TO vulnerabilities`); err != nil {
-		return fmt.Errorf("重命名 vulnerabilities 表失败: %w", err)
-	}
-
-	indexes := []string{
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_conversation_id ON vulnerabilities(conversation_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_conversation_tag ON vulnerabilities(conversation_tag)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_task_tag ON vulnerabilities(task_tag)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(severity)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_status ON vulnerabilities(status)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_created_at ON vulnerabilities(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_vulnerabilities_project_id ON vulnerabilities(project_id)`,
-	}
-	for _, stmt := range indexes {
-		if _, err := tx.Exec(stmt); err != nil {
-			return fmt.Errorf("重建 vulnerabilities 索引失败: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交 vulnerabilities 外键迁移失败: %w", err)
-	}
-	db.logger.Info("vulnerabilities 表已迁移：删除对话时保留漏洞记录")
-	return nil
-}
-
-func vulnerabilitiesConversationFKOnDeleteSetNull(db *sql.DB) (bool, error) {
-	rows, err := db.Query(`PRAGMA foreign_key_list(vulnerabilities)`)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-
-	found := false
-	for rows.Next() {
-		var id, seq int
-		var table, from, to, onUpdate, onDelete, match string
-		if err := rows.Scan(&id, &seq, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
-			return false, err
-		}
-		if from == "conversation_id" {
-			found = true
-			if !strings.EqualFold(onDelete, "SET NULL") {
-				return false, nil
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	return found, nil
 }
 
 // migrateVulnerabilitiesTable 迁移 vulnerabilities 表，补充标签字段
@@ -1707,7 +1570,7 @@ func (db *DB) migrateC2ListenersTable() error {
 
 // NewKnowledgeDB 创建知识库数据库连接（只包含知识库相关的表）
 func NewKnowledgeDB(dbPath string, logger *zap.Logger) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=1&_busy_timeout=5000&_synchronous=NORMAL")
+	sqlDB, err := sql.Open("sqlite3", sqliteOpenDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("打开知识库数据库失败: %w", err)
 	}
@@ -1740,6 +1603,10 @@ func NewKnowledgeDB(dbPath string, logger *zap.Logger) (*DB, error) {
 
 // initKnowledgeTables 初始化知识库数据库表（只包含知识库相关的表）
 func (db *DB) initKnowledgeTables() error {
+	if err := db.reconcileSchema(knowledgeSchema); err != nil {
+		return err
+	}
+
 	// 创建知识库项表
 	createKnowledgeBaseItemsTable := `
 	CREATE TABLE IF NOT EXISTS knowledge_base_items (
@@ -1851,6 +1718,13 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closeOnce.Do(func() {
+		db.planIndexMu.Lock()
+		db.planIndexClosed = true
+		index := db.planIndex
+		db.planIndexMu.Unlock()
+		if index != nil {
+			index.close()
+		}
 		if db.checkpointStop != nil {
 			close(db.checkpointStop)
 			if db.checkpointDone != nil {

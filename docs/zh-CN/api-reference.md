@@ -38,8 +38,8 @@ Content-Type: application/json
 
 单代理：
 
-- `POST /api/eino-agent`
-- `POST /api/eino-agent/stream`
+- `POST /api/agent`
+- `POST /api/agent/stream`
 
 多代理：
 
@@ -354,7 +354,7 @@ C2：
 
 ## SSE 客户端注意事项
 
-`/api/eino-agent/stream` 和 `/api/multi-agent/stream` 是长连接。客户端应处理：
+`/api/agent/stream` 和 `/api/multi-agent/stream` 是长连接。客户端应处理：
 
 - 网络中断后不要盲目重放破坏性请求。
 - 收到 `error` 事件后读取错误正文。
@@ -367,7 +367,7 @@ C2：
 | API 类型 | 稳定性 | 集成建议 |
 | --- | --- | --- |
 | `/api/auth/*` | 高 | 可直接集成 |
-| `/api/eino-agent*` | 高 | 推荐外部对话入口 |
+| `/api/agent*` | 高 | 推荐外部对话入口 |
 | `/api/openapi/spec` | 高 | 用于生成客户端 |
 | `/api/assets/*` | 高 | 资产管理与批量导入 |
 | `/api/config*` | 中 | 管理工具使用，谨慎自动化 |
@@ -386,7 +386,7 @@ curl -k https://127.0.0.1:8080/api/conversations \
 发送非流式单代理请求：
 
 ```bash
-curl -k https://127.0.0.1:8080/api/eino-agent \
+curl -k https://127.0.0.1:8080/api/agent \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"message":"对 127.0.0.1 做授权的基础信息收集，先不要执行高风险操作"}'
@@ -397,7 +397,16 @@ curl -k https://127.0.0.1:8080/api/eino-agent \
 - 路由：`internal/app/app.go`
 - 认证：`internal/security/auth_middleware.go`
 - OpenAPI：`internal/handler/openapi.go`
-- 单代理：`internal/handler/eino_single_agent.go`
+- 单代理：`internal/handler/single_agent.go`
 - 多代理：`internal/handler/multi_agent.go`
 - 资产接口：`internal/handler/asset.go`
 - 资产存储与去重：`internal/database/asset.go`
+
+## 删除与空列表响应约定
+
+请求通过认证、权限检查且模块可用时：
+
+- `DELETE /api/c2/profiles/:id` 和 `DELETE /api/webshell/connections/:id` 对不存在或已删除的对象返回 `404`，分别使用 `profile not found` 和 `connection not found` 错误文案。真正的数据库失败返回 `500` 与通用错误文案，底层 SQL 错误仅记录在服务日志。
+- `GET /api/vulnerabilities` 与 `GET /api/batch-tasks` 成功查询但无匹配记录时返回 `200`；集合字段分别为 `"vulnerabilities": []` 和 `"queues": []`，正常计数为 `"total": 0`。
+
+客户端可按 HTTP 状态区分调用失败和成功的空结果；这两个列表的空集合由 `null` 调整为 `[]`。

@@ -823,7 +823,7 @@
 
     C2.init = function() {
         const pageId = window.currentPageId || '';
-        
+
         if (pageId.startsWith('c2')) {
             C2.connectEventStream();
         }
@@ -1035,11 +1035,11 @@
             <div class="c2-modal-body">
                 <div class="c2-form-row">
                     <div class="c2-form-group">
-                        <label>${escapeHtml(c2t('c2.listeners.name'))}</label>
+                        <label>${escapeHtml(c2t('c2.listeners.name'))} <span aria-hidden="true">*</span></label>
                         <input type="text" id="c2-listener-name" class="form-control" placeholder="${escapeAttr(c2t('c2.listeners.placeholderNameExample'))}">
                     </div>
                     <div class="c2-form-group">
-                        <label>${escapeHtml(c2t('c2.listeners.type'))}</label>
+                        <label>${escapeHtml(c2t('c2.listeners.type'))} <span aria-hidden="true">*</span></label>
                         <select id="c2-listener-type" class="form-control c2-form-select-native">
                             <option value="http_beacon">HTTP Beacon</option>
                             <option value="https_beacon">HTTPS Beacon</option>
@@ -1059,7 +1059,7 @@
                         <div class="form-hint">${escapeHtml(c2t('c2.listeners.bindHintExternal'))}</div>
                     </div>
                     <div class="c2-form-group">
-                        <label>${escapeHtml(c2t('c2.listeners.bindPort'))}</label>
+                        <label>${escapeHtml(c2t('c2.listeners.bindPort'))} <span aria-hidden="true">*</span></label>
                         <input type="number" id="c2-listener-port" class="form-control" placeholder="8443">
                     </div>
                 </div>
@@ -1121,18 +1121,38 @@
         syncC2FormSelect('c2-listener-profile-id');
     };
 
+    function validateListenerForm(creating) {
+        const checks = [
+            ['c2-listener-name', 'c2.listeners.nameRequired', value => !!value.trim()],
+            ...(creating ? [['c2-listener-type', 'c2.listeners.typeRequired', value => !!value]] : []),
+            ['c2-listener-port', 'c2.listeners.portInvalid', value => /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535]
+        ];
+        let firstInvalid;
+        checks.forEach(([id, key, valid]) => {
+            const input = document.getElementById(id);
+            if (!input) return;
+            const invalid = !valid(String(input.value || ''));
+            input.setAttribute('aria-invalid', String(invalid));
+            input.setCustomValidity?.(invalid ? c2t(key) : '');
+            if (invalid && !firstInvalid) firstInvalid = { input, key };
+        });
+        if (firstInvalid) {
+            showToast(c2t(firstInvalid.key), 'error');
+            firstInvalid.input.focus();
+            firstInvalid.input.reportValidity?.();
+            return false;
+        }
+        return true;
+    }
+
     C2.createListener = function() {
+        if (!validateListenerForm(true)) return;
         const name = document.getElementById('c2-listener-name')?.value.trim();
         const type = document.getElementById('c2-listener-type')?.value;
         const bindHost = document.getElementById('c2-listener-host')?.value || '127.0.0.1';
         const bindPort = parseInt(document.getElementById('c2-listener-port')?.value);
         const callbackHost = document.getElementById('c2-listener-callback-host')?.value?.trim() || '';
         const remark = document.getElementById('c2-listener-remark')?.value;
-
-        if (!name || !type || !bindPort) {
-            showToast(c2t('c2.listeners.toastFillRequired'), 'error');
-            return;
-        }
 
         const profileId = (document.getElementById('c2-listener-profile-id')?.value || '').trim();
         const legacyShell = document.getElementById('c2-listener-legacy-shell')?.checked === true;
@@ -1146,7 +1166,7 @@
             body.config = { allow_legacy_shell: true };
         }
 
-        apiRequest('POST', `${API_BASE}/listeners`, body).then(data => {
+        return apiRequest('POST', `${API_BASE}/listeners`, body).then(data => {
             if (data.error) {
                 showToast(data.error, 'error');
             } else {
@@ -1154,7 +1174,7 @@
                 C2.closeModal();
                 C2.loadListeners();
             }
-        });
+        }).catch(error => showToast(error.message || c2t('c2.listeners.saveFailed'), 'error'));
     };
 
     C2.startListener = function(id) {
@@ -1263,7 +1283,7 @@
             </div>
             <div class="c2-modal-body">
                 <div class="c2-form-group">
-                    <label>${escapeHtml(c2t('c2.listeners.name'))}</label>
+                    <label>${escapeHtml(c2t('c2.listeners.name'))} <span aria-hidden="true">*</span></label>
                     <input type="text" id="c2-listener-name" class="form-control" value="${escapeAttr(l.name)}">
                 </div>
                 <div class="c2-form-group">
@@ -1276,7 +1296,7 @@
                         <input type="text" id="c2-listener-host" class="form-control" value="${escapeAttr(String(l.bindHost))}">
                     </div>
                     <div class="c2-form-group">
-                        <label>${escapeHtml(c2t('c2.listeners.bindPort'))}</label>
+                        <label>${escapeHtml(c2t('c2.listeners.bindPort'))} <span aria-hidden="true">*</span></label>
                         <input type="number" id="c2-listener-port" class="form-control" value="${l.bindPort}">
                     </div>
                 </div>
@@ -1317,6 +1337,7 @@
     };
 
     C2.saveListener = function(id) {
+        if (!validateListenerForm(false)) return;
         const name = document.getElementById('c2-listener-name')?.value.trim();
         const bindHost = document.getElementById('c2-listener-host')?.value;
         const bindPort = parseInt(document.getElementById('c2-listener-port')?.value);
@@ -1339,14 +1360,14 @@
             body.config = merged;
         }
 
-        apiRequest('PUT', `${API_BASE}/listeners/${id}`, body).then(data => {
+        return apiRequest('PUT', `${API_BASE}/listeners/${id}`, body).then(data => {
             if (data.error) showToast(data.error, 'error');
             else {
                 showToast(c2t('c2.listeners.toastUpdated'), 'success');
                 C2.closeModal();
                 C2.loadListeners();
             }
-        });
+        }).catch(error => showToast(error.message || c2t('c2.listeners.saveFailed'), 'error'));
     };
 
     // ============================================================================
@@ -1524,7 +1545,7 @@
             const userEmpty = isEmptyInfoValue(s.username);
             const osEmpty = isEmptyInfoValue(s.os) && isEmptyInfoValue(s.arch);
             return `
-            <div class="c2-session-item ${s.id === C2.selectedSessionId ? 'active' : ''}" 
+            <div class="c2-session-item ${s.id === C2.selectedSessionId ? 'active' : ''}"
                  data-status="${escapeAttr(s.status || '')}"
                  data-c2-action="session-select"
                  data-c2-id="${escapeAttr(s.id)}"
@@ -1625,14 +1646,14 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="c2-session-tabs c2-session-tabs--pills">
                     <button type="button" class="c2-session-tab${tabCls('terminal')}" data-tab="terminal" onclick="C2.switchTab('terminal')">${escapeHtml(c2t('c2.sessions.terminal'))}</button>
                     <button type="button" class="c2-session-tab${tabCls('files')}" data-tab="files" onclick="C2.switchTab('files')">${escapeHtml(c2t('c2.sessions.files'))}</button>
                     <button type="button" class="c2-session-tab${tabCls('tasks')}" data-tab="tasks" onclick="C2.switchTab('tasks')">${escapeHtml(c2t('c2.sessions.tasks'))}</button>
                     <button type="button" class="c2-session-tab${tabCls('info')}" data-tab="info" onclick="C2.switchTab('info')">${escapeHtml(c2t('c2.sessions.info'))}</button>
                 </div>
-                
+
                 <div class="c2-session-tab-content">
                     <div id="c2-tab-terminal" class="c2-tab-panel${panelCls('terminal')}" style="${panelDisplay('terminal')}">
                         <div id="c2-terminal-container" class="c2-terminal-container"></div>
@@ -2782,7 +2803,7 @@
 
         const container = document.getElementById('c2-file-list');
         const breadcrumb = document.getElementById('c2-current-path');
-        
+
         if (container) container.innerHTML = '<div class="c2-loading">' + escapeHtml(c2t('c2.files.loading')) + '</div>';
 
         apiRequest('POST', `${API_BASE}/tasks`, {
@@ -3235,6 +3256,7 @@
         const totalPages = Math.max(1, Math.ceil(total / pageSize));
         if (total === 0) {
             paginationContainer.innerHTML = '';
+            if (typeof initPaginationSelects === 'function') initPaginationSelects(paginationContainer);
             return;
         }
         const start = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
@@ -3263,6 +3285,7 @@
         `;
         html += '</div>';
         paginationContainer.innerHTML = html;
+        if (typeof initPaginationSelects === 'function') initPaginationSelects(paginationContainer);
         if (typeof applyTranslations === 'function') applyTranslations(paginationContainer);
     };
 
@@ -3428,7 +3451,7 @@
             if (typeof data.pending_queued_count === 'number') {
                 C2.tasksPendingQueuedCount = data.pending_queued_count;
             }
-            
+
             if (!container) return;
 
             const refreshBtn = escapeHtml(c2t('c2.tasks.refresh'));
@@ -3451,7 +3474,7 @@
                     </div>`;
                 return;
             }
-            
+
             container.innerHTML = `
                 <div class="c2-session-tasks-panel">
                     <div class="c2-session-tasks-toolbar">
@@ -4173,6 +4196,7 @@
 
         if (total === 0) {
             paginationContainer.innerHTML = '';
+            if (typeof initPaginationSelects === 'function') initPaginationSelects(paginationContainer);
             return;
         }
 
@@ -4203,6 +4227,7 @@
         `;
         html += '</div>';
         paginationContainer.innerHTML = html;
+        if (typeof initPaginationSelects === 'function') initPaginationSelects(paginationContainer);
         if (typeof applyTranslations === 'function') applyTranslations(paginationContainer);
     };
 
@@ -4514,8 +4539,12 @@
         const userAgent = document.getElementById('c2-profile-ua')?.value.trim() || '';
         const urisRaw = document.getElementById('c2-profile-uris')?.value.trim() || '';
         const uris = urisRaw.split('\n').map(u => u.trim()).filter(u => u);
-        const jitterMinMs = parseInt(document.getElementById('c2-profile-jmin')?.value) || 100;
-        const jitterMaxMs = parseInt(document.getElementById('c2-profile-jmax')?.value) || 500;
+        const jitterMinMs = Number(document.getElementById('c2-profile-jmin')?.value);
+        const jitterMaxMs = Number(document.getElementById('c2-profile-jmax')?.value);
+        if (!Number.isSafeInteger(jitterMinMs) || !Number.isSafeInteger(jitterMaxMs) || jitterMinMs < 0 || jitterMaxMs < jitterMinMs) {
+            showToast(c2t('c2.profiles.toastInvalidJitter'), 'error');
+            return;
+        }
 
         let responseHeaders = {};
         const headersRaw = document.getElementById('c2-profile-headers')?.value.trim();
@@ -4526,11 +4555,11 @@
 
         apiRequest('POST', `${API_BASE}/profiles`, {
             name,
-            user_agent: userAgent,
+            userAgent,
             uris,
-            jitter_min_ms: jitterMinMs,
-            jitter_max_ms: jitterMaxMs,
-            response_headers: responseHeaders
+            jitterMinMs,
+            jitterMaxMs,
+            responseHeaders
         }).then(data => {
             if (data.error) {
                 showToast(data.error, 'error');

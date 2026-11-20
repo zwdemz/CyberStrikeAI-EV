@@ -3,8 +3,10 @@ command: "sh"
 args: ["-c"]
 enabled: true
 # 简短描述（用于工具列表，减少token消耗）
+
 short_description: "系统命令执行工具，用于执行Shell命令和系统操作（谨慎使用）"
 # 工具详细描述
+
 description: |
   系统命令执行工具，用于执行Shell命令和系统操作。
 
@@ -27,6 +29,7 @@ description: |
   - ⚠️ 建议限制可执行的命令范围
   - ⚠️ 不要执行不可信的命令
 # 参数定义
+
 parameters:
   - name: "command"
     type: "string"

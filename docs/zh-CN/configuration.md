@@ -27,7 +27,11 @@ log:
 - Chromium 浏览器插件的合法 `chrome-extension://<32位插件ID>` Origin 会被自动识别，无需配置。插件仍需按域授权，并使用密码登录与 Bearer Token 调用 API。
 - `server.cors_allowed_origins`：仅供其他可信 Web 集成使用的额外 Origin 精确白名单；不支持 `*`，修改后需重启服务。
 - `auth.session_duration_hours`：登录会话有效期（小时）。登录密码由 RBAC 用户管理，首次启动时在控制台输出 `admin` 初始密码。
-- `log.output`：可以是 `stdout`、`stderr` 或文件路径。
+- `log.output`：可以是 `stdout`、`stderr` 或文件路径，由 `log.level` 控制级别。
+- 额外诊断日志默认开启，仅记录 `warn` 及以上（包括重试、连接异常和错误），独立于 `log.level`，不保存普通 `info` / `debug` 日志。保留原有结构化字段、时间、代码位置和 Error 及以上堆栈，不额外采集请求正文或工具输出。
+- `log.diagnostic_dir`：默认 `log`，相对于进程工作目录，文件名为 `diagnostic-YYYY-MM-DD.log`（JSON Lines，按服务器本地日期拆分）。只有出现诊断日志时才创建目录和文件；跨天后首次写入切换文件。
+- `log.diagnostic_retention_days`：默认 14 天（含当天）；省略或小于等于 0 时使用默认值。每天首次写入时清理此目录内过期的 `diagnostic-日期.log`，不删除其他文件；没有新诊断日志时不执行清理。
+- `log.diagnostic_disabled: true`：关闭额外诊断落盘。以上日志配置修改后需重启；目录无法写入时保留原输出，并由 Zap 向 stderr 报告写入失败。
 
 ## AI 通道与模型配置
 
@@ -65,11 +69,35 @@ ai:
 | `ai.default_channel` | 默认通道 ID。新对话、机器人、批量任务和未显式选择通道的请求使用它。 |
 | `ai.channels.<id>` | 通道配置。ID 会归一化为小写、数字和短横线，例如 `Qwen_Max` 会变成 `qwen-max`。 |
 | `name` | Web UI 展示名。留空时使用通道 ID。 |
-| `provider` | `openai_compatible` 或 `claude`。`openai_compatible` 会在运行时映射为 `openai`；`claude` 会桥接到 Anthropic Messages API。 |
+| `provider` | `openai_compatible` 或 `claude`。`openai_compatible` 会在运行时映射为 `openai`；`claude` 使用 Pi 原生 Anthropic Messages API。 |
 | `base_url/api_key/model` | 必填。Base URL 通常需要包含版本路径，如 OpenAI/兼容网关的 `/v1`。 |
 | `max_total_tokens` | 上下文压缩、攻击链构建、多代理摘要等共用的总预算。 |
 | `max_completion_tokens` | 单次模型输出上限；未填时使用默认值。 |
+| `context_window` | 运行时上下文窗口，0 表示未知。保存通道时可自动填入服务报告的窗口，已填写的更小窗口优先。 |
+| `context_profile` | 后台策略，默认 `auto`。识别本地服务后记录 `local_auto`。配置文件支持手动 `local`、显式节省 `economy` 和使用运行时参数的 `custom`。 |
 | `reasoning` | 该通道的默认推理扩展字段。不同网关支持差异较大，异常时先尝试 `mode: off`。 |
+
+### 自动输入优化
+
+DeepSeek 官方地址、明确的 DeepSeek 推理线路或包含 DeepSeek 的模型名会自动启用输入节省。达到 16 个工具时使用按需发现，默认常驻前 6 个工具、核心工具及显式常驻清单。JSON 回包精简格式空白。有授权的本地读取工具时，超过 8,000 字节的结果保存全文并返回可回读的预览。推理 Token 单列统计且计入输出总量。
+
+保存通道和测试连接会探测 Ollama、llama.cpp、LM Studio、vLLM 和 oMLX 的元数据。oMLX 通过 `owned_by: omlx` 识别，优先读取 `/v1/models/status` 的匹配模型或别名窗口，权限不足时回退到模型列表。普通兼容响应和内网 IP 本身不足以触发本地策略。探测失败可继续保存。
+
+本地输入预算取窗口的 60%，上限 131,072 Token，并预留输出空间。窗口未知时使用 32,768 的保守窗口。工具发现和回包上限按本地窗口收紧，输出字段使用 `max_tokens`。模型只报告架构上限时，新通道保留窗口未知状态。切换模型或服务会清除旧的自动判定。页面在后台应用这些策略。
+
+验证成本时，应比较完整任务的输入、缓存命中、输出及调用次数。工具搜索和分段回读可能增加调用。已有配置文件的显式覆盖继续生效。
+
+### 按提供商和模型关闭推理
+
+使用 `reasoning.mode: off`，或在对话中选择“推理 → 关闭”。实际请求参数按通道区分：
+
+- 官方 `https://api.openai.com/v1`、OpenAI 兼容提供商、`auto` 或 `openai_compat` profile 下，已知支持 `none` 的模型发送 `reasoning_effort: "none"`。覆盖 GPT-5.5、GPT-5.6（Sol/Terra/Luna 及 `gpt-5.6` 别名）、GPT-6 Sol/Luna 和对应日期快照；这些模型也接受配置或请求中的 `reasoning.effort: none`。Planner 的强制工具选择同样保留显式 `none`。
+- DeepSeek 在 `auto` 或 `deepseek_compat` profile 下，关闭时仍发送 `thinking: {type: disabled}`。显式 profile 优先于自动识别。
+- 其他模型和第三方兼容网关保持原有行为：关闭时省略推理字段。第三方网关使用 OpenAI 同名模型，不会被自动视为官方服务。
+
+GPT-5.6 和 GPT-6 Sol/Luna 在 Chat Completions 中使用函数工具时，应明确选择“关闭”；不指定强度会采用模型默认推理，不等同于关闭。工具与推理不兼容时会提示关闭推理，不会静默改写用户选择的强度。GPT-6.1 Sol 和 GPT-6 Astra 不支持 `none`，工具调用必须使用 Responses；当前 Chat Completions 后端会明确提示该限制，需要选择兼容模型。仅把 `base_url` 改成 Responses URL 不能完成协议适配。详见 [OpenAI 官方推理说明](https://developers.openai.com/api/docs/guides/reasoning)。
+
+`allow_client_reasoning: false` 时忽略对话或请求的推理覆盖，按通道设置执行。
 
 对话页的“AI 通道”下拉框会读取已保存通道。请求体中的 `aiChannelId` 非空时仅对本次/本会话运行配置生效，不会把 API Key 发送给模型；为空时跟随 `ai.default_channel`。
 
@@ -103,6 +131,7 @@ agent:
 ```yaml
 hitl:
   default_reviewer: audit_agent
+  audit_backend: openai
   retention_days: 90
   tool_whitelist: [read_file, list_dir, glob, grep, tool_search]
   audit_model:
@@ -113,9 +142,10 @@ hitl:
 ```
 
 - `default_reviewer`：`human` 或 `audit_agent`。
+- `audit_backend`：`openai`（默认，兼容协议聊天模型）或 `typesafe`（TypeSafe Jev）。
 - `tool_whitelist`：全局免审批工具列表，会与会话白名单合并。
-- `audit_model`：审计 Agent 独立模型；留空复用主模型。
-- `audit_agent_prompt` / `audit_agent_prompt_review_edit`：可覆盖默认审批策略。
+- `audit_model`：openai 后端留空复用主模型；typesafe 后端需填写 TypeSafe API Key，不继承主模型密钥。
+- `audit_agent_prompt` / `audit_agent_prompt_review_edit`：openai 后端作为聊天提示词；typesafe 后端作为 Jev 的组织策略（`operatorPolicy`）。内置默认提示词与 Jev 问题重复，不会再复制进 state。
 
 更多策略见 [人机协同最佳实践](hitl-best-practices.md)。
 
@@ -124,9 +154,9 @@ hitl:
 ```yaml
 multi_agent:
   enabled: true
-  robot_default_agent_mode: eino_single
+  robot_default_agent_mode: single
   batch_use_multi_agent: false
-  eino_skills:
+  skills:
     disable: false
     filesystem_tools: true
     skill_tool_name: skill
@@ -134,7 +164,7 @@ multi_agent:
 
 支持模式：
 
-- `eino_single`：Eino 单代理。
+- `single`：Pi 单代理。
 - `deep`：DeepAgent 风格多代理。
 - `plan_execute`：规划、执行、重规划。
 - `supervisor`：主管代理转交子代理。
@@ -211,6 +241,40 @@ monitor:
 - `audit` 记录平台操作，不记录对话正文和每次工具调用正文。
 - `monitor` 管理工具执行记录保留时间。
 
+## 存储清理
+
+```yaml
+storage:
+  auto_clean: false
+  interval_minutes: 60
+  orphan_grace_days: 1
+  active_grace_hours: 24
+  categories:
+    workspace:
+      enabled: true
+      retention_days: 30
+```
+
+清理运行期间产生的磁盘垃圾，入口在「系统设置 → 存储清理」，也可用 `POST /api/storage/cleanup` 触发。
+
+保存保留策略使用 `PUT /api/storage/policy`，需要 `storage:write` 权限；接口仅更新 `config.yaml` 的 `storage` 段，下次清理立即生效，无需重启。其他配置仍需要 `config:write`。
+
+- `auto_clean` 默认关闭：升级后不会在管理员不知情的情况下删除既有数据；关闭时仍可手动预览与清理。
+- `interval_minutes` 后台清理间隔，最小 5；`orphan_grace_days` 是会话/项目已删除但目录残留时的最小保留天数；`active_grace_hours` 内的活动会话一律跳过。
+- 各类别 `retention_days` 为 0 表示不按保留期清理，但**孤儿目录仍会回收**（会话已删除的目录没有保留价值）。
+- 删除不可逆。API 层要求真实删除必须同时传 `dry_run=false` 与 `confirm=true`，省略 `dry_run` 按预览处理。
+
+| 类别 | 默认保留 | 目标目录 |
+| --- | --- | --- |
+| `workspace` | 30 天 | Agent 工作区 `tmp/workspace` |
+| `reduction` | 7 天 | 超长工具输出落盘 `tmp/reduction` |
+| `conversation_artifacts` | 30 天 | 摘要与超长输入台账 `data/conversation_artifacts` |
+| `plantask` | 30 天 | 多代理计划看板 `skills/.pi/plantask` |
+| `c2_artifacts` | 30 天 | C2 回传/上传/下发/payload `tmp/c2`（清理 payload 后下载链接失效） |
+| `chat_uploads` | 90 天 | 对话上传附件 `chat_uploads` |
+| `workflow_checkpoints` | 7 天 | 工作流断点 `data/workflow-checkpoints` |
+| `diagnostic_logs` | 14 天 | 诊断日志 `log/diagnostic-*.log` |
+
 ## C2、WebShell、项目
 
 ```yaml
@@ -218,12 +282,15 @@ c2:
   enabled: true
 project:
   enabled: true
+  context_checkpoints: true
+  # 续接补充包含在事实索引预算内；工作文件候选清单另有最多 4000 字符预算
   fact_index_max_runes: 65000
 ```
 
 - `c2.enabled`：关闭后不启动 C2 监听器，也不注册 C2 MCP 工具。
 - WebShell 连接配置存 SQLite，没有单独的主配置开关。
-- `project` 控制跨对话事实黑板注入预算。
+- `project` 控制跨对话事实黑板注入预算。[项目续聊与成果复用](project-resume.md) 说明脚本登记、测试结果与续接流程。
+- `project.context_checkpoints` 默认开启：已绑定项目的会话成功压缩时，将续接摘要自动保存为 `note/context-*`（tentative），按会话及主/子代理分别更新，不覆盖已确认事实。完整原始记录保存为不可变快照，后续可通过 `get_project_fact` 与 `read_file` 找回。关闭此项仅停止自动黑板记录，仍保留原始上下文快照。详见 [长上下文续接留存](blackboard-context-memory.md)。
 
 ## 机器人
 
@@ -260,7 +327,7 @@ project:
 几个字段有“留空复用”的关系：
 
 - `vision.api_key/base_url/provider` 留空时复用 `openai`。
-- `hitl.audit_model` 留空时复用默认 AI 通道解析后的 `openai`。
+- `hitl.audit_model` 在 `audit_backend=openai` 时留空复用默认 AI 通道；typesafe 后端不继承主模型密钥。
 - `knowledge.embedding.base_url/api_key` 留空时复用主模型或 embedding 默认配置。
 - `knowledge.retrieval.rerank.base_url/api_key` 留空时复用 embedding/openai。
 - `database.knowledge_db_path` 留空时可以复用主会话数据库，但独立文件更利于备份。

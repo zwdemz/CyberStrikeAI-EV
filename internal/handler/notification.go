@@ -432,14 +432,14 @@ func (h *NotificationHandler) summarizeLongRunningTasks(threshold time.Duration,
 		}
 		if now.Sub(t.StartedAt) >= threshold {
 			items = append(items, NotificationSummaryItem{
-				ID:             "task_long:" + t.ConversationID,
+				ID:             "task_long:" + t.RunID,
 				Level:          "p1",
 				Type:           "long_running_tasks",
 				Title:          i18nText(english, "长时间运行任务", "Long Running Task"),
 				Desc:           i18nText(english, "会话 "+t.ConversationID+" 运行超过 15 分钟", "Conversation "+t.ConversationID+" has been running over 15 minutes"),
 				Ts:             t.StartedAt.UTC().Format(time.RFC3339),
 				Count:          1,
-				Actionable:     true,
+				Actionable:     false,
 				Read:           false,
 				ConversationID: t.ConversationID,
 			})
@@ -582,25 +582,6 @@ func countUnread(items []NotificationSummaryItem) int {
 	return total
 }
 
-func createNotificationReadTableIfNeeded(db *database.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS notification_reads_by_user (
-			user_id TEXT NOT NULL,
-			event_id TEXT NOT NULL,
-			read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY(user_id, event_id)
-		);
-	`)
-	if err != nil {
-		return err
-	}
-	_, idxErr := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_reads_user_read_at ON notification_reads_by_user(user_id, read_at DESC);`)
-	return idxErr
-}
-
 func pruneNotificationReads(db *database.DB, userID string, maxRows int) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -635,6 +616,7 @@ func normalizeMarkableEventID(id string) (string, bool) {
 	allowedPrefixes := []string{
 		"vuln:",
 		"exec_failed:",
+		"task_long:",
 		"task_completed:",
 		"c2evt:",
 	}
@@ -648,7 +630,7 @@ func normalizeMarkableEventID(id string) (string, bool) {
 
 // MarkRead 按事件 ID 标记已读
 func (h *NotificationHandler) MarkRead(c *gin.Context) {
-	if err := createNotificationReadTableIfNeeded(h.db); err != nil {
+	if h.db == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare notification read table"})
 		return
 	}
@@ -710,12 +692,6 @@ func (h *NotificationHandler) MarkRead(c *gin.Context) {
 func (h *NotificationHandler) GetSummary(c *gin.Context) {
 	if h.db == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database unavailable"})
-		return
-	}
-
-	if err := createNotificationReadTableIfNeeded(h.db); err != nil {
-		h.logger.Warn("初始化通知已读表失败", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize notification read table"})
 		return
 	}
 

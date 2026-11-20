@@ -38,6 +38,32 @@ add_header Referrer-Policy no-referrer;
 add_header X-Frame-Options DENY;
 ```
 
+## HTTP 信任边界与资源限制
+
+服务器默认忽略 `X-Forwarded-For` 和 `X-Real-IP`，按 TCP 对端地址限流。反向代理部署必须在 `server.trusted_proxies` 中填写实际代理的 IP 或 CIDR；不要填写客户端网段。空列表适合直接访问，`*`、`0.0.0.0/0`、`::/0` 和主机名会被拒绝。代理应覆盖来源头，且后端端口只允许代理连接。单层代理可使用 `proxy_set_header X-Forwarded-For $remote_addr;`；多层代理仅追加经过逐跳信任检查的地址。
+
+```yaml
+server:
+  trusted_proxies: ["127.0.0.1", "::1"] # 仅示例：应用与代理同机
+  read_header_timeout_seconds: 10
+  read_timeout_seconds: 300
+  idle_timeout_seconds: 120
+  webhook_max_body_bytes: 1048576
+```
+
+省略或设置为 0 使用上述默认期限和 1 MiB 回调上限；超时字段可设为 1–86400 秒，回调上限可设为 1–67108864 字节，负值或超范围会导致启动失败。主服务与独立 HTTP MCP 均应用读取/空闲超时；不设全局写超时，保持 SSE、WebSocket 和 MCP 长连接输出。`read_timeout_seconds` 包含上传读取时间，应按实际带宽和允许的文件大小配置。企业微信缺少签名参数时不读取请求体，超限返回 HTTP 413；完整签名及重放校验仍然执行。其他回调和附件的体积限制沿用原有逻辑。
+
+访问日志只记录 HTTP 方法、路由模板、状态、客户端 IP 和耗时，异常日志不记录请求转储或 panic 原文。SSE/WebSocket 的查询参数认证仍受原有认证中间件限制。反向代理也须去除查询串日志：在 Nginx `http` 块定义下面的格式，并在相应 `server` 块使用它；不要记录 `$request`、`$request_uri`、Authorization 或 Cookie。
+
+```nginx
+log_format cyberstrike_safe '$remote_addr $request_method $uri $status $body_bytes_sent';
+access_log /var/log/nginx/cyberstrike-access.log cyberstrike_safe;
+```
+
+配置调整需要重启服务。本次改动不修改现存日志或已签发会话；若历史日志已含有效 Token，应在保留审计证据后按事件处理流程撤销相应会话。新日志设置不会替代已有日志的访问控制。
+
+外部 MCP 完整配置及连接错误详情仅向具有全局 `mcp:write` 权限的用户返回。只读用户获得运行状态、传输类型、URL 的协议和主机等元数据；命令及参数被省略，环境变量和请求头值被掩码，URL 的用户信息、路径、查询串与片段被省略。
+
 ## HITL 白名单基线
 
 推荐最小白名单：

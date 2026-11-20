@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -53,6 +52,54 @@ func TestCreateProgressCallback_ConcurrentToolEvents(t *testing.T) {
 	wg.Wait()
 }
 
+func TestCreateProgressCallback_RecordsSkillStats(t *testing.T) {
+	logger := zap.NewNop()
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "test.sqlite"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	h := &AgentHandler{logger: logger, config: &config.Config{}, db: db}
+	cb := h.createProgressCallback(context.Background(), nil, "conv-skill-stats", "", nil)
+
+	cb("tool_call", "", map[string]interface{}{
+		"toolName": "skill", "toolCallId": "pi-success",
+		"arguments": map[string]interface{}{"name": "demo-skill"},
+	})
+	piSuccess := map[string]interface{}{
+		"toolName": "skill", "toolCallId": "pi-success", "success": true, "isError": false,
+	}
+	cb("tool_result", "loaded", piSuccess)
+	cb("tool_result", "loaded", piSuccess)
+
+	cb("tool_call", "", map[string]interface{}{
+		"toolName": "skill", "toolCallId": "pi-failure",
+		"arguments": map[string]interface{}{"name": "demo-skill"},
+	})
+	cb("tool_result", "failed", map[string]interface{}{
+		"toolName": "skill", "toolCallId": "pi-failure", "success": false, "isError": true,
+	})
+
+	cb("tool_call", "", map[string]interface{}{
+		"toolName": "skill", "toolCallId": "legacy-success",
+		"argumentsObj": map[string]interface{}{"skill": "legacy-skill"},
+	})
+	cb("tool_result", "loaded", map[string]interface{}{
+		"toolName": "skill", "toolCallId": "legacy-success", "success": true,
+	})
+
+	stats, err := db.LoadSkillStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stats["demo-skill"]; got == nil || got.TotalCalls != 2 || got.SuccessCalls != 1 || got.FailedCalls != 1 {
+		t.Errorf("Pi stats = %+v, want two calls with one success and one failure", got)
+	}
+	if got := stats["legacy-skill"]; got == nil || got.TotalCalls != 1 || got.SuccessCalls != 1 || got.FailedCalls != 0 {
+		t.Errorf("legacy stats = %+v, want one successful call", got)
+	}
+}
+
 // TestCreateProgressCallback_MirrorsWebStreamEvents 页面刷新后 task-events 订阅必须
 // 继续收到原 Web SSE 任务的后续事件，不能只等数据库最终结果。
 func TestCreateProgressCallback_MirrorsWebStreamEvents(t *testing.T) {
@@ -80,12 +127,61 @@ func TestCreateProgressCallback_MirrorsWebStreamEvents(t *testing.T) {
 	}
 }
 
+func TestCreateProgressCallback_HidesInternalAgentDiagnostics(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := database.NewDB(filepath.Join(tmp, "test.sqlite"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	conv, err := db.CreateConversation("diag-hidden", database.ConversationCreateMeta{})
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	asst, err := db.AddMessage(conv.ID, "assistant", "处理中...", nil)
+	if err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	bus := NewTaskEventBus()
+	h := &AgentHandler{logger: zap.NewNop(), db: db, taskEventBus: bus}
+	_, events := bus.Subscribe(conv.ID)
+	primaryCalls := 0
+	cb := h.createProgressCallback(
+		context.Background(), nil, conv.ID, asst.ID,
+		func(string, string, interface{}) { primaryCalls++ },
+	)
+
+	cb("model_output_rejected", "模型工具调用不完整或参数不安全，已阻止执行并要求重写。", map[string]interface{}{
+		"reason": "invalid_tool_arguments_json",
+	})
+	cb("progress", "Agent TurnLoop 常驻多轮 runtime 已接管本轮会话。", map[string]interface{}{
+		"kind": "turn_loop_takeover",
+	})
+
+	if primaryCalls != 0 {
+		t.Fatalf("primary SSE calls = %d, want hidden diagnostics", primaryCalls)
+	}
+	select {
+	case payload := <-events:
+		t.Fatalf("unexpected mirrored diagnostic event: %s", string(payload))
+	default:
+	}
+	details, err := db.GetProcessDetails(asst.ID)
+	if err != nil {
+		t.Fatalf("GetProcessDetails: %v", err)
+	}
+	if len(details) != 0 {
+		t.Fatalf("process details = %+v, want no diagnostics persisted", details)
+	}
+}
+
 func TestCreateProgressCallback_PersistsRunningResponseBeforeDone(t *testing.T) {
 	tmp := t.TempDir()
 	db, err := database.NewDB(filepath.Join(tmp, "test.sqlite"), zap.NewNop())
 	if err != nil {
 		t.Fatalf("NewDB: %v", err)
 	}
+	t.Cleanup(func() { _ = db.Close() })
 	conv, err := db.CreateConversation("refresh-running", database.ConversationCreateMeta{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
@@ -99,8 +195,8 @@ func TestCreateProgressCallback_PersistsRunningResponseBeforeDone(t *testing.T) 
 	cb := h.createProgressCallback(context.Background(), nil, conv.ID, asst.ID, nil)
 	meta := map[string]interface{}{
 		"streamId":      "response-refresh-1",
-		"einoAgent":     "cyberstrike-eino-single",
-		"orchestration": "eino_single",
+		"agentName":     "cyberstrike-eino-single",
+		"orchestration": "single",
 	}
 	cb("response_start", "", meta)
 	cb("response_delta", "刷新前已生成的第一部分", openai.WithSSEAccumulated(meta, "刷新前已生成的第一部分"))
@@ -131,8 +227,9 @@ func TestCreateProgressCallback_FlushesReasoningOnDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDB: %v", err)
 	}
-	defer os.RemoveAll(tmp)
+	t.Cleanup(func() { _ = db.Close() })
 
+	t.Cleanup(func() { _ = db.Close() })
 	conv, err := db.CreateConversation("test", database.ConversationCreateMeta{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
@@ -192,4 +289,34 @@ func TestEnrichProgressEventData(t *testing.T) {
 			t.Fatalf("should not overwrite existing ids: %+v", m)
 		}
 	})
+}
+
+func TestCreateProgressCallbackStopsWhenToolResultCannotBePersisted(t *testing.T) {
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "progress.sqlite"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := db.CreateConversation("durability", database.ConversationCreateMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := db.AddMessage(conversation.ID, "assistant", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var events []string
+	h := &AgentHandler{db: db, logger: zap.NewNop(), tasks: NewAgentTaskManager(), taskEventBus: NewTaskEventBus()}
+	callback := h.createProgressCallback(ctx, cancel, conversation.ID, message.ID,
+		func(eventType, _ string, _ interface{}) { events = append(events, eventType) })
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	callback("tool_result", "completed", map[string]interface{}{"toolName": "write_file", "success": true})
+	if context.Cause(ctx) == nil {
+		t.Fatal("a lost completed result must stop the run")
+	}
+	if len(events) != 1 || events[0] != "error" {
+		t.Fatalf("tool completion was reported without a durable record: %v", events)
+	}
 }

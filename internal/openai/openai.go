@@ -93,7 +93,7 @@ func (c *Client) ChatCompletion(ctx context.Context, payload interface{}, out in
 		return fmt.Errorf("openai api key is empty")
 	}
 	if c.isClaude() {
-		return c.claudeChatCompletion(ctx, payload, out)
+		return c.claudeNativeChatCompletion(ctx, payload, out)
 	}
 
 	baseURL := strings.TrimSuffix(c.config.BaseURL, "/")
@@ -115,9 +115,10 @@ func (c *Client) ChatCompletion(ctx context.Context, payload interface{}, out in
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	applyCustomHeaders(req, c.config)
 
 	requestStart := time.Now()
-	resp, err := c.httpClient.Do(req)
+	resp, err := customHeaderHTTPClient(c.httpClient, c.config).Do(req)
 	if err != nil {
 		return fmt.Errorf("call openai api: %w", err)
 	}
@@ -188,7 +189,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, payload interface{}, 
 		return "", fmt.Errorf("openai api key is empty")
 	}
 	if c.isClaude() {
-		return c.claudeChatCompletionStream(ctx, payload, onDelta)
+		return c.claudeNativeChatCompletionStream(ctx, payload, onDelta)
 	}
 
 	baseURL := strings.TrimSuffix(c.config.BaseURL, "/")
@@ -207,9 +208,10 @@ func (c *Client) ChatCompletionStream(ctx context.Context, payload interface{}, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	applyCustomHeaders(req, c.config)
 
 	requestStart := time.Now()
-	resp, err := c.httpClient.Do(req)
+	resp, err := customHeaderHTTPClient(c.httpClient, c.config).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("call openai api: %w", err)
 	}
@@ -338,7 +340,7 @@ func (c *Client) ChatCompletionStreamWithToolCalls(
 		return "", nil, "", fmt.Errorf("openai api key is empty")
 	}
 	if c.isClaude() {
-		return c.claudeChatCompletionStreamWithToolCalls(ctx, payload, onContentDelta)
+		return "", nil, "", fmt.Errorf("native Claude tool-call streaming requires Agent AgenticModel")
 	}
 
 	baseURL := strings.TrimSuffix(c.config.BaseURL, "/")
@@ -357,9 +359,10 @@ func (c *Client) ChatCompletionStreamWithToolCalls(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	applyCustomHeaders(req, c.config)
 
 	requestStart := time.Now()
-	resp, err := c.httpClient.Do(req)
+	resp, err := customHeaderHTTPClient(c.httpClient, c.config).Do(req)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("call openai api: %w", err)
 	}
@@ -572,8 +575,9 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("build openai models request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	applyCustomHeaders(req, c.config)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := customHeaderHTTPClient(c.httpClient, c.config).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("call openai models api: %w", err)
 	}

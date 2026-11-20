@@ -3,12 +3,52 @@ package security
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"cyberstrike-ai/internal/database"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
+
+func TestStorageGlobalMutationsRequireAllScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := database.NewDB(filepath.Join(t.TempDir(), "rbac.db"), zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, scope := range []string{database.RBACScopeOwn, database.RBACScopeAssigned, database.RBACScopeAll} {
+		for _, path := range []string{"/api/storage/policy", "/api/storage/cleanup"} {
+			t.Run(scope+path, func(t *testing.T) {
+				router := gin.New()
+				router.Use(func(c *gin.Context) {
+					c.Set(ContextSessionKey, Session{UserID: "operator", Scope: database.RBACScopeAll,
+						Permissions: map[string]bool{"storage:write": true}, PermissionScopes: map[string]string{"storage:write": scope}})
+					c.Next()
+				}, RBACMiddleware(db))
+				router.Handle(http.MethodPost, path, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+				if path == "/api/storage/policy" {
+					router.Handle(http.MethodPut, path, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+				}
+				method := http.MethodPost
+				if path == "/api/storage/policy" {
+					method = http.MethodPut
+				}
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, httptest.NewRequest(method, path, nil))
+				want := http.StatusForbidden
+				if scope == database.RBACScopeAll {
+					want = http.StatusNoContent
+				}
+				if response.Code != want {
+					t.Fatalf("status=%d, want=%d: %s", response.Code, want, response.Body.String())
+				}
+			})
+		}
+	}
+}
 
 func TestRBACMiddlewareUsesMatchedFullPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -116,6 +156,12 @@ func TestRBACResourcePickerRequiresWritePermission(t *testing.T) {
 	}
 	if got := permissionForRequest(http.MethodGet, "/api/rbac/resource-assignments"); got != "rbac:read" {
 		t.Fatalf("assignment list permission = %q, want rbac:read", got)
+	}
+}
+
+func TestRBACMiddlewareMapsTokenUsageStatsToDashboardRead(t *testing.T) {
+	if got := permissionForRequest(http.MethodGet, "/api/usage/tokens"); got != "dashboard:read" {
+		t.Fatalf("token usage permission = %q, want dashboard:read", got)
 	}
 }
 
@@ -265,5 +311,32 @@ func TestAssignedScopeCannotMutateProcessGlobalAssets(t *testing.T) {
 				t.Fatalf("global mutation status = %d, want 403", w.Code)
 			}
 		})
+	}
+}
+
+// TestUpdateApplyIsItsOwnPermissionFromReadingTheVersion: replacing the program that is
+// answering the request is not a flavour of reading it, and it is process-global - one
+// tree, one binary, every user of this installation.
+func TestUpdateApplyIsItsOwnPermissionFromReadingTheVersion(t *testing.T) {
+	cases := []struct {
+		method, path, apiPath, want string
+	}{
+		{http.MethodGet, "/api/system/update", "/system/update", "update:read"},
+		{http.MethodGet, "/api/system/update/job", "/system/update/job", "update:read"},
+		{http.MethodPost, "/api/system/update/check", "/system/update/check", "update:apply"},
+		{http.MethodPost, "/api/system/update/apply", "/system/update/apply", "update:apply"},
+		{http.MethodPost, "/api/system/update/rollback", "/system/update/rollback", "update:apply"},
+	}
+	for _, tc := range cases {
+		got := permissionForRequest(tc.method, tc.path)
+		if got != tc.want {
+			t.Errorf("%s %s -> %q, want %q", tc.method, tc.path, got, tc.want)
+		}
+		if _, ok := PermissionCatalog[got]; !ok {
+			t.Errorf("%s %s maps to %q which is not in PermissionCatalog", tc.method, tc.path, got)
+		}
+		if tc.method != http.MethodGet && !isProcessGlobalMutationPath(tc.apiPath) {
+			t.Errorf("%s must require a global-scope session: it changes what every user runs", tc.path)
+		}
 	}
 }

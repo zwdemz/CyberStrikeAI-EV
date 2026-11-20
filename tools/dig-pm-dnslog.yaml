@@ -1,0 +1,35 @@
+name: "dig-pm-dnslog"
+command: "internal:dig_pm_dnslog"
+enabled: true
+short_description: "dig.pm DNSLog：申请会话域名、限时读取 DNS 回连记录；不主动探测目标，不支持 HTTP 回连"
+description: |
+  独立的 dig.pm DNSLog 工具，仅用于授权场景的 DNS 记录观察。
+  1. list_domains：获取当前主域列表。
+  2. get_domain：申请子域，返回 domain、session_id 和本地 expires_at。
+     可指定列表中的 main_domain，否则选第一项；无需提供 token。
+  3. get_records：使用当前对话申请的 session_id 读取历史和增量记录，
+     wait_time 默认 5 秒，范围 1～30 秒；最多 100 条，达到上限标记 truncated。
+  会话凭证仅留在进程内存中，绑定调用用户和对话；本地有效期 1 小时，
+  服务重启或执行器重建后必须重新申请。平台有效期未知。
+  仅 DNS 通道；工具不会主动访问目标、生成攻击载荷或自动切换其他工具。
+  ClientIp 是递归 DNS 出口地址；有记录不能单独证明漏洞，无记录不能排除漏洞。
+  记录和域名经过第三方平台，不在查询域名中拼接凭证、个人信息或业务数据。
+  教育/企业 SRC 的 src-low-impact 策略不允许调用本工具。
+parameters:
+  - name: "operation"
+    type: "string"
+    required: true
+    description: "list_domains、get_domain 或 get_records"
+    options: ["list_domains", "get_domain", "get_records"]
+  - name: "main_domain"
+    type: "string"
+    required: false
+    description: "仅 get_domain 使用，来自 list_domains；可省略自动选择"
+  - name: "session_id"
+    type: "string"
+    required: false
+    description: "get_records 必填，当前用户和对话的 get_domain 返回值"
+  - name: "wait_time"
+    type: "int"
+    required: false
+    description: "仅 get_records 使用；观察秒数 1～30，省略为 5"

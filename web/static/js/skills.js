@@ -7,6 +7,7 @@ let currentEditingSkillName = null;
 let skillModalAddMode = true;
 let skillActivePath = 'SKILL.md';
 let skillFileDirty = false;
+let skillDescriptionDirty = false;
 let skillPackageFiles = [];
 let skillModalControlsWired = false;
 let isSavingSkill = false; // 防止重复提交
@@ -101,22 +102,22 @@ async function loadSkills(page = 1, pageSize = null) {
         if (pageSize === null) {
             pageSize = getSkillsPageSize();
         }
-        
+
         // 更新分页状态（确保使用正确的pageSize）
         skillsPagination.currentPage = page;
         skillsPagination.pageSize = pageSize;
-        
+
         // 清空搜索关键词（正常分页加载时）
         skillsSearchKeyword = '';
         const searchInput = document.getElementById('skills-search');
         if (searchInput) {
             searchInput.value = '';
         }
-        
+
         // 构建URL（支持分页）
         const offset = (page - 1) * pageSize;
         const url = `/api/skills?limit=${pageSize}&offset=${offset}`;
-        
+
         const response = await apiFetch(url);
         if (!response.ok) {
             throw new Error(_t('skills.loadListFailed'));
@@ -124,7 +125,7 @@ async function loadSkills(page = 1, pageSize = null) {
         const data = await response.json();
         skillsList = data.skills || [];
         skillsPagination.total = data.total || 0;
-        
+
         renderSkillsList();
         renderSkillsPagination();
         updateSkillsManagementStats();
@@ -147,8 +148,8 @@ function renderSkillsList() {
     const filteredSkills = skillsList;
 
     if (filteredSkills.length === 0) {
-        skillsListEl.innerHTML = '<div class="empty-state">' + 
-            (skillsSearchKeyword ? _t('skills.noMatch') : _t('skills.noSkills')) + 
+        skillsListEl.innerHTML = '<div class="empty-state">' +
+            (skillsSearchKeyword ? _t('skills.noMatch') : _t('skills.noSkills')) +
             '</div>';
         // 搜索时隐藏分页
         const paginationContainer = document.getElementById('skills-pagination');
@@ -204,7 +205,7 @@ function renderSkillsList() {
     skillsListEl.querySelectorAll('[data-skill-delete]').forEach(btn => {
         btn.addEventListener('click', () => deleteSkill(btn.getAttribute('data-skill-delete')));
     });
-    
+
     // 确保列表容器可以滚动，分页栏可见
     // 使用 setTimeout 确保 DOM 更新完成后再检查
     setTimeout(() => {
@@ -221,24 +222,25 @@ function renderSkillsList() {
 function renderSkillsPagination() {
     const paginationContainer = document.getElementById('skills-pagination');
     if (!paginationContainer) return;
-    
+
     const total = skillsPagination.total;
     const pageSize = skillsPagination.pageSize;
     const currentPage = skillsPagination.currentPage;
     const totalPages = Math.ceil(total / pageSize);
-    
+
     // 即使只有一页也显示分页信息（参考MCP样式）
     if (total === 0) {
         paginationContainer.innerHTML = '';
+        if (typeof initPaginationSelects === 'function') initPaginationSelects(paginationContainer);
         return;
     }
-    
+
     // 计算显示范围
     const start = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
     const end = total === 0 ? 0 : Math.min(currentPage * pageSize, total);
-    
+
     let paginationHTML = '<div class="pagination">';
-    
+
     const paginationShowText = _t('skillsPage.paginationShow', { start, end, total });
     const perPageLabelText = _t('skillsPage.perPageLabel');
     const firstPageText = _t('skillsPage.firstPage');
@@ -261,7 +263,7 @@ function renderSkillsPagination() {
             </label>
         </div>
     `;
-    
+
     // 右侧：分页按钮（参考MCP样式：首页、上一页、第X/Y页、下一页、末页）
     paginationHTML += `
         <div class="pagination-controls">
@@ -272,11 +274,12 @@ function renderSkillsPagination() {
             <button class="btn-secondary" onclick="loadSkills(${totalPages || 1}, ${pageSize})" ${currentPage >= totalPages || total === 0 ? 'disabled' : ''}>${escapeHtml(lastPageText)}</button>
         </div>
     `;
-    
+
     paginationHTML += '</div>';
-    
+
     paginationContainer.innerHTML = paginationHTML;
-    
+    if (typeof initPaginationSelects === 'function') initPaginationSelects(paginationContainer);
+
     // 确保分页组件与列表内容区域对齐（不包括滚动条）
     function alignPaginationWidth() {
         const skillsList = document.getElementById('skills-list');
@@ -285,13 +288,13 @@ function renderSkillsPagination() {
             paginationContainer.style.display = '';
             paginationContainer.style.visibility = 'visible';
             paginationContainer.style.opacity = '1';
-            
+
             // 获取列表的实际内容宽度（不包括滚动条）
             const listClientWidth = skillsList.clientWidth; // 可视区域宽度（不包括滚动条）
             const listScrollHeight = skillsList.scrollHeight; // 内容总高度
             const listClientHeight = skillsList.clientHeight; // 可视区域高度
             const hasScrollbar = listScrollHeight > listClientHeight;
-            
+
             // 如果列表有垂直滚动条，分页组件应该与列表内容区域对齐（clientWidth）
             // 如果没有滚动条，使用100%宽度
             if (hasScrollbar && listClientWidth > 0) {
@@ -303,20 +306,20 @@ function renderSkillsPagination() {
             }
         }
     }
-    
+
     // 立即执行一次
     alignPaginationWidth();
-    
+
     // 监听窗口大小变化和列表内容变化
     const resizeObserver = new ResizeObserver(() => {
         alignPaginationWidth();
     });
-    
+
     const skillsList = document.getElementById('skills-list');
     if (skillsList) {
         resizeObserver.observe(skillsList);
     }
-    
+
     // 确保分页容器始终可见（防止被隐藏）
     paginationContainer.style.display = 'block';
     paginationContainer.style.visibility = 'visible';
@@ -326,25 +329,25 @@ function renderSkillsPagination() {
 async function changeSkillsPageSize() {
     const pageSizeSelect = document.getElementById('skills-page-size-pagination');
     if (!pageSizeSelect) return;
-    
+
     const newPageSize = parseInt(pageSizeSelect.value);
     if (isNaN(newPageSize) || newPageSize <= 0) return;
-    
+
     // 保存到localStorage
     try {
         localStorage.setItem('skillsPageSize', newPageSize.toString());
     } catch (e) {
         console.warn('无法保存分页设置到localStorage:', e);
     }
-    
+
     // 更新分页状态
     skillsPagination.pageSize = newPageSize;
-    
+
     // 重新计算当前页（确保不超出范围）
     const totalPages = Math.ceil(skillsPagination.total / newPageSize);
     const currentPage = Math.min(skillsPagination.currentPage, totalPages || 1);
     skillsPagination.currentPage = currentPage;
-    
+
     // 重新加载数据
     await loadSkills(currentPage, newPageSize);
 }
@@ -392,13 +395,13 @@ function handleSkillsSearchInput() {
 async function searchSkills() {
     const searchInput = document.getElementById('skills-search');
     if (!searchInput) return;
-    
+
     skillsSearchKeyword = searchInput.value.trim();
     const clearBtn = document.getElementById('skills-search-clear');
     if (clearBtn) {
         clearBtn.style.display = skillsSearchKeyword ? 'block' : 'none';
     }
-    
+
     if (skillsSearchKeyword) {
         // 有搜索关键词时，使用后端搜索API（加载所有匹配结果，不分页）
         try {
@@ -454,6 +457,8 @@ function wireSkillModalOnce() {
     skillModalControlsWired = true;
     const addTa = document.getElementById('skill-content-add');
     const edTa = document.getElementById('skill-content');
+    const descriptionInput = document.getElementById('skill-description');
+    if (descriptionInput) descriptionInput.addEventListener('input', () => { skillDescriptionDirty = true; });
     if (addTa) addTa.addEventListener('input', () => { if (skillModalAddMode) skillFileDirty = true; });
     if (edTa) edTa.addEventListener('input', () => { if (!skillModalAddMode) skillFileDirty = true; });
     const nb = document.getElementById('skill-new-file-btn');
@@ -483,6 +488,8 @@ function showAddSkillModal() {
     if (!modal) return;
 
     skillModalAddMode = true;
+    skillDescriptionDirty = false;
+    document.getElementById('skill-description').disabled = false;
     skillFileDirty = false;
     skillActivePath = 'SKILL.md';
     skillPackageFiles = [];
@@ -491,6 +498,7 @@ function showAddSkillModal() {
     if (pkg) pkg.style.display = 'none';
     if (addEd) addEd.style.display = 'block';
 
+    document.getElementById('skill-modal-title').setAttribute('data-i18n', 'skills.addSkill');
     document.getElementById('skill-modal-title').textContent = _t('skills.addSkill');
     document.getElementById('skill-name').value = '';
     document.getElementById('skill-name').disabled = false;
@@ -544,12 +552,18 @@ async function selectSkillPackageFile(skillId, path, opts) {
     const freshContent = opts && Object.prototype.hasOwnProperty.call(opts, 'freshContent')
         ? opts.freshContent
         : null;
+    if (path !== 'SKILL.md' && skillDescriptionDirty) {
+        showNotification(_t('skillModal.saveDescriptionFirst'), 'error');
+        return;
+    }
     if (!force && skillFileDirty) {
         if (!confirm(_t('skillModal.unsavedSwitch'))) {
             return;
         }
     }
     skillActivePath = path;
+    const descriptionInput = document.getElementById('skill-description');
+    if (descriptionInput) descriptionInput.disabled = path !== 'SKILL.md';
     const label = document.getElementById('skill-active-path');
     if (label) label.textContent = path;
     const hint = document.getElementById('skill-body-hint-edit');
@@ -591,12 +605,15 @@ async function editSkill(skillId) {
     const modal = document.getElementById('skill-modal');
     if (!modal) return;
     skillModalAddMode = false;
+    skillDescriptionDirty = false;
+    document.getElementById('skill-description').disabled = false;
     skillFileDirty = false;
     skillActivePath = 'SKILL.md';
     const pkg = document.getElementById('skill-package-editor');
     const addEd = document.getElementById('skill-add-editor');
     if (pkg) pkg.style.display = 'block';
     if (addEd) addEd.style.display = 'none';
+    document.getElementById('skill-modal-title').setAttribute('data-i18n', 'skills.editSkill');
     document.getElementById('skill-modal-title').textContent = _t('skills.editSkill');
     document.getElementById('skill-name').value = '';
     document.getElementById('skill-name').disabled = true;
@@ -637,7 +654,7 @@ async function editSkill(skillId) {
     }
 }
 
-// 查看 skill：先摘要再按需拉全文（与多代理 Eino skill 渐进披露思路一致）
+// 查看 skill：先摘要再按需拉全文（与多代理 Pi skill 渐进披露思路一致）
 async function viewSkill(skillId) {
     try {
         const sumRes = await apiFetch(`/api/skills/${encodeURIComponent(skillId)}?depth=summary`);
@@ -739,6 +756,8 @@ function closeSkillModal() {
     currentEditingSkillName = null;
     skillModalAddMode = true;
     skillFileDirty = false;
+    skillDescriptionDirty = false;
+    document.getElementById('skill-description').disabled = false;
     skillPackageFiles = [];
     skillActivePath = 'SKILL.md';
 }
@@ -833,6 +852,7 @@ async function saveSkill() {
         }
 
         skillFileDirty = false;
+        if (path === 'SKILL.md') skillDescriptionDirty = false;
         showNotification(_t('skills.saveSuccess'), 'success');
         const filesRes = await apiFetch(`/api/skills/${encodeURIComponent(currentEditingSkillName)}/files`);
         if (filesRes.ok) {
@@ -896,7 +916,7 @@ async function deleteSkill(skillName) {
             successMessage = _t('skills.deleteSuccessWithRoles', { count: data.affected_roles.length, roles: rolesList });
         }
         showNotification(successMessage, 'success');
-        
+
         // 如果当前页没有数据了，回到上一页
         const currentPage = skillsPagination.currentPage;
         const totalAfterDelete = skillsPagination.total - 1;
@@ -919,7 +939,7 @@ async function loadSkillsMonitor() {
             throw new Error(_t('skills.loadStatsFailed'));
         }
         const data = await response.json();
-        
+
         skillsStats = {
             total: data.total_skills || 0,
             totalCalls: data.total_calls || 0,
@@ -949,10 +969,10 @@ function renderSkillsMonitor() {
     // 渲染总体统计
     const statsEl = document.getElementById('skills-stats');
     if (statsEl) {
-        const successRate = skillsStats.totalCalls > 0 
-            ? ((skillsStats.totalSuccess / skillsStats.totalCalls) * 100).toFixed(1) 
+        const successRate = skillsStats.totalCalls > 0
+            ? ((skillsStats.totalSuccess / skillsStats.totalCalls) * 100).toFixed(1)
             : '0.0';
-        
+
         statsEl.innerHTML = `
             <div class="monitor-stat-card skills-stat-card skills-stat-card--total">
                 <div class="monitor-stat-label">${_t('skills.totalSkillsCount')}</div>
@@ -982,7 +1002,7 @@ function renderSkillsMonitor() {
     if (!monitorListEl) return;
 
     const stats = skillsStats.stats || [];
-    
+
     // 如果没有统计数据，显示空状态
     if (stats.length === 0) {
         monitorListEl.innerHTML = '<div class="monitor-empty">' + _t('skills.noCallRecords') + '</div>';
@@ -1019,7 +1039,7 @@ function renderSkillsMonitor() {
                     const successRate = totalCalls > 0 ? ((successCalls / totalCalls) * 100).toFixed(1) : '0.0';
                     const lastCallTime = stat.last_call_time && stat.last_call_time !== '-' ? stat.last_call_time : '-';
                     const rateValue = Math.max(0, Math.min(100, Number(successRate) || 0));
-                    
+
                     return `
                         <tr>
                             <td><strong>${escapeHtml(stat.skill_name || '')}</strong></td>

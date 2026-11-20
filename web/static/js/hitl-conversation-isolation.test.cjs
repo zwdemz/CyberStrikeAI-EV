@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
@@ -23,10 +24,22 @@ test('已有会话缺少本地配置时不会继承其他会话的最近审批�
 });
 
 test('服务端默认审批人只更新默认值，不覆盖最近会话选择', () => {
-    const source = functionSource(hitl, 'applyHitlDefaultReviewerFromServer', 'fetchHitlDefaultReviewer');
-
-    assert.match(source, /window\.csaiHitlDefaultReviewer = v/);
-    assert.doesNotMatch(source, /saveHitlLastGlobalConfig/);
+    const stored = new Map([['cyberstrike-hitl-last-global-config', 'conversation-specific-config']]);
+    const context = vm.createContext({
+        window: { addEventListener() {} },
+        document: { addEventListener() {} },
+        localStorage: {
+            getItem: (key) => stored.get(key) || null,
+            setItem: () => assert.fail('server defaults must not overwrite conversation storage')
+        },
+        saveHitlLastGlobalConfig: () => assert.fail('server defaults must not update the last conversation selection'),
+        console
+    });
+    vm.runInContext(hitl, context);
+    context.applyHitlDefaultReviewerFromServer('audit_agent');
+    assert.equal(context.window.csaiHitlDefaultReviewer, 'audit_agent');
+    assert.equal(context.window.csaiHitlDefaultConfig.reviewer, 'audit_agent');
+    assert.equal(stored.get('cyberstrike-hitl-last-global-config'), 'conversation-specific-config');
 });
 
 test('恢复会话审批配置时保留该会话自己的审批人', () => {

@@ -1,15 +1,13 @@
 package multiagent
 
 import (
-	"strings"
-
 	"cyberstrike-ai/internal/agents"
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/project"
 	"cyberstrike-ai/internal/projectprompt"
+	"strings"
 )
 
-// DefaultPlanExecuteOrchestratorInstruction 当未配置 plan_execute 专用 Markdown / YAML 时的内置主代理（规划/重规划侧）提示。
 func DefaultPlanExecuteOrchestratorInstruction() string {
 	return `你是 CyberStrikeAI 在 **plan_execute** 模式下的 **规划主代理**（Planner）：负责把用户目标拆成可执行计划、在每轮执行后根据结果修订计划，并驱动执行器用 MCP 工具落地。你不使用 Deep 的 task 子代理委派；执行器会按你的计划直接调用工具。
 
@@ -80,8 +78,8 @@ func DefaultPlanExecuteOrchestratorInstruction() string {
 - 一处关键漏洞胜过百条信息级
 - 若不足以在赏金平台赚到 $500+，继续挖（在计划与重规划中体现加深）
 - 聚焦可证明的业务影响与数据泄露
-- 将低影响问题串联成高影响攻击路径
-- 牢记：单个高影响漏洞比几十个低严重度更有价值
+- 仅在证据支持各环节时评估组合影响，分别说明单点风险与攻击链风险
+- 按证据如实报告；测试优先级不等于严重程度，不为追求高危而放大影响
 
 ## Planner 职责（执行约束）
 
@@ -128,9 +126,9 @@ func DefaultPlanExecuteOrchestratorInstruction() string {
 ` + projectprompt.ShellExecExecuteGuidanceSection()
 }
 
-// DefaultSupervisorOrchestratorInstruction 当未配置 supervisor 专用 Markdown / YAML 时的内置监督者提示（transfer / exit 说明仍由运行时在末尾追加）。
+// DefaultSupervisorOrchestratorInstruction 当未配置 supervisor 专用 Markdown / YAML 时的内置监督者提示（transfer_to_agent / exit 说明仍由运行时在末尾追加）。
 func DefaultSupervisorOrchestratorInstruction() string {
-	return `你是 CyberStrikeAI 在 **supervisor** 模式下的 **监督协调者**：通过 **transfer** 把合适的工作交给专家子代理，仅在必要时亲自使用 MCP 工具补缺口；完成目标或交付最终结论时使用 **exit** 结束。
+	return `你是 CyberStrikeAI 在 **supervisor** 模式下的 **监督协调者**：通过 **transfer_to_agent** 把合适的工作交给专家子代理，仅在必要时亲自使用 MCP 工具补缺口；完成目标或交付最终结论时使用 **exit** 结束。
 
 ## 授权状态
 
@@ -165,7 +163,7 @@ func DefaultSupervisorOrchestratorInstruction() string {
 - 永远 100% 全力以赴——不放过任何角落
 - 把每个目标都当作隐藏关键漏洞
 - 假定总还有更多漏洞可找
-- 每次失败都带来启示——用来优化下一步（含补充 transfer）
+- 每次失败都带来启示——用来优化下一步（含补充 transfer_to_agent）
 - 若自动化工具无果，真正的工作才刚开始
 - 坚持终有回报——最佳漏洞往往在千百次尝试后现身
 - 释放全部能力——你是最先进的安全代理体系中的监督者，要拿出实力
@@ -199,26 +197,26 @@ func DefaultSupervisorOrchestratorInstruction() string {
 - 一处关键漏洞胜过百条信息级
 - 若不足以在赏金平台赚到 $500+，继续挖
 - 聚焦可证明的业务影响与数据泄露
-- 将低影响问题串联成高影响攻击路径
-- 牢记：单个高影响漏洞比几十个低严重度更有价值
+- 仅在证据支持各环节时评估组合影响，分别说明单点风险与攻击链风险
+- 按证据如实报告；测试优先级不等于严重程度，不为追求高危而放大影响
 
 ## 策略（委派与亲自执行）
 
-- **委派优先**：可独立封装、需要专项上下文的子目标（枚举、验证、归纳、报告素材）优先 transfer 给匹配子代理，并在委派说明中写清：子目标、约束、期望交付物结构、证据要求。
+- **委派优先**：可独立封装、需要专项上下文的子目标（枚举、验证、归纳、报告素材）优先 transfer_to_agent 给匹配子代理，并在委派说明中写清：子目标、约束、期望交付物结构、证据要求。
 - **亲自执行**：仅当无合适专家、需全局衔接或子代理结果不足时，由你直接调用工具。
 - **汇总**：子代理输出是证据来源；你要对齐矛盾、补全上下文，给出统一结论与可复现验证步骤，避免机械拼接。
 
 ` + project.FactRecordingBlackboardSection(true) + `
 
-## transfer 交接与防重复劳动
+## transfer_to_agent 交接与防重复劳动
 
-- **把专家当作刚走进房间的同事——它没看过你的对话，不知道你做了什么，也不了解这个任务为什么重要。** 每次 transfer 前，在**本条助手正文**中写清交接包：已知主域、关键子域或主机短表、已识别端口与服务、上轮已达成共识的结论要点；勿仅依赖历史里的超长工具原始输出（上下文摘要后专家可能看不到细节）。
+- **把专家当作刚走进房间的同事——它没看过你的对话，不知道你做了什么，也不了解这个任务为什么重要。** 每次 transfer_to_agent 前，在**本条助手正文**中写清交接包：已知主域、关键子域或主机短表、已识别端口与服务、上轮已达成共识的结论要点；勿仅依赖历史里的超长工具原始输出（上下文摘要后专家可能看不到细节）。
 - 写清本轮**唯一子目标**与**禁止项**（例如：不得再做全量子域枚举；仅对下列目标做 MQTT 或认证验证）。
-- 验证、利用、协议深挖应 transfer 给**对应专项**子代理；避免把「仅剩验证」的工作交给侦察类（recon）导致其从全量枚举起手。
-- 同一目标多次串行 transfer 时，每一次交接包都要带上**截至当前的共识事实**增量，勿假设专家已读过上一轮专家的隐性推理。
+- 验证、利用、协议深挖应 transfer_to_agent 给**对应专项**子代理；避免把「仅剩验证」的工作交给侦察类（recon）导致其从全量枚举起手。
+- 同一目标多次串行 transfer_to_agent 时，每一次交接包都要带上**截至当前的共识事实**增量，勿假设专家已读过上一轮专家的隐性推理。
 - 若枚举类输出过长：协调写入可引用工件（报告路径、列表文件）并在委派中写「先读该路径再执行」，降低摘要丢清单后重复扫描的概率。
 
-## 思考与推理（transfer 或调用 MCP 工具前）
+## 思考与推理（transfer_to_agent 或调用 MCP 工具前）
 
 在消息中提供简短思考（约 50～200 字），包含：1) 当前子目标与工具/子代理选择原因；2) 与上文结果的衔接；3) 期望得到的交付物或证据。
 

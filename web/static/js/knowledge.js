@@ -1,3 +1,13 @@
+function knowledgeIndexErrorAdvice(error) {
+    const text = String(error || '');
+    if (/\b401\b|incorrect api key|invalid api key|unauthorized/i.test(text)) return '嵌入服务拒绝认证。请检查知识库嵌入配置的 API 密钥及服务地址，保存后重试。';
+    if (/\b403\b|forbidden/i.test(text)) return '嵌入服务拒绝访问。请检查账号权限及所选嵌入模型的访问权限。';
+    if (/\b429\b|rate limit|quota/i.test(text)) return '嵌入服务限制请求。请检查请求频率及账号可用额度，稍后重试。';
+    if (/timeout|deadline exceeded/i.test(text)) return '嵌入服务请求超时。请检查服务可用性、网络和代理配置后重试。';
+    if (/connection refused|no such host|network is unreachable/i.test(text)) return '无法连接嵌入服务。请检查服务地址、DNS、网络和代理配置。';
+    return '请根据上方错误检查嵌入模型和服务配置，修正后重试。';
+}
+
 // 知识库管理相关功能
 function _t(key, opts) {
     return typeof window.t === 'function' ? window.t(key, opts) : key;
@@ -464,7 +474,7 @@ async function updateIndexProgress() {
         // 检查是否正在重建索引（优先使用重建状态）
         const isRebuilding = status.is_rebuilding || false;
         
-        if (totalItems === 0) {
+        if (totalItems === 0 && !lastError) {
             // 没有知识项，隐藏进度条
             progressContainer.style.display = 'none';
             if (indexProgressInterval) {
@@ -495,7 +505,7 @@ async function updateIndexProgress() {
                         ${escapeHtml(lastError)}
                     </div>
                     <div style="color: #999; font-size: 12px; margin-bottom: 12px;">
-                        可能的原因：嵌入模型配置错误、API密钥无效、余额不足等。请检查配置后重试。
+                        ${escapeHtml(knowledgeIndexErrorAdvice(lastError))}
                     </div>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                         <button onclick="buildKnowledgeIndex()" style="
@@ -595,21 +605,22 @@ async function updateIndexProgress() {
                 <div class="knowledge-index-progress">
                     <div class="progress-header">
                         <span class="progress-icon">🔨</span>
-                        <span class="progress-text">正在构建索引: ${indexedItems}/${totalItems} (${progressPercent.toFixed(1)}%)</span>
+                        <span class="progress-text">已索引 ${indexedItems}/${totalItems} (${progressPercent.toFixed(1)}%)，待补建 ${Math.max(0, totalItems - indexedItems)} 项</span>
                     </div>
                     <div class="progress-bar-container">
                         <div class="progress-bar" style="width: ${progressPercent}%"></div>
                     </div>
                     <div class="progress-hint">
-                        索引构建完成后，语义搜索功能将可用
+                        当前没有索引构建任务运行；已有索引可用于检索，缺失项需补建。
                         ${showResume ? '<br><button type="button" onclick="buildKnowledgeIndex()" style="margin-top:8px;background:#007bff;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;">构建索引</button>' : ''}
                     </div>
                 </div>
             `;
             
-            // 如果还没有开始轮询，开始轮询
-            if (!indexProgressInterval) {
-                indexProgressInterval = setInterval(updateIndexProgress, 3000); // 每3秒刷新一次
+            // Incomplete coverage is not an active job.
+            if (indexProgressInterval) {
+                clearInterval(indexProgressInterval);
+                indexProgressInterval = null;
             }
         }
     } catch (error) {
@@ -825,7 +836,7 @@ async function refreshKnowledgeBase() {
         const data = await response.json();
         // 根据返回的消息显示不同的提示
         if (data.items_to_index && data.items_to_index > 0) {
-            showNotification(`扫描完成，开始索引 ${data.items_to_index} 个新添加或更新的知识项`, 'success');
+            showNotification(`扫描完成，开始索引 ${data.items_to_index} 个新增、更新或缺失索引的知识项`, 'success');
         } else {
             showNotification(data.message || '扫描完成，没有需要索引的新项或更新项', 'success');
         }
@@ -887,7 +898,7 @@ async function startKnowledgeIndexJob(mode = 'missing') {
                 <div class="progress-bar-container">
                     <div class="progress-bar" style="width: 0%"></div>
                 </div>
-                <div class="progress-hint">索引构建完成后，语义搜索功能将可用</div>
+                <div class="progress-hint">当前没有索引构建任务运行；已有索引可用于检索，缺失项需补建。</div>
             </div>
         `;
     }

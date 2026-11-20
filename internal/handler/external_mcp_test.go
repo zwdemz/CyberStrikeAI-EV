@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"cyberstrike-ai/internal/config"
+	"cyberstrike-ai/internal/database"
 	"cyberstrike-ai/internal/mcp"
+	"cyberstrike-ai/internal/security"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -19,6 +21,14 @@ import (
 func setupTestRouter() (*gin.Engine, *ExternalMCPHandler, string) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	// These CRUD tests exercise the privileged editor's round trip. Read-only
+	// projections are covered separately in tests/internal/handler.
+	router.Use(func(c *gin.Context) {
+		c.Set(security.ContextSessionKey, security.Session{
+			Scope: database.RBACScopeAll, Permissions: map[string]bool{"mcp:read": true, "mcp:write": true},
+		})
+		c.Next()
+	})
 
 	// 创建临时配置文件
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
@@ -54,6 +64,34 @@ func setupTestRouter() (*gin.Engine, *ExternalMCPHandler, string) {
 func cleanupTestConfig(configPath string) {
 	os.Remove(configPath)
 	os.Remove(configPath + ".backup")
+}
+
+func TestExternalMCPConnectionReceivesExpandedSnapshot(t *testing.T) {
+	t.Setenv("CSAI_TEST_MCP_COMMAND", "not-executed")
+	t.Setenv("CSAI_TEST_MCP_VALUE", "expanded-test-value")
+	router, h, configPath := setupTestRouter()
+	defer cleanupTestConfig(configPath)
+	body, err := json.Marshal(AddOrUpdateExternalMCPRequest{Config: config.ExternalMCPServerConfig{
+		Command: "${CSAI_TEST_MCP_COMMAND}", Args: []string{"${CSAI_TEST_MCP_VALUE}"}, Disabled: true,
+		Env: map[string]string{"VALUE": "${CSAI_TEST_MCP_VALUE}"}, Headers: map[string]string{"X-Value": "${CSAI_TEST_MCP_VALUE}"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/external-mcp/test-env", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", w.Code, w.Body)
+	}
+	cfg := h.manager.GetConfigs()["test-env"]
+	if cfg.Command != "not-executed" || len(cfg.Args) != 1 || cfg.Args[0] != "expanded-test-value" || cfg.Env["VALUE"] != "expanded-test-value" || cfg.Headers["X-Value"] != "expanded-test-value" {
+		t.Fatalf("connection received unexpanded snapshot: %#v", cfg)
+	}
+	if !cfg.Disabled || cfg.ExternalMCPEnable {
+		t.Fatal("disabled connection was activated")
+	}
 }
 
 func TestExternalMCPHandler_AddOrUpdateExternalMCP_Stdio(t *testing.T) {

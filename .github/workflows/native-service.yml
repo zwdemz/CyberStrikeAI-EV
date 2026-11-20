@@ -1,0 +1,101 @@
+name: Native service
+on:
+  pull_request:
+    paths: ['cmd/**', 'internal/**', 'tests/native/**', 'tests/internal/**', 'tools/exec.yaml', 'scripts/**', 'run.ps1', 'go.mod', 'go.sum', 'config.example.yaml', '.github/workflows/native-service.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Prepare Pi worker
+        run: go run ./cmd/build-runtime -root runtime/pi
+      - run: python -m pip install PyYAML==6.0.2
+      - name: Build Windows service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: Build Linux service
+        if: runner.os == 'Linux'
+        run: go build -mod=readonly -o bin/cyberstrike-ai ./cmd/server
+      - name: Test offline bundle validation and upgrade
+        run: python -m unittest discover -s tests/native -p test_windows_bundle.py -v
+      - name: Test tool platform declarations
+        run: go test ./tests/internal/config ./tests/internal/handler ./tests/internal/security -run 'TestToolPlatform|TestToolRuntime|TestUnsupportedPlatform' -count=1 -timeout 2m
+      - name: Test core persistence and configuration
+        run: go test -p 2 ./internal/config ./internal/database ./internal/knowledge ./internal/processguard -count=1 -timeout 5m
+      - name: Test Linux task index concurrency and shutdown
+        if: runner.os == 'Linux'
+        run: go test -race ./internal/database -run 'TestPlanTaskIndex|TestPlanTaskDirect' -count=1 -timeout 2m
+      - name: Test storage permissions and policy updates
+        run: go test -p 2 ./internal/security ./tests/internal/handler -run 'TestStorage|TestRBAC' -count=1 -timeout 3m
+      - name: Test rejected HTTP and TLS request delivery
+        run: go test ./internal/security -run 'TestAuthClosingBody|TestRejectedBodyBounds' -count=3 -timeout 1m
+      - name: Test saved conversation board access
+        run: go test -p 2 ./tests/internal/handler ./internal/handler ./internal/security -run 'TestPlanTask|TestTaskPlan|TestConversationBoardSnapshot|TestGetConversationPlanTasks|TestEveryProtectedRouteHasCatalogPermission' -count=1 -timeout 2m
+      - name: Test context and update output security
+        run: go test -p 2 ./internal/project ./internal/update ./internal/handler ./internal/multiagent -run 'Resume|SessionContextReloads|CompactionRefreshRestores|UpdateCredential|UpdateRedaction|RedactSource' -count=1 -timeout 3m
+      - name: Test native Windows execution and terminal
+        if: runner.os == 'Windows'
+        run: |
+          go test -p 1 ./tests/internal/security ./tests/internal/handler ./tests/internal/terminalpty -run 'TestWindows|TestNativeConsole|TestTerminalPermissionBoundary' -count=1 -timeout 2m
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test ./internal/multiagent -run TestPi -count=1 -timeout 2m
+      - name: Preserve Linux execution behavior
+        if: runner.os == 'Linux'
+        run: go test -p 2 ./internal/security ./internal/handler ./internal/multiagent ./tests/internal/security -count=1 -timeout 5m
+      - name: Verify Windows lifecycle
+        if: runner.os == 'Windows'
+        run: |
+          python tests/native/service_smoke.py --binary bin/cyberstrike-ai.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/native/service_smoke.py --binary bin/cyberstrike-ai.exe --https
+      - name: Verify Linux lifecycle
+        if: runner.os == 'Linux'
+        run: |
+          python tests/native/service_smoke.py --binary bin/cyberstrike-ai
+          python tests/native/service_smoke.py --binary bin/cyberstrike-ai --https
+      - name: Package and verify native Windows distribution
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'CyberStrikeAI-EV-windows-amd64.zip'
+          $installation = Join-Path $env:RUNNER_TEMP 'native package installation'
+          python scripts/windows_bundle.py build --binary bin/cyberstrike-ai.exe --output $package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $sha = (Get-Content "$package.sha256").Split(' ')[0]
+          python scripts/windows_bundle.py verify --package $package --sha256 $sha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/windows_bundle.py apply --package $package --sha256 $sha --target $installation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/native/service_smoke.py --binary "$installation/bin/cyberstrike-ai.exe" --repository $installation --https
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: windows-native-distribution
+          path: |
+            ${{ runner.temp }}/CyberStrikeAI-EV-windows-amd64.zip
+            ${{ runner.temp }}/CyberStrikeAI-EV-windows-amd64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

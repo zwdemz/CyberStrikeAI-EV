@@ -53,6 +53,8 @@ Frontend button hiding is only a usability feature. The server is the security b
 
 System roles cannot be edited or deleted. Their grants are rebuilt from the current permission catalog during upgrade, preventing stale grants from older versions. Create custom roles for different job functions.
 
+The built-in `admin` account is the permanent management fallback. It cannot be disabled, deleted, or stripped of its system `admin` role. These updates are rejected through both the UI and API, preserving the account details, permissions, and valid sessions. Display name and password updates, and role changes that retain `admin`, remain available. Other accounts can still be disabled or have their roles changed. This protection does not automatically repair previously missing role bindings.
+
 An account without a role can still authenticate but has almost no business capability; do not treat “no role” as a complete job profile.
 
 ---
@@ -74,6 +76,7 @@ Permissions use `module:action`. Common actions are `read`, `write`, `delete`, a
 | WebShell | `webshell:read`, `webshell:write`, `webshell:delete` |
 | C2 | `c2:read`, `c2:write`, `c2:delete` |
 | MCP | `mcp:read`, `mcp:execute`, `mcp:write`, `mcp:external:execute` |
+| One-click update (local source) | `update:read`, `update:apply` |
 | Knowledge | `knowledge:read`, `knowledge:write`, `knowledge:delete` |
 | Skills | `skills:read`, `skills:write`, `skills:delete` |
 | Markdown Agents | `agents:read`, `agents:write`, `agents:delete` |
@@ -89,7 +92,6 @@ Permissions use `module:action`. Common actions are `read`, `write`, `delete`, a
 | Attack chain | `attackchain:read`, `attackchain:write` |
 | Network-space search / Reconnaissance | `fofa:execute` |
 | OpenAPI | `openapi:read` |
-| Chat groups | `group:read`, `group:write`, `group:delete` |
 | Monitor | `monitor:read`, `monitor:write`, `monitor:delete` |
 
 Important distinctions:
@@ -100,6 +102,11 @@ Important distinctions:
 - `mcp:external:execute` allows Agent calls to external MCP tools and currently also requires `all` scope.
 - `fofa:execute` is kept for backward compatibility, but it now protects the Reconnaissance page for FOFA, ZoomEye, Quake, and Shodan searches.
 - `mcp:write` manages external MCP configuration; it is separate from external tool execution.
+- One-click update is two permissions: `update:read` shows the installed version and the gap against
+  the update source, while `update:apply` pulls the configured source repository's default branch
+  (the official repository by default), rebuilds the platform binary and swaps it. The mutating side additionally requires the session to hold that permission
+  with `all` scope - one machine has one source tree, so an `assigned`/`own` session must not be able
+  to move the code everybody else is running.
 - `robot:write` manages robot configuration and the test endpoint. Chatbot conversations use the bound user or configured service account's business permissions.
 
 ---
@@ -144,6 +151,7 @@ Some definitions have no owner. Their mutations require the corresponding permis
 - Knowledge mutations other than search.
 - Global HITL allowlist, reviewer, and audit policy.
 - C2 Profile mutations.
+- One-click update mutations (`check`/`apply`/`rollback`, i.e. `update:apply`).
 - Some global monitor statistics.
 
 ---
@@ -198,7 +206,7 @@ System roles are immutable; create a custom role instead of modifying them.
 ### When changes take effect
 
 - Updating a user, password, enabled state, or role membership revokes that user's sessions; they must sign in again.
-- Updating or deleting a custom role revokes all sessions; all users must sign in again.
+- Changing a custom role's permissions or scope, or deleting it, revokes only its members' sessions; those users must sign in again. Unrelated users remain signed in. Name, description, and permission-order changes do not revoke sessions, and deleting a role with no members leaves existing sessions valid.
 - Robots resolve the bound user/service account on every message, so disablement and role changes affect the next message.
 - Background batch jobs resolve a Principal from the task owner rather than trusting frontend state.
 
@@ -359,7 +367,7 @@ Inspect the scope for that specific permission, not only the overall display sco
 
 ### Role changed but the user sees old access
 
-Role changes revoke sessions. Sign in again. Robots resolve again on the next message.
+Role permission or scope changes revoke that role's members' sessions. Affected users must sign in again. Robots resolve again on the next message.
 
 ### The built-in `admin` password is lost
 

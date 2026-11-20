@@ -12,10 +12,14 @@
 ## Concepts and orchestration
 
 - [Architecture](architecture.md) · [Security Model](security-model.md) · [RBAC](rbac.md)
-- [Agents and Roles](agent-and-role-guide.md) · [Skills](skills-guide.md) · [Eino Multi-Agent](MULTI_AGENT_EINO.md)
+- [Agents and Roles](agent-and-role-guide.md) · [Skills](skills-guide.md) · [Pi Multi-Agent](MULTI_AGENT_PI.md) · [Agent Finalization](agent-finalization-best-practices.md)
+- [Blackboard and Context Memory](blackboard-context-memory.md)
+- [Tool Call Guard](tool-call-guard.md)
 - [Workflows](workflow-graph.md) · [Tool Execution Governance](tool-execution-governance.md) · [HITL Best Practices](hitl-best-practices.md)
 
 ## Feature guides
+
+- [AI execution view](execution-view.md)
 
 - [Asset Management](asset-management.md) · [Knowledge Base](knowledge-base.md) · [Robot / Chatbot](robot.md) · [Vision](VISION.md)
 - [WebShell](webshell.md) · [C2](c2.md) · [MCP Federation](mcp-federation.md)
@@ -30,3 +34,6 @@
 
 - [Developer Guide](developer-guide.md) · [Plugin Development](plugin-development.md) · [Frontend i18n](frontend-i18n.md)
 - [Testing](testing.md) · [Contributing](contributing-guide.md) · [Release Process](release-process.md)
+
+- [Linux reliability and containers](linux-reliability.md)
+- [Native Windows service (stage one)](windows-native.md)

@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"cyberstrike-ai/internal/agent"
+	"cyberstrike-ai/internal/agentruntime"
 	"cyberstrike-ai/internal/audit"
 	"cyberstrike-ai/internal/authctx"
 	"cyberstrike-ai/internal/c2"
 	"cyberstrike-ai/internal/config"
 	"cyberstrike-ai/internal/database"
-	"cyberstrike-ai/internal/einoobserve"
 	"cyberstrike-ai/internal/handler"
 	"cyberstrike-ai/internal/hitl"
 	"cyberstrike-ai/internal/knowledge"
@@ -29,10 +29,12 @@ import (
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/monitor"
-	"cyberstrike-ai/internal/multiagent"
+
 	"cyberstrike-ai/internal/robot"
 	"cyberstrike-ai/internal/security"
 	"cyberstrike-ai/internal/skillpackage"
+	"cyberstrike-ai/internal/storage"
+	"cyberstrike-ai/internal/testproxy"
 	"cyberstrike-ai/internal/toolguard"
 
 	"github.com/gin-gonic/gin"
@@ -43,7 +45,9 @@ import (
 
 // App 应用
 type App struct {
+	shutdownOnce       sync.Once
 	config             *config.Config
+	configDir          string
 	logger             *logger.Logger
 	router             *gin.Engine
 	mcpServer          *mcp.Server
@@ -51,6 +55,7 @@ type App struct {
 	agent              *agent.Agent
 	executor           *security.Executor
 	db                 *database.DB
+	proxyService       *testproxy.Service
 	knowledgeDB        *database.DB // 知识库数据库连接（如果使用独立数据库）
 	auth               *security.AuthManager
 	knowledgeManager   *knowledge.Manager        // 知识库管理器（用于动态初始化）
@@ -72,17 +77,31 @@ type App struct {
 	c2Watchdog         *c2.SessionWatchdog       // C2 会话看门狗
 	c2WatchdogCancel   context.CancelFunc        // 看门狗取消函数
 	c2Handler          *handler.C2Handler        // C2 REST（与 Manager 生命周期同步）
+	storageHandler     *handler.StorageHandler   // 运行空间占用统计与垃圾清理
 	auditSvc           *audit.Service
 }
 
 // New 创建新应用
-func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error) {
-	if err := multiagent.InitADK(); err != nil {
-		return nil, fmt.Errorf("初始化 Eino ADK: %w", err)
+func New(cfg *config.Config, log *logger.Logger, configPath, updateActivation string) (*App, error) {
+	if err := cfg.AgentRuntime.Validate(); err != nil {
+		return nil, err
+	}
+	prepareCtx, cancelPrepare := context.WithTimeout(context.Background(), 5*time.Minute)
+	prepareErr := agentruntime.EnsurePiRuntime(prepareCtx, cfg.AgentRuntime.NodePath, cfg.AgentRuntime.WorkerPath)
+	cancelPrepare()
+	if prepareErr != nil {
+		return nil, prepareErr
+	}
+	toolGuard, err := toolguard.NewManager(cfg.EffectiveToolGuard())
+	if err != nil {
+		return nil, fmt.Errorf("初始化调用拦截规则: %w", err)
 	}
 
 	gin.SetMode(gin.ReleaseMode)
-	router := gin.Default()
+	router, err := security.NewHTTPRouter(cfg.Server, log.Logger)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 HTTP 安全配置: %w", err)
+	}
 
 	// CORS中间件
 	router.Use(corsMiddleware(cfg.Server.CORSAllowedOrigins))
@@ -102,6 +121,13 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	if err != nil {
 		return nil, fmt.Errorf("初始化数据库失败: %w", err)
 	}
+
+	recovery, err := db.RecoverInterruptedTasks()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("recover interrupted tasks: %w", err)
+	}
+	log.Logger.Info("Recovered interrupted task state", zap.Int64("tasks", recovery.Tasks), zap.Int64("queues", recovery.Queues), zap.Int64("messages", recovery.Messages))
 
 	// 认证管理器（数据库初始化后挂载 RBAC）
 	authManager := security.NewAuthManager(cfg.Auth.SessionDurationHours)
@@ -145,24 +171,39 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	hitlRetention.PurgeExpired()
 	hitl.StartRetentionLoop(hitlRetention, log.Logger)
 
+	if err := db.InitTestProxyStorage(); err != nil {
+		return nil, fmt.Errorf("initialize test proxy storage: %w", err)
+	}
+	proxyService, err := testproxy.New(db, os.Getenv("TEST_PROXY_KEY"))
+	if err != nil {
+		return nil, err
+	}
+	if err := proxyService.Configure(cfg.TestProxy.MaxConcurrent, cfg.TestProxy.MaxConcurrentPerTarget, cfg.TestProxy.QueueTimeoutSeconds); err != nil {
+		return nil, err
+	}
+	if err := proxyService.ConfigureProbeURLs(cfg.TestProxy.ProbeURLs); err != nil {
+		return nil, err
+	}
+	testproxy.Install(proxyService)
+
 	// 创建MCP服务器（带数据库持久化）
 	mcpServer := mcp.NewServerWithStorage(log.Logger, db)
-	toolGuard, err := toolguard.NewManager(cfg.EffectiveToolGuard())
-	if err != nil {
-		return nil, fmt.Errorf("初始化工具调用安全规则失败: %w", err)
-	}
-	mcpServer.SetToolGuard(toolGuard)
 	mcpServer.SetToolAuthorizer(mcpToolAuthorizer(db))
+	mcpServer.SetToolGuard(toolGuard)
+	if err := mcpServer.ConfigureTrustedProxies(cfg.Server.TrustedProxies); err != nil {
+		return nil, fmt.Errorf("configure MCP trusted proxies: %w", err)
+	}
 	mcpServer.ConfigureHTTPToolCallTimeoutFromAgentMinutes(cfg.Agent.ToolTimeoutMinutes)
 	mcpServer.ConfigureToolWaitTimeoutSeconds(cfg.Agent.ToolWaitTimeoutSeconds)
-	mcpServer.ConfigureToolResultMaxBytes(cfg.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
-	mcpServer.ConfigureToolResultSpillRoot(cfg.MultiAgent.EinoMiddleware.ReductionRootDir)
+	mcpServer.ConfigureFailureCooldown(cfg.Agent.ToolFailureCooldown)
+	mcpServer.ConfigureToolResultMaxBytes(cfg.MultiAgent.Runtime.ReductionMaxLengthForTruncEffective())
+	mcpServer.ConfigureToolResultSpillRoot(cfg.MultiAgent.Runtime.ReductionRootDir)
 
 	// 创建安全工具执行器
 	executor := security.NewExecutor(&cfg.Security, mcpServer, log.Logger)
 	executor.SetShellNoOutputTimeoutSeconds(cfg.Agent.ShellNoOutputTimeoutSeconds)
-	executor.SetToolOutputMaxBytes(cfg.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
-	executor.SetToolOutputSpillRoot(cfg.MultiAgent.EinoMiddleware.ReductionRootDir)
+	executor.SetToolOutputMaxBytes(cfg.MultiAgent.Runtime.ReductionMaxLengthForTruncEffective())
+	executor.SetToolOutputSpillRoot(cfg.MultiAgent.Runtime.ReductionRootDir)
 
 	// 注册工具
 	executor.RegisterTools(mcpServer)
@@ -171,7 +212,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 			zap.String("tool", missing.Name),
 			zap.String("command", missing.Command),
 			zap.String("reason", missing.Reason),
-			zap.String("fallback", "execute-python-script"),
+			zap.String("action", "install dependency under tools/runtime and reload"),
 		)
 	}
 
@@ -184,9 +225,11 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	// 创建外部MCP管理器（使用与内部MCP服务器相同的存储）
 	externalMCPMgr := mcp.NewExternalMCPManagerWithStorage(log.Logger, db)
 	externalMCPMgr.SetToolAuthorizer(externalMCPToolAuthorizer())
+	externalMCPMgr.SetToolGuard(toolGuard)
 	externalMCPMgr.ConfigureToolWaitTimeoutSeconds(cfg.Agent.ToolWaitTimeoutSeconds)
-	externalMCPMgr.ConfigureToolResultMaxBytes(cfg.MultiAgent.EinoMiddleware.ReductionMaxLengthForTruncEffective())
-	externalMCPMgr.ConfigureToolResultSpillRoot(cfg.MultiAgent.EinoMiddleware.ReductionRootDir)
+	externalMCPMgr.ConfigureFailureCooldown(cfg.Agent.ToolFailureCooldown)
+	externalMCPMgr.ConfigureToolResultMaxBytes(cfg.MultiAgent.Runtime.ReductionMaxLengthForTruncEffective())
+	externalMCPMgr.ConfigureToolResultSpillRoot(cfg.MultiAgent.Runtime.ReductionRootDir)
 	externalMCPMgr.ConfigureResilience(mcp.ExternalMCPResilienceConfig{
 		MaxConcurrentPerServer:  cfg.Agent.ExternalMCPMaxConcurrentPerServer,
 		MaxConcurrentTotal:      cfg.Agent.ExternalMCPMaxConcurrentTotal,
@@ -262,14 +305,14 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 			return nil, fmt.Errorf("初始化知识库嵌入器失败: %w", err)
 		}
 
-		// 创建检索器（Eino MultiQuery + 重排流水线）
+		// 创建检索器（Agent MultiQuery + 重排流水线）
 		retrievalConfig := knowledge.RetrievalConfigFromYAML(cfg.Knowledge.Retrieval)
 		knowledgeRetriever = knowledge.NewRetriever(knowledgeDB, embedder, retrievalConfig, log.Logger)
 		if err := knowledge.WireRetrieverPipeline(context.Background(), knowledgeRetriever, &cfg.OpenAI); err != nil {
 			return nil, fmt.Errorf("初始化知识库检索流水线失败: %w", err)
 		}
 
-		// 创建索引器（Eino Compose 链）
+		// 创建索引器（Agent Compose 链）
 		knowledgeIndexer, err = knowledge.NewIndexer(context.Background(), knowledgeDB, embedder, log.Logger, &cfg.Knowledge)
 		if err != nil {
 			return nil, fmt.Errorf("初始化知识库索引器失败: %w", err)
@@ -362,18 +405,64 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	}
 
 	skillsDir := skillpackage.SkillsRootFromConfig(cfg.SkillsDir, configPath)
-	log.Logger.Debug("Skills 目录（Eino ADK skill 中间件 + Web 管理 API）", zap.String("skillsDir", skillsDir))
+	log.Logger.Debug("Skills 目录（Pi skill 中间件 + Web 管理 API）", zap.String("skillsDir", skillsDir))
 	configDir := filepath.Dir(configPath)
-	plantaskRel := strings.TrimSpace(cfg.MultiAgent.EinoMiddleware.PlantaskRelDir)
+	plantaskRel := strings.TrimSpace(cfg.MultiAgent.Runtime.PlantaskRelDir)
 	if plantaskRel == "" {
-		plantaskRel = ".eino/plantask"
+		plantaskRel = ".pi/plantask"
 	}
 	plantaskBase := filepath.Join(skillsDir, plantaskRel)
-	// Match eino_adk_run_loop: checkpoint_dir is used as configured (relative to process CWD when not absolute).
-	checkpointBase := strings.TrimSpace(cfg.MultiAgent.EinoMiddleware.CheckpointDir)
-	reductionRoot := strings.TrimSpace(cfg.MultiAgent.EinoMiddleware.ReductionRootDir)
+	// Keep the old checkpoint directory for cleanup of pre-migration task data.
+	checkpointBase := strings.TrimSpace(cfg.MultiAgent.Runtime.CheckpointDir)
+	reductionRoot := strings.TrimSpace(cfg.MultiAgent.Runtime.ReductionRootDir)
 	workspaceRoot := strings.TrimSpace(cfg.Agent.WorkspaceRootDir)
-	db.SetEinoConversationDirs(plantaskBase, checkpointBase, reductionRoot, workspaceRoot)
+	db.SetAgentConversationDirs(plantaskBase, checkpointBase, reductionRoot, workspaceRoot)
+	if err := db.SetAgentSessionDir(cfg.AgentSessionDir()); err != nil {
+		return nil, fmt.Errorf("register Pi session root: %w", err)
+	}
+
+	// 运行空间垃圾清理：根目录一律复用上面已解析好的同一批值，
+	// 避免在 storage 包内重新推导导致「清理的目录」与「实际写入的目录」不一致。
+	workspaceRootDir := strings.TrimSpace(workspaceRoot)
+	if workspaceRootDir == "" {
+		workspaceRootDir = filepath.Join("tmp", "workspace")
+	}
+	reductionRootDir := strings.TrimSpace(reductionRoot)
+	if reductionRootDir == "" {
+		reductionRootDir = filepath.Join("tmp", "reduction")
+	}
+	diagnosticLogDir := strings.TrimSpace(cfg.Log.DiagnosticDir)
+	if diagnosticLogDir == "" {
+		diagnosticLogDir = "log"
+	}
+	// chat_uploads 与 tmp/c2 目前均为相对进程工作目录的固定路径
+	// （见 handler.chatUploadsRootDirName 与 app/c2_lifecycle.go 的 c2.NewManager）。
+	chatUploadsRoot := "chat_uploads"
+	c2Root := filepath.Join("tmp", "c2")
+	// 让 DeleteConversation 一并删除上传附件：其 chat_upload_artifacts 行已由
+	// ON DELETE CASCADE 清除，此前磁盘文件会永久残留。
+	db.SetChatUploadsDir(chatUploadsRoot)
+	storageCleaner := storage.NewCleaner(storage.Options{
+		Config: cfg,
+		Paths: storage.Paths{
+			Workspace:            workspaceRootDir,
+			Reduction:            reductionRootDir,
+			ConversationArtifact: db.ConversationArtifactsBaseDir(),
+			Plantask:             plantaskBase,
+			C2:                   c2Root,
+			ChatUploads:          chatUploadsRoot,
+			WorkflowCheckpoints:  filepath.Join(filepath.Dir(dbPath), "workflow-checkpoints"),
+			DiagnosticLogs:       diagnosticLogDir,
+		},
+		Activity: db,
+		Logger:   log.Logger,
+	})
+	storageService := storage.NewService(storageCleaner, cfg, log.Logger)
+	storage.StartRetentionLoop(storageService, log.Logger)
+	storageHandler := handler.NewStorageHandler(storageCleaner, cfg, log.Logger)
+	storageHandler.SetConfigPath(configPath)
+	storageHandler.SetAudit(auditSvc)
+
 	agent.SetPromptBaseDir(configDir)
 
 	agentsDir := cfg.AgentsDir
@@ -405,11 +494,11 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	monitorHandler.SetTaskManager(agentHandler.TaskManager())
 	monitorHandler.SetAgentHandler(agentHandler)
 	notificationHandler := handler.NewNotificationHandler(db, agentHandler, log.Logger)
-	groupHandler := handler.NewGroupHandler(db, log.Logger)
 	authHandler := handler.NewAuthHandler(authManager, cfg, configPath, log.Logger)
 	authHandler.SetAudit(auditSvc)
 	attackChainHandler := handler.NewAttackChainHandler(db, &cfg.OpenAI, log.Logger)
 	vulnerabilityHandler := handler.NewVulnerabilityHandler(db, log.Logger)
+	vulnerabilityHandler.SetTaskStateProvider(agentHandler)
 	assetHandler := handler.NewAssetHandler(db, log.Logger)
 	projectHandler := handler.NewProjectHandler(db, log.Logger)
 	rbacHandler := handler.NewRBACHandler(db, log.Logger)
@@ -435,6 +524,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	externalMCPHandler := handler.NewExternalMCPHandler(externalMCPMgr, cfg, configPath, log.Logger)
 	externalMCPHandler.SetAudit(auditSvc)
 	roleHandler := handler.NewRoleHandler(cfg, configPath, log.Logger)
+	roleHandler.SetDB(db)
 	roleHandler.SetAudit(auditSvc)
 	skillsHandler := handler.NewSkillsHandler(cfg, configPath, log.Logger)
 	skillsHandler.SetAudit(auditSvc)
@@ -458,6 +548,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	conversationHandler := handler.NewConversationHandler(db, log.Logger)
 	conversationHandler.SetAudit(auditSvc)
 	conversationHandler.SetTaskStopper(agentHandler)
+	conversationHandler.SetTaskStateProvider(agentHandler)
 	auditHandler := handler.NewAuditHandler(db, auditSvc, log.Logger)
 	robotHandler := handler.NewRobotHandler(cfg, db, agentHandler, log.Logger)
 	robotHandler.SetAudit(auditSvc)
@@ -467,6 +558,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	// 创建 App 实例（部分字段稍后填充）
 	app := &App{
 		config:             cfg,
+		configDir:          configDir,
 		logger:             log,
 		router:             router,
 		mcpServer:          mcpServer,
@@ -474,6 +566,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		agent:              agent,
 		executor:           executor,
 		db:                 db,
+		proxyService:       proxyService,
 		knowledgeDB:        knowledgeDBConn,
 		auth:               authManager,
 		knowledgeManager:   knowledgeManager,
@@ -486,6 +579,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		c2Watchdog:         c2Watchdog,
 		c2WatchdogCancel:   watchdogCancel,
 		c2Handler:          c2Handler,
+		storageHandler:     storageHandler,
 		auditSvc:           auditSvc,
 	}
 	// 飞书/钉钉长连接（无需公网），启用时在后台启动；后续前端应用配置时会通过 RestartRobotConnections 重启
@@ -512,7 +606,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 	}
 	configHandler.SetWebshellToolRegistrar(webshellRegistrar)
 
-	// Skills 由 Eino ADK skill 中间件提供（多代理）；此处不注册 MCP 形态的技能工具
+	// Skills 由 Pi skill 中间件提供（多代理）；此处不注册 MCP 形态的技能工具
 	configHandler.SetSkillsToolRegistrar(func() error { return nil })
 
 	handler.RegisterBatchTaskMCPTools(mcpServer, agentHandler, log.Logger)
@@ -571,6 +665,9 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		return nil
 	})
 
+	updateHandler := handler.NewUpdateHandler(configDir, log.Logger, auditSvc,
+		app.updateRestart(configDir), updateActivation, configHandler.UpdateSource, configHandler.SetUpdateSource)
+
 	// 设置路由（使用 App 实例以便动态获取 handler）
 	setupRoutes(
 		router,
@@ -581,7 +678,6 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		conversationHandler,
 		robotHandler,
 		wechatRobotHandler,
-		groupHandler,
 		configHandler,
 		externalMCPHandler,
 		attackChainHandler,
@@ -604,6 +700,7 @@ func New(cfg *config.Config, log *logger.Logger, configPath string) (*App, error
 		mcpServer,
 		authManager,
 		openAPIHandler,
+		updateHandler,
 	)
 
 	return app, nil
@@ -645,6 +742,17 @@ func (a *App) Run() error {
 	return a.RunWithContext(context.Background())
 }
 
+// RestoreUpdateSessions consumes the handoff before the new HTTP listener starts.
+func (a *App) RestoreUpdateSessions(handoff *os.File) {
+	if handoff == nil {
+		return
+	}
+	defer handoff.Close()
+	if err := a.auth.RestoreRestartSessions(handoff); err != nil {
+		a.logger.Warn("无法恢复更新前的登录会话", zap.Error(err))
+	}
+}
+
 // RunWithContext 启动应用，支持通过 context 取消来优雅关闭
 func (a *App) RunWithContext(ctx context.Context) error {
 	// 启动MCP服务器（如果启用）
@@ -656,7 +764,11 @@ func (a *App) RunWithContext(ctx context.Context) error {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/mcp", a.mcpHandlerWithAuth)
 
-		mcpServer = &http.Server{Addr: mcpAddr, Handler: mux}
+		var err error
+		mcpServer, err = security.NewHTTPServer(mcpAddr, mux, a.config.Server)
+		if err != nil {
+			return err
+		}
 		go func() {
 			if err := mcpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				a.logger.Error("MCP服务器启动失败", zap.Error(err))
@@ -666,12 +778,15 @@ func (a *App) RunWithContext(ctx context.Context) error {
 
 	// 启动主服务器（可选 HTTPS + HTTP/2，见 config server.tls_*）
 	addr := fmt.Sprintf("%s:%d", a.config.Server.Host, a.config.Server.Port)
-	tlsMode, tlsConf, certFile, keyFile, tlsErr := prepareMainServerTLS(&a.config.Server)
+	tlsMode, tlsConf, certFile, keyFile, tlsErr := prepareMainServerTLS(&a.config.Server, a.configDir)
 	if tlsErr != nil {
 		return tlsErr
 	}
 
-	srv := &http.Server{Addr: addr, Handler: a.router}
+	srv, err := security.NewHTTPServer(addr, a.router, a.config.Server)
+	if err != nil {
+		return err
+	}
 	var mainMux *mainServerMux
 	httpRedirect := config.ServerHTTPRedirectEnabled(&a.config.Server)
 	if tlsMode != mainTLSOff {
@@ -685,8 +800,8 @@ func (a *App) RunWithContext(ctx context.Context) error {
 				zap.String("address", addr),
 				zap.String("cert", certFile),
 			)
-		case mainTLSInMemorySelfSigned:
-			a.logger.Debug("启动 HTTPS 主服务（内存自签证书，仅测试；已启用 HTTP/2 协商）",
+		case mainTLSAutoSelfSigned:
+			a.logger.Debug("启动 HTTPS 主服务（自动自签证书，仅测试；已启用 HTTP/2 协商）",
 				zap.String("address", addr),
 			)
 		}
@@ -716,7 +831,6 @@ func (a *App) RunWithContext(ctx context.Context) error {
 		}
 	}()
 
-	var err error
 	switch {
 	case tlsMode != mainTLSOff && httpRedirect:
 		var tlsConfReady *tls.Config
@@ -736,7 +850,7 @@ func (a *App) RunWithContext(ctx context.Context) error {
 		err = srv.ListenAndServe()
 	case tlsMode == mainTLSFromFiles:
 		err = srv.ListenAndServeTLS(certFile, keyFile)
-	case tlsMode == mainTLSInMemorySelfSigned:
+	case tlsMode == mainTLSAutoSelfSigned:
 		var ln net.Listener
 		ln, err = tls.Listen("tcp", addr, srv.TLSConfig)
 		if err == nil {
@@ -753,9 +867,14 @@ func (a *App) RunWithContext(ctx context.Context) error {
 
 // Shutdown 关闭应用
 func (a *App) Shutdown() {
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	_ = einoobserve.ShutdownOtel(shutdownCtx)
-	shutdownCancel()
+	a.shutdownOnce.Do(a.shutdown)
+}
+
+func (a *App) shutdown() {
+	defer testproxy.Uninstall(a.proxyService)
+	if a.agentHandler != nil {
+		a.agentHandler.ShutdownTasks()
+	}
 	if a.alertCancel != nil {
 		a.alertCancel()
 		a.alertCancel = nil
@@ -884,7 +1003,6 @@ func setupRoutes(
 	conversationHandler *handler.ConversationHandler,
 	robotHandler *handler.RobotHandler,
 	wechatRobotHandler *handler.WechatRobotHandler,
-	groupHandler *handler.GroupHandler,
 	configHandler *handler.ConfigHandler,
 	externalMCPHandler *handler.ExternalMCPHandler,
 	attackChainHandler *handler.AttackChainHandler,
@@ -907,9 +1025,12 @@ func setupRoutes(
 	mcpServer *mcp.Server,
 	authManager *security.AuthManager,
 	openAPIHandler *handler.OpenAPIHandler,
+	updateHandler *handler.UpdateHandler,
 ) {
 	// API路由
 	api := router.Group("/api")
+
+	handler.RegisterTestProxyRoutes(api, authManager, app.db, app.logger.Logger, configHandler.ProxyToolCapabilities)
 
 	// 认证相关路由
 	authRoutes := api.Group("/auth")
@@ -918,7 +1039,7 @@ func setupRoutes(
 		authRoutes.POST("/login", security.RateLimitMiddleware(loginRL), authHandler.Login)
 		authRoutes.POST("/logout", security.AuthMiddleware(authManager), authHandler.Logout)
 		authRoutes.POST("/change-password", security.AuthMiddleware(authManager), security.RequirePermission("auth:self"), authHandler.ChangePassword)
-		authRoutes.GET("/validate", security.AuthMiddleware(authManager), authHandler.Validate)
+		authRoutes.GET("/validate", updateHandler.SetBootHeader, security.AuthMiddleware(authManager), authHandler.Validate)
 		authRoutes.POST("/robot-binding-code", security.AuthMiddleware(authManager), security.RequirePermission("auth:self"), robotHandler.CreateRobotBindingCode)
 		authRoutes.GET("/robot-bindings", security.AuthMiddleware(authManager), security.RequirePermission("auth:self"), robotHandler.ListMyRobotBindings)
 		authRoutes.DELETE("/robot-bindings/:id", security.AuthMiddleware(authManager), security.RequirePermission("auth:self"), robotHandler.DeleteMyRobotBinding)
@@ -972,9 +1093,18 @@ func setupRoutes(
 		protected.POST("/robot/wechat/qrcode/verify", wechatRobotHandler.HandleWechatVerifyCode)
 		protected.GET("/robot/wechat/status", wechatRobotHandler.HandleWechatStatus)
 
-		// Eino ADK 单代理（ChatModelAgent + Runner；不依赖 multi_agent.enabled）
-		protected.POST("/eino-agent", agentHandler.EinoSingleAgentLoop)
-		protected.POST("/eino-agent/stream", agentHandler.EinoSingleAgentLoopStream)
+		// Pi 单代理（ChatModelAgent + Runner；不依赖 multi_agent.enabled）
+		protected.POST("/agent", agentHandler.SingleAgentLoop)
+		protected.POST("/agent/runs", agentHandler.SubmitSingleAgentRun)
+		protected.POST("/multi-agent/runs", agentHandler.SubmitMultiAgentRun)
+		protected.GET("/agent/runs/:runId", agentHandler.GetAgentRun)
+		protected.GET("/multi-agent/runs/:runId", agentHandler.GetAgentRun)
+		protected.POST("/agent/stream", agentHandler.SingleAgentLoopStream)
+		// Transport aliases for installed older clients; all execute the same Pi handlers.
+		protected.POST("/eino-agent", agentHandler.SingleAgentLoop)
+		protected.POST("/eino-agent/runs", agentHandler.SubmitSingleAgentRun)
+		protected.GET("/eino-agent/runs/:runId", agentHandler.GetAgentRun)
+		protected.POST("/eino-agent/stream", agentHandler.SingleAgentLoopStream)
 		protected.GET("/hitl/pending", agentHandler.ListHITLPending)
 		protected.GET("/hitl/logs", agentHandler.ListHITLLogs)
 		protected.DELETE("/hitl/logs", agentHandler.DeleteHITLLogs)
@@ -998,7 +1128,7 @@ func setupRoutes(
 		protected.GET("/agent-loop/task-events", agentHandler.SubscribeAgentTaskEvents)
 		protected.GET("/agent-loop/tasks/completed", agentHandler.ListCompletedTasks)
 
-		// Eino DeepAgent 多代理（与单 Agent 并存，需 config.multi_agent.enabled）
+		// Agent DeepAgent 多代理（与单 Agent 并存，需 config.multi_agent.enabled）
 		// 多代理路由常注册；是否可用由运行时 h.config.MultiAgent.Enabled 决定（应用配置后无需重启）
 		protected.POST("/multi-agent", agentHandler.MultiAgentLoop)
 		protected.POST("/multi-agent/stream", agentHandler.MultiAgentLoopStream)
@@ -1048,26 +1178,18 @@ func setupRoutes(
 		protected.GET("/conversations", conversationHandler.ListConversations)
 		protected.GET("/conversations/:id", conversationHandler.GetConversation)
 		protected.GET("/conversations/:id/token-usage", conversationHandler.GetConversationTokenUsageStats)
+		protected.GET("/conversations/:id/plan-tasks", conversationHandler.GetConversationPlanTasks)
+		protected.GET("/conversations/:id/plan-tasks/:taskId/evidence", conversationHandler.GetPlanTaskEvidence)
+		protected.GET("/conversations/:id/plan-tasks/:taskId/evidence-sources", conversationHandler.GetPlanTaskEvidenceSources)
+		protected.POST("/conversations/:id/plan-tasks/:taskId/evidence", conversationHandler.AddPlanTaskEvidence)
+		protected.DELETE("/conversations/:id/plan-tasks/:taskId/evidence/:linkId", conversationHandler.DeletePlanTaskEvidence)
 		protected.GET("/messages/:id/process-details", conversationHandler.GetMessageProcessDetails)
 		protected.GET("/process-details/:id", conversationHandler.GetProcessDetail)
 		protected.PUT("/conversations/:id", conversationHandler.UpdateConversation)
 		protected.PUT("/conversations/:id/project", conversationHandler.SetConversationProject)
 		protected.DELETE("/conversations/:id", conversationHandler.DeleteConversation)
 		protected.POST("/conversations/:id/delete-turn", conversationHandler.DeleteConversationTurn)
-		protected.PUT("/conversations/:id/pinned", groupHandler.UpdateConversationPinned)
-
-		// 对话分组
-		protected.POST("/groups", groupHandler.CreateGroup)
-		protected.GET("/groups", groupHandler.ListGroups)
-		protected.GET("/groups/:id", groupHandler.GetGroup)
-		protected.PUT("/groups/:id", groupHandler.UpdateGroup)
-		protected.DELETE("/groups/:id", groupHandler.DeleteGroup)
-		protected.PUT("/groups/:id/pinned", groupHandler.UpdateGroupPinned)
-		protected.GET("/groups/:id/conversations", groupHandler.GetGroupConversations)
-		protected.GET("/groups/mappings", groupHandler.GetAllMappings)
-		protected.POST("/groups/conversations", groupHandler.AddConversationToGroup)
-		protected.DELETE("/groups/:id/conversations/:conversationId", groupHandler.RemoveConversationFromGroup)
-		protected.PUT("/groups/:id/conversations/:conversationId/pinned", groupHandler.UpdateConversationPinnedInGroup)
+		protected.PUT("/conversations/:id/pinned", conversationHandler.UpdateConversationPinned)
 
 		// 监控
 		protected.GET("/monitor", monitorHandler.Monitor)
@@ -1091,8 +1213,20 @@ func setupRoutes(
 		protected.PUT("/config", configHandler.UpdateConfig)
 		protected.POST("/config/apply", configHandler.ApplyConfig)
 		protected.POST("/config/test-openai", configHandler.TestOpenAI)
+		protected.POST("/config/detect-context", configHandler.DetectContext)
+		protected.POST("/config/test-typesafe", configHandler.TestTypeSafe)
 		protected.POST("/config/test-vision", configHandler.TestVision)
 		protected.POST("/config/list-models", configHandler.ListModels)
+
+		// 系统更新（保持本安装自身源码最新：查看、检查、应用、进度、回滚、接入、更新源）
+		protected.GET("/system/update", updateHandler.GetStatus)
+		protected.GET("/system/update/job", updateHandler.Job)
+		protected.POST("/system/update/check", updateHandler.Check)
+		protected.POST("/system/update/apply", updateHandler.Apply)
+		protected.POST("/system/update/restart", updateHandler.Restart)
+		protected.POST("/system/update/rollback", updateHandler.Rollback)
+		protected.POST("/system/update/adopt", updateHandler.Adopt)
+		protected.POST("/system/update/source", updateHandler.SaveSource)
 
 		// 系统设置 - 终端（执行命令，提高运维效率）
 		protected.POST("/terminal/run", terminalHandler.RunCommand)
@@ -1105,6 +1239,12 @@ func setupRoutes(
 		protected.GET("/audit/logs", auditHandler.ListLogs)
 		protected.GET("/audit/logs/export", auditHandler.ExportLogs)
 		protected.GET("/audit/logs/:id", auditHandler.GetLog)
+
+		// 运行空间占用与垃圾清理
+		protected.GET("/storage/meta", app.storageHandler.Meta)
+		protected.GET("/storage/status", app.storageHandler.Status)
+		protected.PUT("/storage/policy", app.storageHandler.UpdatePolicy)
+		protected.POST("/storage/cleanup", app.storageHandler.Cleanup)
 
 		// 外部MCP管理
 		protected.GET("/external-mcp", externalMCPHandler.GetExternalMCPs)
@@ -1270,10 +1410,15 @@ func setupRoutes(
 		protected.DELETE("/vulnerabilities/batch", vulnerabilityHandler.BatchDeleteVulnerabilities)
 		protected.GET("/vulnerabilities/filter-options", vulnerabilityHandler.GetVulnerabilityFilterOptions)
 		protected.GET("/vulnerabilities/stats", vulnerabilityHandler.GetVulnerabilityStats)
+		protected.POST("/vulnerabilities/cases", vulnerabilityHandler.MergeVulnerabilities)
+		protected.POST("/vulnerabilities/cases/:caseID/split", vulnerabilityHandler.DissolveVulnerabilityCase)
 		protected.GET("/vulnerability-alerts/subscription", vulnerabilityHandler.GetMyAlertSubscription)
 		protected.PUT("/vulnerability-alerts/subscription", vulnerabilityHandler.UpdateMyAlertSubscription)
 		protected.GET("/vulnerabilities/:id", vulnerabilityHandler.GetVulnerability)
+		protected.GET("/vulnerabilities/:id/context", vulnerabilityHandler.VulnerabilityContext)
+		protected.GET("/vulnerabilities/:id/download", vulnerabilityHandler.DownloadVulnerability)
 		protected.POST("/vulnerabilities", vulnerabilityHandler.CreateVulnerability)
+		protected.POST("/vulnerabilities/:id/retest", vulnerabilityHandler.CreateRetest)
 		protected.PUT("/vulnerabilities/:id", vulnerabilityHandler.UpdateVulnerability)
 		protected.DELETE("/vulnerabilities/:id", vulnerabilityHandler.DeleteVulnerability)
 
@@ -2088,14 +2233,14 @@ func initializeKnowledge(
 		return nil, fmt.Errorf("初始化知识库嵌入器失败: %w", err)
 	}
 
-	// 创建检索器（Eino MultiQuery + 重排流水线）
+	// 创建检索器（Agent MultiQuery + 重排流水线）
 	retrievalConfig := knowledge.RetrievalConfigFromYAML(cfg.Knowledge.Retrieval)
 	knowledgeRetriever := knowledge.NewRetriever(knowledgeDB, embedder, retrievalConfig, logger)
 	if err := knowledge.WireRetrieverPipeline(context.Background(), knowledgeRetriever, &cfg.OpenAI); err != nil {
 		return nil, fmt.Errorf("初始化知识库检索流水线失败: %w", err)
 	}
 
-	// 创建索引器（Eino Compose 链）
+	// 创建索引器（Agent Compose 链）
 	knowledgeIndexer, err := knowledge.NewIndexer(context.Background(), knowledgeDB, embedder, logger, &cfg.Knowledge)
 	if err != nil {
 		return nil, fmt.Errorf("初始化知识库索引器失败: %w", err)

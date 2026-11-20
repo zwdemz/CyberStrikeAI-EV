@@ -35,6 +35,7 @@ type MonitorStorage interface {
 
 // Server MCP服务器
 type Server struct {
+	trustedProxies        []string // guarded by mu
 	tools                 map[string]ToolHandler
 	toolDefs              map[string]Tool // 工具定义
 	executions            map[string]*ToolExecution
@@ -353,13 +354,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	defer s.removeSSEClient(client.id)
 
 	// 官方规范：首个事件为 endpoint，data 为消息端点 URL（客户端将向该 URL POST 请求）
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if r.URL.Scheme != "" {
-		scheme = r.URL.Scheme
-	}
+	scheme := s.endpointScheme(r)
 	endpointURL := fmt.Sprintf("%s://%s%s?sessionid=%s", scheme, r.Host, r.URL.Path, sessionID)
 	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURL)
 	flusher.Flush()
@@ -585,7 +580,7 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 			s.mu.Unlock()
 		}
 
-		s.updateStats(req.Name, true)
+		s.updateStats(req.Name, ToolExecutionStatusFailed)
 
 		return &Message{
 			ID:      msg.ID,
@@ -616,7 +611,6 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 	}
 	cancelledWithUserNote := s.applyAbortUserNoteToCancelledToolResult(executionID, &result, &err)
 	now := time.Now()
-	var failed bool
 	var finalResult *ToolResult
 
 	s.mu.Lock()
@@ -627,13 +621,15 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		st, msg := executionStatusAndMessage(err)
 		execution.Status = st
 		execution.Error = msg
-		failed = st != "cancelled"
+	} else if result != nil && result.Blocked {
+		execution.Status = ToolExecutionStatusBlocked
+		execution.Error = firstToolResultText(result, toolGuardBlockedPrefix)
+		execution.Result = result
 	} else if result != nil && result.IsError {
 		if cancelledWithUserNote {
 			execution.Status = "cancelled"
 			execution.Error = ""
 			execution.Result = result
-			failed = false
 		} else {
 			execution.Status = "failed"
 			if len(result.Content) > 0 {
@@ -642,7 +638,6 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 				execution.Error = "工具执行返回错误结果"
 			}
 			execution.Result = result
-			failed = true
 		}
 	} else {
 		execution.Status = "completed"
@@ -654,7 +649,6 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 			}
 		}
 		execution.Result = result
-		failed = false
 	}
 
 	finalResult = execution.Result
@@ -666,7 +660,7 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 		}
 	}
 
-	s.updateStats(req.Name, failed)
+	s.updateStats(req.Name, execution.Status)
 
 	if s.storage != nil {
 		s.mu.Lock()
@@ -744,15 +738,15 @@ func (s *Server) handleCallTool(requestCtx context.Context, msg *Message) *Messa
 }
 
 // updateStats 更新统计信息
-func (s *Server) updateStats(toolName string, failed bool) {
+func (s *Server) updateStats(toolName string, status string) {
 	now := time.Now()
 	if s.storage != nil {
 		totalCalls := 1
 		successCalls := 0
 		failedCalls := 0
-		if failed {
+		if executionStatusCountsAsFailed(status) {
 			failedCalls = 1
-		} else {
+		} else if status == ToolExecutionStatusCompleted {
 			successCalls = 1
 		}
 		if err := s.storage.UpdateToolStats(toolName, totalCalls, successCalls, failedCalls, &now); err != nil {
@@ -774,10 +768,12 @@ func (s *Server) updateStats(toolName string, failed bool) {
 	stats.TotalCalls++
 	stats.LastCallTime = &now
 
-	if failed {
+	if executionStatusCountsAsFailed(status) {
 		stats.FailedCalls++
-	} else {
+	} else if status == ToolExecutionStatusCompleted {
 		stats.SuccessCalls++
+	} else if status == ToolExecutionStatusBlocked {
+		stats.BlockedCalls++
 	}
 }
 
@@ -932,6 +928,7 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 	handle, err := s.executionService.Submit(ctx, ExecutionRequest{
 		ToolName:       toolName,
 		Arguments:      args,
+		HardTimeout:    synchronousExecutionTimeout(ctx),
 		ConversationID: MCPConversationIDFromContext(ctx),
 		OwnerUserID:    ownerUserID,
 		Run: func(runCtx context.Context) (*ToolResult, error) {
@@ -956,8 +953,9 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 			return handler(runCtx, args)
 		},
 		OnDone: func(exec *ToolExecution) {
-			failed := exec != nil && exec.Status != ToolExecutionStatusCompleted && exec.Status != ToolExecutionStatusCancelled
-			s.updateStats(toolName, failed)
+			if exec != nil {
+				s.updateStats(toolName, exec.Status)
+			}
 		},
 	})
 	if err != nil {
@@ -967,7 +965,7 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 	s.mu.RLock()
 	waitTimeout := s.toolWaitTimeout
 	s.mu.RUnlock()
-	if isExecutionControlTool(toolName) {
+	if isExecutionControlTool(toolName) || synchronousExecutionTimeout(ctx) > 0 {
 		waitTimeout = 0
 	}
 	snapshot, waitErr := s.executionService.Wait(ctx, handle.ID, waitTimeout)
@@ -975,6 +973,9 @@ func (s *Server) CallTool(ctx context.Context, toolName string, args map[string]
 		return internalMCPWaitTimeoutResult(snapshot, waitTimeout), handle.ID, nil
 	}
 	if waitErr != nil {
+		if synchronousExecutionTimeout(ctx) > 0 {
+			s.executionService.Cancel(handle.ID, "Synchronous tool caller stopped")
+		}
 		return nil, handle.ID, waitErr
 	}
 	if snapshot == nil || snapshot.Execution == nil {
@@ -1025,7 +1026,7 @@ func isExecutionControlTool(toolName string) bool {
 	}
 }
 
-// BeginToolExecution 创建 running 状态的执行记录，供 Eino 等非 CallTool 路径在工具开始时落库。
+// BeginToolExecution 创建 running 状态的执行记录，供 Agent 等非 CallTool 路径在工具开始时落库。
 func (s *Server) BeginToolExecution(ctx context.Context, toolName string, args map[string]interface{}) string {
 	if s == nil {
 		return ""
@@ -1139,7 +1140,7 @@ func (s *Server) FinishToolExecution(ctx context.Context, executionID, toolName 
 		}
 	}
 
-	s.updateStats(exec.ToolName, failed)
+	s.updateStats(exec.ToolName, exec.Status)
 
 	if s.storage != nil {
 		s.mu.Lock()
@@ -1169,7 +1170,7 @@ func (s *Server) AppendToolExecutionPartialOutput(executionID, chunk string) {
 }
 
 // RecordCompletedToolInvocation 将已在其它路径完成的工具调用写入监控存储（格式与 CallTool 结束后一致），
-// 用于 Eino ADK filesystem execute 等未经过 CallTool 的场景；返回 executionId 供助手消息 mcpExecutionIds 关联。
+// 用于 Pi filesystem execute 等未经过 CallTool 的场景；返回 executionId 供助手消息 mcpExecutionIds 关联。
 func (s *Server) RecordCompletedToolInvocation(ctx context.Context, toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
 	return s.FinishToolExecution(ctx, "", toolName, args, resultText, invokeErr)
 }
@@ -1182,6 +1183,11 @@ func (s *Server) UpdateToolExecutionResult(executionID string, result *ToolResul
 	executionID = strings.TrimSpace(executionID)
 	if executionID == "" || result == nil {
 		return nil
+	}
+	if previous, ok := s.GetExecution(executionID); ok && previous != nil &&
+		(previous.Status == ToolExecutionStatusBlocked || previous.Result != nil && previous.Result.Blocked) {
+		result = cloneToolResult(result)
+		result.Blocked, result.IsError = true, true
 	}
 	s.mu.Lock()
 	spill := ToolResultSpillConfig{
@@ -1251,7 +1257,7 @@ func (s *Server) unregisterRunningCancel(id string) {
 	s.runningCancelsMu.Unlock()
 }
 
-// RegisterToolExecutionCancel lets non-ExecutionService tool paths, such as Eino
+// RegisterToolExecutionCancel lets non-ExecutionService tool paths, such as Agent
 // filesystem execute, participate in cancel_tool_execution by execution_id.
 func (s *Server) RegisterToolExecutionCancel(id string, cancel context.CancelFunc) {
 	id = strings.TrimSpace(id)
@@ -1298,6 +1304,9 @@ func (s *Server) applyAbortUserNoteToCancelledToolResult(executionID string, res
 	}
 	hasErr := err != nil && *err != nil
 	hasRes := result != nil && *result != nil
+	if hasRes && (*result).Blocked {
+		return false
+	}
 	if !hasErr && !hasRes {
 		return false
 	}

@@ -15,7 +15,7 @@
 
 ## 执行模型
 
-普通工具调用仍然对 Eino/Agent 表现为一次标准 tool call，但底层执行分为两段：
+普通工具调用仍然对 Pi/Agent 表现为一次标准 tool call，但底层执行分为两段：
 
 ```text
 Agent 调用工具
@@ -67,7 +67,7 @@ partial output 是“已产生输出的有界预览”，不等同于最终 `res
 4. 仍未完成时可继续等待，或调用 cancel_tool_execution
 ```
 
-`tool_wait_timeout_seconds` 适用于内部 MCP、外部 MCP，以及 Eino filesystem 的流式 `execute`。Eino 的 `ls/read_file/write_file/edit_file/glob/grep` 等非流式 filesystem 工具会写入 execution 监控记录，但不作为后台 worker 做软等待续跑。
+`tool_wait_timeout_seconds` 适用于内部 MCP、外部 MCP，以及 Pi filesystem 的流式 `execute`。Pi 的 `ls/read_file/write_file/edit_file/glob/grep` 等非流式 filesystem 工具会写入 execution 监控记录，但不作为后台 worker 做软等待续跑。
 
 ## 取消和会话清理
 
@@ -98,11 +98,11 @@ agent:
 
 ## 输出兜底
 
-系统使用 `multi_agent.eino_middleware.reduction_max_length_for_trunc` 作为统一工具结果上限。当前示例配置为 50000 bytes。
+系统使用 `multi_agent.runtime.reduction_max_length_for_trunc` 作为统一工具结果上限。当前示例配置为 50000 bytes。
 
 ```yaml
 multi_agent:
-  eino_middleware:
+  runtime:
     reduction_enable: true
     reduction_max_length_for_trunc: 50000
 ```
@@ -114,7 +114,7 @@ multi_agent:
 | Agent 实际拿到的工具结果 | 使用兜底后的 canonical result |
 | DB/监控存储 | 保存同一份 canonical result |
 | `get_tool_execution` / `wait_tool_execution` | 读取同一份 canonical result |
-| Eino `execute` / filesystem 监控记录 | 完成记录前统一兜底 |
+| Pi `execute` / filesystem 监控记录 | 完成记录前统一兜底 |
 | 非流式 `exec` stdout/stderr | 源头 bounded buffer |
 | 流式 `exec` stdout/stderr | 推送给前端的累计输出也受上限控制 |
 | PTY 执行路径 | 同样受上限控制 |
@@ -176,7 +176,7 @@ agent:
   shell_no_output_timeout_seconds: 1200
 
 multi_agent:
-  eino_middleware:
+  runtime:
     reduction_enable: true
     reduction_max_length_for_trunc: 50000
 ```
@@ -221,3 +221,64 @@ PY
 
 - 外部 MCP 的远端 server 内部如何采集输出不由 CyberStrikeAI 控制；CyberStrikeAI 会在结果进入本系统后统一兜底、限并发和熔断。
 - 超长工具输出会在截断前写入本地 `tmp/reduction/.../trunc/<id>`（或 `reduction_root_dir`），bounded result 中包含可 `read_file` 的绝对路径。
+
+## 本轮任务的进程生命周期
+
+每轮任务有独立 `runId`，本地进程与异步 MCP worker 都通过 context 保留归属。取消 context、工具返回、SSE 断线不等于资源已回收。
+
+- `exec ... &` 与 Pi 后台执行立即返回，但仍属于本轮任务；无任务归属的后台启动被拒绝。前台工具退出时清理遗留子进程，跨工具调用运行的任务应使用显式后台入口。
+- 完成、失败、超时收尾、用户停止、服务正常关闭都会封闭启动入口、取消 worker、终止进程并等待回收。“中断并继续”保留本轮归属。
+- Unix 先等待进程组主动退出，再强制终止并验证。环境变量 `CS_CLEANUP_GRACE`、`CS_CLEANUP_KILL`、`CS_CLEANUP_GUARD` 分别控制主动退出、SIGKILL 后回收和隔离后端的等待时间，接受正的 Go duration（例如 `10s`），未配置或无效时各用 3 秒。普通清理失败保留 `cleanup_failed` 和进程组/worker ID，每 15 秒巡检重试。
+- 工具 worker 的登记与任务关闭互斥；即使 MCP 使用 `WithoutCancel`，任务也会等待其退出。旧轮次的延迟回调无法接管新轮次的进程或提交新 worker。
+
+Linux 上，直接子进程回收后，只剩僵尸进程的组视为已退出。使用进程组 watchdog 时，若清理超时且组内仍存活的成员均处于 D 态并已有待投递的 SIGKILL，等本地 worker 退出后，任务记为 `cleanup_unconfirmed`。服务日志记录 run ID 和 PGID，进程解除阻塞后由内核处理挂起的信号。cgroup 和 Windows Job Object 仍按后端自身的机制验证清理。
+
+### 操作系统隔离和崩溃回收
+
+| 平台 | 实现 | 崩溃回收与限制 |
+| --- | --- | --- |
+| Linux，已配置 cgroup v2 | 每轮创建独立 cgroup，使用 `clone3(CLONE_INTO_CGROUP)` 在创建时归组；配置进程数、内存、CPU 限额 | 独立守护进程在主程序管道 EOF 后写 `cgroup.kill`，验证 `populated=0`；启动时独占委派根并回收遗留任务组。`setsid` 不会脱离 cgroup |
+| Windows | 每轮 Job Object，守护进程先加入 Job；任务通过原子父进程属性继承 Job，避免启动后再分配的竞态 | `KILL_ON_JOB_CLOSE`、主动 `TerminateJobObject` 和活跃进程数验证；进程数、内存与可选 CPU 限额 |
+| macOS／未配置 cgroup 的 Unix | 独立进程组和守护进程，子进程在登记确认前通过管道等待 | 主程序被强杀后，管道 EOF 触发整组清理；无法限制主动 `setsid` 逃逸，不能作为强隔离部署 |
+
+守护进程自身异常退出时，仍存活的宿主会终止相应资源；IPC 有超时。Linux 的遗留回收依据独占目录与随机任务标识，不重放历史 PID。
+
+这属于生命周期隔离，不是针对同权限恶意代码的完整安全沙箱。能够修改 cgroup、取得外部父进程句柄或杀死宿主与守护进程的程序仍需要容器/不同操作系统身份及权限策略限制。Linux 容器部署应使用 init 回收孤儿进程。`required` 模式在缺少相应内核能力或权限时拒绝运行，不会悄悄降级。
+
+### 配置与上线
+
+默认 `auto` 在 Windows 使用 Job Object；Unix 未指定 cgroup 根时使用进程组守护。Linux 生产部署需配置独立的 systemd 服务，设置 `Delegate=cpu memory pids`、`KillMode=control-group` 和 `Restart=on-failure`，将以下严格隔离配置 **合并到现有配置**：
+
+```yaml
+security:
+  process_isolation:
+    mode: required
+    cgroup_root: auto
+    max_processes: 256
+    memory_max_bytes: 2147483648
+    cpu_quota_micros: 200000
+```
+
+需要 Linux 5.14+、cgroup v2、允许 `clone3`，以及 `Delegate=cpu memory pids`。`cgroup_root: auto` 用于 systemd 的独立委派单元；也可指定受控的绝对路径，禁止使用整台主机的层级根。配置改变需要重启。Windows 留空 `cgroup_root`，可以使用 `required`；macOS 的 `required` 会明确报错。
+
+服务启动时会真正创建并回收一个探测进程，验证权限和内核支持；也可在不启动 HTTP/MCP 服务的情况下单独运行：
+
+```sh
+./cyberstrike-ai --check-process-isolation -config config.yaml
+```
+
+输出 `cgroup_v2`、`windows_job` 或 `process_group_watchdog`。运行/历史任务 API 的 `isolationBackend` 字段提供每轮实际采用的后端。systemd 的 `KillMode=control-group` 和失败重启为整个服务额外兜底；它与每任务 cgroup 配合使用。
+
+### 远端 MCP 取消
+
+普通 MCP 取消通知不提供远端退出回执。适配器可实现 `ExternalCancellationConfirmer`，使用服务端任务状态、租约或取消回执确认结束。没有确认时，不再标成“已终止”：工具记录持久化为 `orphaned` 并说明原因；本地 worker 和进程清理完成后，任务历史保留 `cleanup_unconfirmed`，响应明确提示远端状态待确认。它不是自动重试成功，也不是远端零残留保证。仍未返回的本地 worker 则保持 `cleanup_failed` 并继续追踪。
+
+### 回归验证
+
+```sh
+go test -race ./internal/processguard ./internal/mcp ./internal/handler ./internal/security
+```
+
+`Process isolation` GitHub Actions 工作流还会执行 Linux cgroup 集成测试，命令直接保存在 `.github/workflows/process-isolation.yml` 中。该测试使用一次性、私有 cgroup 命名空间的 Docker 容器，不挂载宿主 cgroup 或 Docker socket。测试覆盖宿主 `SIGKILL`、启动登记竞态、`setsid`、资源限额、启动时遗留回收、worker 取消和远端未确认状态。Windows Job Object 测试已纳入跨平台 CI；交叉编译不等于 Windows 实机测试。
+
+参考：[Go os/exec](https://pkg.go.dev/os/exec)、[Linux cgroup v2](https://cdn.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)、[Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[MCP cancellation](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation)。

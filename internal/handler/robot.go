@@ -879,7 +879,7 @@ func (h *RobotHandler) cmdDoctor() string {
 			enabledExternal++
 		}
 	}
-	return fmt.Sprintf("【配置诊断】\n主模型: %s\nEino 多代理: %s\n内置 MCP 工具: %d/%d 个已启用\nHTTP MCP 服务: %s\n外部 MCP: %d 个已启用\n知识库: %s\n项目功能: %s\n说明: 内置工具不依赖 HTTP MCP 服务；此命令只检查配置，不主动探测外部服务。", configured(strings.TrimSpace(h.config.OpenAI.Model) != "" && strings.TrimSpace(h.config.OpenAI.BaseURL) != ""), enabled(h.config.MultiAgent.Enabled), enabledInternalTools, len(h.config.Security.Tools), enabled(h.config.MCP.Enabled), enabledExternal, enabled(h.config.Knowledge.Enabled), enabled(h.config.Project.Enabled))
+	return fmt.Sprintf("【配置诊断】\n主模型: %s\nAgent 多代理: %s\n内置 MCP 工具: %d/%d 个已启用\nHTTP MCP 服务: %s\n外部 MCP: %d 个已启用\n知识库: %s\n项目功能: %s\n说明: 内置工具不依赖 HTTP MCP 服务；此命令只检查配置，不主动探测外部服务。", configured(strings.TrimSpace(h.config.OpenAI.Model) != "" && strings.TrimSpace(h.config.OpenAI.BaseURL) != ""), enabled(h.config.MultiAgent.Enabled), enabledInternalTools, len(h.config.Security.Tools), enabled(h.config.MCP.Enabled), enabledExternal, enabled(h.config.Knowledge.Enabled), enabled(h.config.Project.Enabled))
 }
 
 func (h *RobotHandler) recordRobotCommandAudit(access *database.RBACAccess, platform, action, resourceType, resourceID, message string) {
@@ -951,14 +951,14 @@ func robotAgentModeLabel(mode string) string {
 	case "supervisor":
 		return "Supervisor"
 	default:
-		return "Eino 单代理"
+		return "Agent 单代理"
 	}
 }
 
 func parseRobotAgentMode(input string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(input)) {
-	case "eino_single", "eino-single", "single", "单代理", "eino单代理", "eino 单代理":
-		return "eino_single", true
+	case "single", "pi-single", "pi_single", "eino_single", "eino-single", "单代理", "eino单代理", "eino 单代理":
+		return "single", true
 	case "deep":
 		return "deep", true
 	case "plan_execute", "plan-execute", "planexecute", "pe":
@@ -974,9 +974,9 @@ func (h *RobotHandler) cmdModes(platform, userID string) string {
 	current := h.getAgentMode(platform, userID)
 	multiStatus := "可用"
 	if h.config == nil || !h.config.MultiAgent.Enabled {
-		multiStatus = "不可用（需在系统设置中启用 Eino 多代理）"
+		multiStatus = "不可用（需在系统设置中启用 Agent 多代理）"
 	}
-	return fmt.Sprintf("【对话模式】\n· Eino 单代理 — 可用\n· Deep — %s\n· Plan-Execute — %s\n· Supervisor — %s\n\n当前模式: %s\n切换示例：模式 deep", multiStatus, multiStatus, multiStatus, robotAgentModeLabel(current))
+	return fmt.Sprintf("【对话模式】\n· Agent 单代理 — 可用\n· Deep — %s\n· Plan-Execute — %s\n· Supervisor — %s\n\n当前模式: %s\n切换示例：模式 deep", multiStatus, multiStatus, multiStatus, robotAgentModeLabel(current))
 }
 
 func (h *RobotHandler) cmdSwitchMode(platform, userID, input string) string {
@@ -984,8 +984,8 @@ func (h *RobotHandler) cmdSwitchMode(platform, userID, input string) string {
 	if !ok {
 		return fmt.Sprintf("不支持的对话模式「%s」。发送「模式」查看可用模式。", strings.TrimSpace(input))
 	}
-	if mode != "eino_single" && (h.config == nil || !h.config.MultiAgent.Enabled) {
-		return fmt.Sprintf("无法切换到 %s：请先在系统设置中启用 Eino 多代理。", robotAgentModeLabel(mode))
+	if mode != "single" && (h.config == nil || !h.config.MultiAgent.Enabled) {
+		return fmt.Sprintf("无法切换到 %s：请先在系统设置中启用 Agent 多代理。", robotAgentModeLabel(mode))
 	}
 	h.setAgentMode(platform, userID, mode)
 	return fmt.Sprintf("已切换对话模式：%s\n后续消息和新对话将使用该模式。", robotAgentModeLabel(mode))
@@ -1546,7 +1546,9 @@ func wecomEncrypt(encodingAESKey, message, corpID string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// HandleWecomPOST 企业微信消息回调（POST），支持明文与加密模式
+// HandleWecomPOST handles signed plaintext/encrypted WeCom XML callbacks. Missing
+// signature fields are acknowledged without reading the body; oversized bodies
+// return 413. Valid bounded requests proceed through signature and replay checks.
 func (h *RobotHandler) HandleWecomPOST(c *gin.Context) {
 	if !h.config.Robots.Wecom.Enabled {
 		h.logger.Debug("企业微信机器人未启用，跳过请求")
@@ -1558,26 +1560,32 @@ func (h *RobotHandler) HandleWecomPOST(c *gin.Context) {
 	nonce := c.Query("nonce")
 	msgSignature := c.Query("msg_signature")
 
-	// 先读取请求体，后续解析/签名验证都会用到
-	bodyRaw, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		h.logger.Warn("企业微信 POST 读取请求体失败", zap.Error(err))
-		c.String(http.StatusOK, "")
-		return
-	}
-	h.logger.Debug("企业微信 POST 收到请求", zap.String("body", string(bodyRaw)))
-
-	// 验证请求签名防止伪造。企业微信签名算法同 URL 验证，使用 token、timestamp、nonce、 Encrypt 四个字段。
-	// 启用企业微信时必须配置 token 并校验签名，避免未授权请求触发 Agent。
+	// Check inexpensive prerequisites before consuming unauthenticated input.
 	token, ok := h.wecomRequireToken(c)
 	if !ok {
 		return
 	}
-	if msgSignature == "" {
-		h.logger.Warn("企业微信 POST 缺少签名，已拒绝（需确保回调携带 msg_signature）")
+	if msgSignature == "" || timestamp == "" || nonce == "" {
+		h.logger.Warn("企业微信 POST 缺少签名参数，已拒绝")
 		c.String(http.StatusOK, "")
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.config.Server.EffectiveWebhookMaxBodyBytes())
+	bodyRaw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		var limitError *http.MaxBytesError
+		if errors.As(err, &limitError) {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "callback body exceeds size limit"})
+			return
+		}
+		h.logger.Warn("企业微信 POST 读取请求体失败", zap.Error(err))
+		c.String(http.StatusOK, "")
+		return
+	}
+	h.logger.Debug("企业微信 POST 收到请求", zap.Int("body_bytes", len(bodyRaw)))
+
+	// 验证请求签名防止伪造。企业微信签名算法同 URL 验证，使用 token、timestamp、nonce、 Encrypt 四个字段。
+	// 启用企业微信时必须配置 token 并校验签名，避免未授权请求触发 Agent。
 	var tmp wecomXML
 	if err := xml.Unmarshal(bodyRaw, &tmp); err != nil {
 		h.logger.Warn("企业微信 POST 签名验证前解析 XML 失败", zap.Error(err))
@@ -1586,7 +1594,7 @@ func (h *RobotHandler) HandleWecomPOST(c *gin.Context) {
 	}
 	expected := h.signWecomRequest(token, timestamp, nonce, tmp.Encrypt)
 	if expected != msgSignature {
-		h.logger.Warn("企业微信 POST 签名验证失败", zap.String("expected", expected), zap.String("got", msgSignature))
+		h.logger.Warn("企业微信 POST 签名验证失败")
 		c.String(http.StatusOK, "")
 		return
 	}
@@ -1602,7 +1610,7 @@ func (h *RobotHandler) HandleWecomPOST(c *gin.Context) {
 		c.String(http.StatusOK, "")
 		return
 	}
-	h.logger.Debug("企业微信 XML 解析成功", zap.String("ToUserName", body.ToUserName), zap.String("FromUserName", body.FromUserName), zap.String("MsgType", body.MsgType), zap.String("Content", body.Content), zap.String("Encrypt", body.Encrypt))
+	h.logger.Debug("企业微信 XML 解析成功")
 
 	// 保存企业 ID（用于明文模式回复）
 	enterpriseID := body.ToUserName
@@ -1623,13 +1631,13 @@ func (h *RobotHandler) HandleWecomPOST(c *gin.Context) {
 			c.String(http.StatusOK, "")
 			return
 		}
-		h.logger.Debug("企业微信解密成功", zap.String("decrypted", string(decrypted)))
+		h.logger.Debug("企业微信解密成功")
 		if err := xml.Unmarshal(decrypted, &body); err != nil {
 			h.logger.Warn("企业微信解密后 XML 解析失败", zap.Error(err))
 			c.String(http.StatusOK, "")
 			return
 		}
-		h.logger.Debug("企业微信内层 XML 解析成功", zap.String("FromUserName", body.FromUserName), zap.String("Content", body.Content))
+		h.logger.Debug("企业微信内层 XML 解析成功")
 	}
 
 	tenantKey := strings.TrimSpace(enterpriseID)
@@ -1721,23 +1729,10 @@ func (h *RobotHandler) sendWecomReply(c *gin.Context, toUser, fromUser, content,
 		// 使用请求中的 timestamp/nonce 生成签名（企业微信要求回复时使用与请求相同的 timestamp 和 nonce）
 		msgSignature := h.signWecomRequest(h.config.Robots.Wecom.Token, timestamp, nonce, encrypted)
 
-		h.logger.Debug("企业微信发送加密回复",
-			zap.String("Encrypt", encrypted[:50]+"..."),
-			zap.String("MsgSignature", msgSignature),
-			zap.String("TimeStamp", timestamp),
-			zap.String("Nonce", nonce))
+		h.logger.Debug("企业微信发送加密回复", zap.Int("content_bytes", len(content)))
 
 		// 加密模式仅返回 4 个核心字段（企业微信官方要求）
 		xmlResp := fmt.Sprintf(`<xml><Encrypt><![CDATA[%s]]></Encrypt><MsgSignature><![CDATA[%s]]></MsgSignature><TimeStamp><![CDATA[%s]]></TimeStamp><Nonce><![CDATA[%s]]></Nonce></xml>`, encrypted, msgSignature, timestamp, nonce)
-		// also log the final response body so we can cross-check with the
-		// network traffic or developer console
-		h.logger.Debug("企业微信加密回复包", zap.String("xml", xmlResp))
-		// for additional confidence, decrypt the payload ourselves and log it
-		if dec, err2 := wecomDecrypt(h.config.Robots.Wecom.EncodingAESKey, encrypted); err2 == nil {
-			h.logger.Debug("企业微信加密回复解密检查", zap.String("plain", string(dec)))
-		} else {
-			h.logger.Warn("企业微信加密回复解密检查失败", zap.Error(err2))
-		}
 
 		// 使用 c.Writer.Write 直接写入响应，避免 c.String 的转义问题
 		c.Writer.WriteHeader(http.StatusOK)
@@ -1749,7 +1744,9 @@ func (h *RobotHandler) sendWecomReply(c *gin.Context, toUser, fromUser, content,
 	}
 
 	// 明文模式
-	h.logger.Debug("企业微信发送明文回复", zap.String("ToUserName", toUser), zap.String("FromUserName", fromUser), zap.String("Content", content[:50]+"..."))
+	// Log size only: replies shorter than 50 bytes are valid, and their contents
+	// may contain sensitive data. Never slice or record the response for logging.
+	h.logger.Debug("企业微信发送明文回复", zap.Int("content_bytes", len(content)))
 
 	// 手动构造 XML 响应（使用 CDATA 包裹所有字段，并包含 AgentID）
 	xmlResp := fmt.Sprintf(`<xml>
@@ -1759,9 +1756,6 @@ func (h *RobotHandler) sendWecomReply(c *gin.Context, toUser, fromUser, content,
 <MsgType><![CDATA[text]]></MsgType>
 <Content><![CDATA[%s]]></Content>
 </xml>`, toUser, fromUser, time.Now().Unix(), content)
-
-	// log the exact plaintext response for debugging
-	h.logger.Debug("企业微信明文回复包", zap.String("xml", xmlResp))
 
 	// use text/xml as recommended by WeCom docs
 	c.Header("Content-Type", "text/xml; charset=utf-8")

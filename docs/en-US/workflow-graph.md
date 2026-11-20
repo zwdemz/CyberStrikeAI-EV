@@ -8,10 +8,10 @@ This document explains how to use **Workflows**: building workflows on the canva
 
 ## 1. Where to find Workflows
 
-1. Log in to the CyberStrikeAI web UI.  
-2. Open **Workflows** in the left sidebar.  
-3. Select an existing workflow from the list, or create a new one.  
-4. Drag nodes, draw edges, and configure properties on the canvas.  
+1. Log in to the CyberStrikeAI web UI.\
+2. Open **Workflows** in the left sidebar.\
+3. Select an existing workflow from the list, or create a new one.\
+4. Drag nodes, draw edges, and configure properties on the canvas.\
 5. Fill in **ID**, **Name**, and **Description**, then click **Save**.
 
 Saved workflows can be bound to a role under **Role Management**. When `workflow_policy` is `auto`, chatting with that role runs the bound graph automatically.
@@ -248,7 +248,7 @@ Runs an LLM Agent task. Supports multiple modes.
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| Agent mode | `eino_single` / `deep` / `plan_execute` / `supervisor` | `eino_single` |
+| Agent mode | `single` / `deep` / `plan_execute` / `supervisor` | `single` |
 | Input source | Template for upstream data | `{{previous.output}}` |
 | Node instruction | Task description for this node | empty |
 | Output variable name | Key written into `outputs` | `agent_result` |
@@ -256,15 +256,15 @@ Runs an LLM Agent task. Supports multiple modes.
 
 **Message assembly:**
 
-- Instruction only → send instruction to the Agent  
-- Input source only → “Continue based on upstream output: …”  
+- Instruction only → send instruction to the Agent\
+- Input source only → “Continue based on upstream output: …”\
 - Both → combined “upstream input + node instruction”
 
 After execution:
 
-- `previous.output` becomes this node’s response text  
+- `previous.output` becomes this node’s response text\
 - If **Output variable name** is set, the value is also stored in `outputs[variable_name]`
-- In the Eino graph, the Agent node is split into `prepare → execute → finalize` for clearer trace and future checkpointing
+- The native DAG invokes Pi for Agent nodes and persists node state in Go checkpoints
 
 ### 5.3 Tool
 
@@ -310,7 +310,7 @@ Edge condition examples (select an edge, configure in the right panel):
 
 ### 5.5 HITL (human-in-the-loop)
 
-Human approval checkpoint. The run pauses before this node through Eino interrupt/checkpoint and resumes after approval via API or the monitor panel.
+Human approval checkpoint. The run pauses before this node through the native Workflow checkpoint and resumes after approval via API or the monitor panel.
 
 | Field | Description | Default |
 |-------|-------------|---------|
@@ -362,7 +362,7 @@ Select an **edge** to configure its **condition** in the right panel.
 
 If no edge condition is set:
 
-- Non-condition nodes: edge is always allowed  
+- Non-condition nodes: edge is always allowed\
 - Condition nodes: yes/no branches are assigned by edge order automatically
 
 ---
@@ -420,9 +420,9 @@ Start → Agent (initial value) → Condition → Agent (transform) → Output
 
 ### 8.1 Bind in Role Management
 
-1. Open **Role Management**, edit or create a role.  
-2. Select the workflow / graph ID to bind.  
-3. Set policy to `auto` (default when `workflow_id` is set).  
+1. Open **Role Management**, edit or create a role.\
+2. Select the workflow / graph ID to bind.\
+3. Set policy to `auto` (default when `workflow_id` is set).\
 4. Save the role.
 
 You can also configure this in role YAML:
@@ -438,8 +438,8 @@ workflow_policy: auto
 
 When a user chats with that role:
 
-1. The engine loads `graph_json` and executes the graph.  
-2. The chat UI shows progress events (`workflow_start`, `workflow_node_start`, Agent reasoning, etc.).  
+1. The engine loads `graph_json` and executes the graph.\
+2. The chat UI shows progress events (`workflow_start`, `workflow_node_start`, Agent reasoning, etc.).\
 3. When finished, a summary lists all named entries in `outputs`.
 
 If no Output node is reached or no branch matches, `outputs` may be empty and the summary will suggest checking the Output node and branches.
@@ -560,13 +560,13 @@ On save, the system checks:
 
 ## 13. Best practices
 
-1. **Meaningful names**: Use descriptive output variable names (`scan_result`, `parsed_targets`) instead of reusing `agent_result` everywhere.  
-2. **Prefer `outputs` for cross-node data**: If a condition, tool, or HITL node might sit in between, use named variables.  
-3. **Use `previous` only for direct links**: `A → B` with nothing in between is the ideal case for `{{previous.output}}`.  
-4. **Conditions should reference source data**: When testing Agent output, use `{{outputs.xxx}}` unless the condition immediately follows that Agent.  
-5. **Every path needs an exit**: Ensure both yes and no branches eventually reach an **Output** node (or your intended end).  
-6. **Choose join strategy explicitly for multi-upstream nodes**: Use `all_merge` for aggregation, `first_non_empty` for fallback, and `fail_fast` for critical gates.  
-7. **Use JSONPath/JQ safe paths for nested JSON**: e.g. `jsonpath({{previous.output}}, "$.status") == "ok"`.  
+1. **Meaningful names**: Use descriptive output variable names (`scan_result`, `parsed_targets`) instead of reusing `agent_result` everywhere.\
+2. **Prefer `outputs` for cross-node data**: If a condition, tool, or HITL node might sit in between, use named variables.\
+3. **Use `previous` only for direct links**: `A → B` with nothing in between is the ideal case for `{{previous.output}}`.\
+4. **Conditions should reference source data**: When testing Agent output, use `{{outputs.xxx}}` unless the condition immediately follows that Agent.\
+5. **Every path needs an exit**: Ensure both yes and no branches eventually reach an **Output** node (or your intended end).\
+6. **Choose join strategy explicitly for multi-upstream nodes**: Use `all_merge` for aggregation, `first_non_empty` for fallback, and `fail_fast` for critical gates.\
+7. **Use JSONPath/JQ safe paths for nested JSON**: e.g. `jsonpath({{previous.output}}, "$.status") == "ok"`.\
 8. **Dry-run before real execution**: Validate data flow and branches with a simple message before binding the workflow to a role.
 
 ---
@@ -576,7 +576,7 @@ On save, the system checks:
 | Module | Path |
 |--------|------|
 | Execution engine | `internal/workflow/runner.go` |
-| Eino compile / checkpoint / HITL | `internal/workflow/eino_compile.go` |
+| Native DAG / checkpoint / HITL | `internal/workflow/native_runtime.go` |
 | Graph validation | `internal/workflow/validation.go` |
 | Expressions / JSONPath / joins | `internal/workflow/expression.go`, `jsonpath.go`, `join.go` |
 | Dry-run / replay data | `internal/workflow/dry_run.go`, `internal/handler/workflow_run.go` |

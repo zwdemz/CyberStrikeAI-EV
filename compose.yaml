@@ -1,0 +1,36 @@
+services:
+  cyberstrike:
+    build: .
+    image: cyberstrike-ai-ev:local
+    init: true
+    restart: unless-stopped
+    user: "10001:10001"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:${CYBERSTRIKE_PORT:-8080}:8080"
+    volumes:
+      - runtime:/app/runtime
+      - data:/app/data
+      - logs:/app/log
+      - workspace:/app/tmp
+      - uploads:/app/chat_uploads
+      - knowledge:/app/knowledge_base
+      - skills:/app/skills
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 60s
+    stop_grace_period: 45s
+volumes:
+  runtime:
+  data:
+  logs:
+  workspace:
+  uploads:
+  knowledge:
+  skills:

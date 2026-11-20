@@ -100,6 +100,7 @@ const HITL_LOGS_PAGE_SIZE_KEY = 'cyberstrike_hitl_logs_page_size';
 const HITL_PENDING_PAGE_SIZE_KEY = 'cyberstrike_hitl_pending_page_size';
 const HITL_TIMEOUT_DEFAULT_MIGRATION_PREFIX = 'cyberstrike-hitl-timeout-default-v1:';
 const HITL_PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+const hitlConversationConfigSaveQueues = new Map();
 
 function hitlPaginationT(key, opts, fallback) {
     if (typeof window.t === 'function') {
@@ -115,8 +116,11 @@ function hitlPaginationT(key, opts, fallback) {
 }
 
 function hitlLocale() {
+    if (typeof window.uiLocale === 'function') return window.uiLocale();
     if (typeof window.__locale === 'string' && window.__locale.length) {
-        return window.__locale.startsWith('zh') ? 'zh-CN' : 'en-US';
+        if (window.__locale.startsWith('zh')) return 'zh-CN';
+        if (window.__locale.startsWith('ru')) return 'ru-RU';
+        return 'en-US';
     }
     return (typeof navigator !== 'undefined' && navigator.language) ? navigator.language : 'en-US';
 }
@@ -170,6 +174,7 @@ function renderHitlPagination(containerId, state, goPageFnName, pageSizeChangeFn
     html += '<button type="button" class="btn-secondary" onclick="' + esc(goPageFnName) + '(' + totalPages + ')"' + (disabledLast ? ' disabled' : '') + '>' + esc(lastPageLabel) + '</button>';
     html += '</div></div>';
     container.innerHTML = html;
+    if (typeof initPaginationSelects === 'function') initPaginationSelects(container);
 }
 
 function hitlEffectiveEnabled(cfg) {
@@ -247,47 +252,95 @@ async function fetchHitlConversationConfig(conversationId) {
     if (!data || !data.hitl) return null;
     return {
         hitl: data.hitl,
+        defaultMode: hitlModeNormalize(data.defaultMode || 'off'),
         defaultReviewer: hitlReviewerNormalize(data.defaultReviewer || 'human'),
+        defaultTimeoutSeconds: normalizeHitlTimeoutSeconds(data.defaultTimeoutSeconds, 300),
         hitlGlobalToolWhitelist: Array.isArray(data.hitlGlobalToolWhitelist) ? data.hitlGlobalToolWhitelist : []
     };
 }
 
 function applyHitlDefaultReviewerFromServer(reviewer) {
-    const v = hitlReviewerNormalize(reviewer);
+    return applyHitlDefaultConfigFromServer({ defaultReviewer: reviewer });
+}
+
+function applyHitlDefaultConfigFromServer(data) {
+    const src = data && typeof data === 'object' ? data : {};
+    const mode = hitlModeNormalize(src.defaultMode || src.mode || 'off');
+    const reviewer = hitlReviewerNormalize(src.defaultReviewer || src.reviewer || 'human');
+    const timeoutSeconds = normalizeHitlTimeoutSeconds(
+        src.defaultTimeoutSeconds != null ? src.defaultTimeoutSeconds : src.timeoutSeconds,
+        300
+    );
+    const out = {
+        mode: mode,
+        reviewer: reviewer,
+        timeoutSeconds: timeoutSeconds
+    };
+    const backend = hitlNormalizeAuditBackend(src.auditBackend || src.audit_backend);
+    const model = String(src.auditModel || src.audit_model || '').trim();
+    if (backend) out.auditBackend = backend;
+    if (model) out.auditModel = model;
     if (typeof window !== 'undefined') {
-        window.csaiHitlDefaultReviewer = v;
+        window.csaiHitlDefaultConfig = out;
+        window.csaiHitlDefaultReviewer = reviewer;
+        if (backend) window.csaiHitlAuditBackend = backend;
+        if (model || backend) window.csaiHitlAuditModel = model;
+        if (Array.isArray(src.hitlGlobalToolWhitelist)) {
+            window.csaiHitlGlobalToolWhitelist = src.hitlGlobalToolWhitelist;
+        }
     }
-    return v;
+    return out;
+}
+
+async function fetchHitlDefaultConfig() {
+    const resp = await hitlApiFetch('/api/hitl/default-config', { credentials: 'same-origin' });
+    if (!resp.ok) {
+        return applyHitlDefaultConfigFromServer({ defaultMode: 'off', defaultReviewer: 'human', defaultTimeoutSeconds: 300 });
+    }
+    const data = await resp.json();
+    return applyHitlDefaultConfigFromServer(data);
 }
 
 async function fetchHitlDefaultReviewer() {
-    const resp = await hitlApiFetch('/api/hitl/default-reviewer', { credentials: 'same-origin' });
-    if (!resp.ok) {
-        return applyHitlDefaultReviewerFromServer('human');
-    }
-    const data = await resp.json();
-    return applyHitlDefaultReviewerFromServer(data && data.defaultReviewer);
+    const cfg = await fetchHitlDefaultConfig();
+    return hitlReviewerNormalize(cfg && cfg.reviewer);
 }
 
-async function putHitlDefaultReviewer(reviewer) {
-    const normalized = hitlReviewerNormalize(reviewer);
-    const resp = await hitlApiFetch('/api/hitl/default-reviewer', {
+async function putHitlDefaultConfig(config) {
+    const current = (typeof window !== 'undefined' && window.csaiHitlDefaultConfig && typeof window.csaiHitlDefaultConfig === 'object')
+        ? window.csaiHitlDefaultConfig
+        : { mode: 'off', reviewer: 'human', timeoutSeconds: 300 };
+    const cfg = config && typeof config === 'object' ? config : {};
+    const payload = {
+        mode: hitlModeNormalize(cfg.mode != null ? cfg.mode : current.mode),
+        reviewer: hitlReviewerNormalize(cfg.reviewer != null ? cfg.reviewer : current.reviewer),
+        timeoutSeconds: normalizeHitlTimeoutSeconds(
+            cfg.timeoutSeconds != null ? cfg.timeoutSeconds : current.timeoutSeconds,
+            300
+        )
+    };
+    const resp = await hitlApiFetch('/api/hitl/default-config', {
         method: 'PUT',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reviewer: normalized })
+        body: JSON.stringify(payload)
     });
     if (!resp.ok) {
         const msg = await readHitlApiError(resp);
         throw new Error(msg || ('HTTP ' + resp.status));
     }
     const data = await resp.json();
-    return applyHitlDefaultReviewerFromServer(data && data.defaultReviewer);
+    return applyHitlDefaultConfigFromServer(data);
+}
+
+async function putHitlDefaultReviewer(reviewer) {
+    const cfg = await putHitlDefaultConfig({ reviewer: reviewer });
+    return hitlReviewerNormalize(cfg && cfg.reviewer);
 }
 
 async function initHitlDefaultReviewerFromServer() {
     try {
-        await fetchHitlDefaultReviewer();
+        await fetchHitlDefaultConfig();
         if (!getCurrentConversationIdForHitl() && typeof window.refreshHitlConfigByCurrentConversation === 'function') {
             window.refreshHitlConfigByCurrentConversation();
         }
@@ -495,39 +548,52 @@ async function saveHitlPageWhitelist() {
 
 async function saveHitlConversationConfig(conversationId, config) {
     if (!conversationId || !config) return false;
+    const normalizedConversationId = String(conversationId).trim();
     const mode = hitlModeNormalize(config.mode || 'off');
     const enabled = typeof config.enabled === 'boolean' ? config.enabled : (mode !== 'off');
     const sensitiveTools = hitlSensitiveToolsToArray(config);
     const timeoutSeconds = normalizeHitlTimeoutSeconds(config.timeoutSeconds, 0);
     const reviewer = hitlReviewerNormalize(config.reviewer || 'human');
-    const resp = await hitlApiFetch('/api/hitl/config', {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            conversationId: conversationId,
-            enabled: enabled,
-            mode: mode,
-            reviewer: reviewer,
-            sensitiveTools: sensitiveTools,
-            timeoutSeconds: timeoutSeconds
-        })
+    const previous = hitlConversationConfigSaveQueues.get(normalizedConversationId) || Promise.resolve();
+    const queued = previous.catch(function () {}).then(async function () {
+        const resp = await hitlApiFetch('/api/hitl/config', {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversationId: normalizedConversationId,
+                enabled: enabled,
+                mode: mode,
+                reviewer: reviewer,
+                sensitiveTools: sensitiveTools,
+                timeoutSeconds: timeoutSeconds
+            })
+        });
+        if (!resp.ok) {
+            const msg = await readHitlApiError(resp);
+            throw new Error(msg || ('HTTP ' + resp.status));
+        }
+        return true;
     });
-    if (!resp.ok) {
-        const msg = await readHitlApiError(resp);
-        throw new Error(msg || ('HTTP ' + resp.status));
-    }
-    return true;
+    hitlConversationConfigSaveQueues.set(normalizedConversationId, queued);
+    return queued.finally(function () {
+        if (hitlConversationConfigSaveQueues.get(normalizedConversationId) === queued) {
+            hitlConversationConfigSaveQueues.delete(normalizedConversationId);
+        }
+    });
 }
 
 async function syncHitlConfigFromServer(conversationId) {
     const pack = await fetchHitlConversationConfig(conversationId);
     if (!pack || !pack.hitl) return;
     const cfg = pack.hitl;
-    if (pack.defaultReviewer) {
-        applyHitlDefaultReviewerFromServer(pack.defaultReviewer);
-    }
     const globalWL = pack.hitlGlobalToolWhitelist || [];
+    applyHitlDefaultConfigFromServer({
+        defaultMode: pack.defaultMode,
+        defaultReviewer: pack.defaultReviewer,
+        defaultTimeoutSeconds: pack.defaultTimeoutSeconds,
+        hitlGlobalToolWhitelist: globalWL
+    });
     if (typeof window !== 'undefined') {
         window.csaiHitlGlobalToolWhitelist = globalWL;
     }
@@ -1032,6 +1098,8 @@ function refreshHitlPageReviewerBar() {
     if (typeof window.bindHitlReviewerToggleListeners === 'function') {
         window.bindHitlReviewerToggleListeners();
     }
+    renderHitlPageAuditEngine();
+    renderHitlStrategyJevHint();
 }
 
 let hitlDefaultAuditPrompt = '';
@@ -1058,6 +1126,7 @@ function switchHitlStrategyMode(mode) {
     if (reviewTa) reviewTa.hidden = hitlStrategyMode !== 'review_edit';
     if (hintApproval) hintApproval.hidden = hitlStrategyMode !== 'approval';
     if (hintReview) hintReview.hidden = hitlStrategyMode !== 'review_edit';
+    renderHitlStrategyJevHint();
 }
 
 function showHitlStrategyFeedback(text, isError) {
@@ -1093,6 +1162,23 @@ async function refreshHitlAuditStrategy() {
     } catch (e) {
         console.warn('refreshHitlAuditStrategy', e);
     }
+}
+
+function renderHitlStrategyJevHint() {
+    let el = document.getElementById('hitl-strategy-hint-jev');
+    const bar = document.querySelector('.hitl-page-strategy-bar') || document.getElementById('hitl-page-strategy-bar');
+    if (!el && bar) {
+        el = document.createElement('p');
+        el.className = 'hitl-page-strategy-hint';
+        el.id = 'hitl-strategy-hint-jev';
+        const reviewHint = document.getElementById('hitl-strategy-hint-review-edit');
+        if (reviewHint && reviewHint.parentNode) reviewHint.parentNode.insertBefore(el, reviewHint.nextSibling);
+        else bar.appendChild(el);
+    }
+    if (!el) return;
+    const ts = hitlCurrentAuditEngine().backend === 'typesafe';
+    el.hidden = !ts;
+    if (ts) el.textContent = hitlT('strategyHintJev', 'TypeSafe Jev evaluates the custom strategy as structured questions. Built-in destructive rules remain a hard floor.');
 }
 
 async function saveHitlAuditStrategy() {
@@ -1149,7 +1235,6 @@ function refreshHitlActivePanel() {
 }
 
 function hitlDecidedByLabel(v) {
-    const key = 'reviewer' + String(v || 'human').replace(/_([a-z])/g, function (_, c) { return c.toUpperCase(); }).replace(/^./, function (c) { return c.toUpperCase(); });
     const map = {
         human: hitlT('reviewerHuman', 'Human'),
         audit_agent: hitlT('reviewerAgent', 'Audit Agent'),
@@ -1157,6 +1242,83 @@ function hitlDecidedByLabel(v) {
         manual: hitlT('reviewerManual', 'Manual')
     };
     return map[v] || v || '-';
+}
+
+function hitlNormalizeAuditBackend(v) {
+    const s = String(v || '').trim().toLowerCase();
+    if (s === 'typesafe' || s === 'jev' || s === 'type-safe' || s === 'typesafe-ai') return 'typesafe';
+    if (s === 'openai' || s === 'openai_compatible' || s === 'llm') return 'openai';
+    return '';
+}
+
+function hitlCurrentAuditEngine() {
+    const cfg = (typeof window !== 'undefined' && window.csaiHitlDefaultConfig) || {};
+    const backend = hitlNormalizeAuditBackend(cfg.auditBackend || (typeof window !== 'undefined' && window.csaiHitlAuditBackend));
+    let model = String(cfg.auditModel || (typeof window !== 'undefined' && window.csaiHitlAuditModel) || '').trim();
+    if (backend === 'typesafe' && !model) model = 'jev-latest';
+    return { backend: backend || 'openai', model: model };
+}
+
+function hitlAuditEngineLabel(backend, model) {
+    const b = hitlNormalizeAuditBackend(backend);
+    if (!b) return '';
+    const name = b === 'typesafe'
+        ? hitlT('auditEngineJev', 'TypeSafe Jev')
+        : hitlT('auditEngineOpenAI', 'OpenAI protocol');
+    const m = String(model || '').trim();
+    return m ? (name + ' · ' + m) : name;
+}
+
+function hitlAuditEngineFromItem(item) {
+    const data = item && typeof item === 'object' ? item : {};
+    let backend = hitlNormalizeAuditBackend(data.auditBackend || data.audit_backend);
+    let model = String(data.auditModel || data.audit_model || '').trim();
+    if (!backend) {
+        const payload = typeof window.hitlParsePayloadObject === 'function'
+            ? hitlParsePayloadObject(data.payload || '')
+            : {};
+        const approval = payload && payload.hitlApproval && typeof payload.hitlApproval === 'object'
+            ? payload.hitlApproval
+            : {};
+        backend = hitlNormalizeAuditBackend(approval.auditBackend || approval.audit_backend);
+        if (!model) model = String(approval.auditModel || approval.audit_model || '').trim();
+    }
+    if (!backend) {
+        const comment = String(data.comment || '');
+        if (/TypeSafe|破坏分|choice=|Jev/i.test(comment)) backend = 'typesafe';
+        else if (hitlReviewerNormalize(data.decidedBy || data.decided_by) === 'audit_agent') backend = 'openai';
+    }
+    if (backend === 'typesafe' && !model) model = 'jev-latest';
+    return { backend: backend, model: model };
+}
+
+function ensureHitlPageAuditEngineEl() {
+    let el = document.getElementById('hitl-page-audit-engine');
+    if (el) return el;
+    const bar = document.getElementById('hitl-page-reviewer-bar');
+    if (!bar) return null;
+    el = document.createElement('p');
+    el.className = 'hitl-page-audit-engine';
+    el.id = 'hitl-page-audit-engine';
+    el.hidden = true;
+    const hint = bar.querySelector('.hitl-page-reviewer-hint');
+    if (hint) bar.insertBefore(el, hint);
+    else bar.appendChild(el);
+    return el;
+}
+
+function renderHitlPageAuditEngine() {
+    const el = ensureHitlPageAuditEngineEl();
+    if (!el) return;
+    const info = hitlCurrentAuditEngine();
+    const engine = hitlAuditEngineLabel(info.backend, info.model);
+    if (!engine) {
+        el.hidden = true;
+        el.textContent = '';
+        return;
+    }
+    el.hidden = false;
+    el.textContent = hitlT('auditEngineLabel', 'Approval engine') + '：' + engine;
 }
 
 function hitlFormatTime(v) {
@@ -1537,8 +1699,12 @@ function renderHitlLogsTable(items) {
                 '<td class="hitl-logs-cell-mono">' + id + '</td>' +
                 '<td>' + escapeHtml(String(item.toolName || '-')) + '</td>' +
                 '<td class="hitl-logs-cell-mono">' + escapeHtml(String(item.conversationId || '-')) + '</td>' +
-                '<td><span class="hitl-decision-tag ' + decisionCls + '">' + escapeHtml(hitlDecisionLabel(decision)) + '</span></td>' +
-                '<td>' + escapeHtml(hitlDecidedByLabel(item.decidedBy)) + '</td>' +
+                '<td><span class="hitl-decision-tag ' + decisionCls + '">' + escapeHtml(hitlRecordDecisionLabel(item)) + '</span></td>' +
+                '<td>' + escapeHtml(hitlDecidedByLabel(item.decidedBy)) + (function () {
+                    const engine = hitlAuditEngineFromItem(item);
+                    const label = hitlAuditEngineLabel(engine.backend, engine.model);
+                    return label ? '<div class="hitl-log-engine">' + escapeHtml(label) + '</div>' : '';
+                }()) + '</td>' +
                 '<td class="hitl-logs-summary">' + escapeHtml(summary) + '</td>' +
                 '<td>' + escapeHtml(hitlFormatTime(item.decidedAt || item.createdAt)) + '</td>' +
                 '<td class="hitl-logs-actions">' +
@@ -1620,6 +1786,8 @@ function refreshHitlI18n() {
     syncAllHitlLogFilterSelects();
     renderHitlLogsPagination();
     renderHitlPendingPagination();
+    renderHitlPageAuditEngine();
+    renderHitlStrategyJevHint();
 }
 
 function renderHitlLogsPagination() {
@@ -1678,6 +1846,14 @@ function hitlPendingGoPage(page) {
     refreshHitlPending();
 }
 
+// Render operational audit failures separately while retaining the stored deny decision.
+function hitlRecordDecisionLabel(item) {
+    if (String(item.comment || '').startsWith('[audit_error]')) {
+        return hitlT('auditError', '审查服务异常，工具未执行');
+    }
+    return hitlDecisionLabel(String(item.decision || ''));
+}
+
 function hitlDecisionLabel(decision) {
     const d = String(decision || '').toLowerCase();
     if (d === 'approve') return hitlT('decisionApprove', 'Approve');
@@ -1729,9 +1905,36 @@ async function openHitlLogModal(idOpt) {
     if (decisionEl) {
         const decision = String(item.decision || '');
         const cls = decision === 'approve' ? 'hitl-decision--approve' : (decision === 'reject' ? 'hitl-decision--reject' : '');
-        decisionEl.innerHTML = '<span class="hitl-decision-tag ' + cls + '">' + escapeHtml(hitlDecisionLabel(decision)) + '</span>';
+        decisionEl.innerHTML = '<span class="hitl-decision-tag ' + cls + '">' + escapeHtml(hitlRecordDecisionLabel(item)) + '</span>';
     }
     if (decidedByEl) decidedByEl.textContent = hitlDecidedByLabel(item.decidedBy);
+    let engineRow = document.getElementById('hitl-log-detail-engine-row');
+    let engineEl = document.getElementById('hitl-log-detail-engine');
+    if (!engineRow || !engineEl) {
+        const decidedRow = decidedByEl && decidedByEl.closest('.hitl-log-detail-row');
+        const dl = decidedRow && decidedRow.parentElement;
+        if (dl && decidedRow) {
+            engineRow = document.createElement('div');
+            engineRow.className = 'hitl-log-detail-row';
+            engineRow.id = 'hitl-log-detail-engine-row';
+            engineRow.hidden = true;
+            engineRow.innerHTML = '<dt>' + escapeHtml(hitlT('colAuditEngine', 'Approval engine')) + '</dt><dd id="hitl-log-detail-engine">—</dd>';
+            if (decidedRow.nextSibling) dl.insertBefore(engineRow, decidedRow.nextSibling);
+            else dl.appendChild(engineRow);
+            engineEl = document.getElementById('hitl-log-detail-engine');
+        }
+    }
+    if (engineRow && engineEl) {
+        const engine = hitlAuditEngineFromItem(item);
+        const label = hitlAuditEngineLabel(engine.backend, engine.model);
+        if (label) {
+            engineEl.textContent = label;
+            engineRow.hidden = false;
+        } else {
+            engineEl.textContent = '';
+            engineRow.hidden = true;
+        }
+    }
     if (timeEl) timeEl.textContent = hitlFormatTime(item.decidedAt || item.createdAt);
     const comment = String(item.comment || '').trim();
     if (commentRow && commentEl) {
@@ -1767,6 +1970,8 @@ window.refreshHitlPageWhitelist = refreshHitlPageWhitelist;
 window.refreshHitlPending = refreshHitlPending;
 window.refreshHitlLogs = refreshHitlLogs;
 window.refreshHitlActivePanel = refreshHitlActivePanel;
+window.renderHitlPageAuditEngine = renderHitlPageAuditEngine;
+window.renderHitlStrategyJevHint = renderHitlStrategyJevHint;
 window.switchHitlPageTab = switchHitlPageTab;
 window.switchHitlStrategyMode = switchHitlStrategyMode;
 window.resetHitlAuditStrategy = resetHitlAuditStrategy;
@@ -1809,7 +2014,8 @@ document.addEventListener('DOMContentLoaded', function () {
     if (typeof window.bindHitlReviewerToggleListeners === 'function') {
         window.bindHitlReviewerToggleListeners();
     }
-    initHitlDefaultReviewerFromServer();
+    window.csaiHitlDefaultConfigReady = initHitlDefaultReviewerFromServer();
+    window.csaiHitlDefaultReviewerReady = window.csaiHitlDefaultConfigReady;
     setTimeout(reconcileHitlUiState, 0);
 });
 
@@ -1825,6 +2031,8 @@ document.addEventListener('languagechange', function () {
 window.syncHitlConfigToServerByCurrentConversation = syncHitlConfigToServerByCurrentConversation;
 window.saveHitlConversationConfig = saveHitlConversationConfig;
 window.mergeHitlGlobalToolWhitelist = mergeHitlGlobalToolWhitelist;
+window.fetchHitlDefaultConfig = fetchHitlDefaultConfig;
+window.putHitlDefaultConfig = putHitlDefaultConfig;
 
 // 由 chat.js 在 loadConversation 内 await 调用；挂到 window 供其它入口显式触发
 window.syncHitlConfigFromServer = syncHitlConfigFromServer;

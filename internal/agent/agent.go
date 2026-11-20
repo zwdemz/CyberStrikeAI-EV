@@ -18,6 +18,7 @@ import (
 	"cyberstrike-ai/internal/mcp"
 	"cyberstrike-ai/internal/mcp/builtin"
 	"cyberstrike-ai/internal/openai"
+	"cyberstrike-ai/internal/rolepolicy"
 
 	"go.uber.org/zap"
 )
@@ -115,13 +116,18 @@ type ChatMessage struct {
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
-	// ToolName 仅 tool 角色：从 Eino/轨迹 JSON 的 name 或 tool_name 恢复，供续跑构造 ToolMessage。
+	// ToolName 仅 tool 角色：从 Agent/轨迹 JSON 的 name 或 tool_name 恢复，供续跑构造 ToolMessage。
 	ToolName string `json:"tool_name,omitempty"`
 	// ReasoningContent 对应 OpenAI/DeepSeek 的 reasoning_content；思考模式 + 工具调用后续跑须回传（见 DeepSeek 文档）。
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 	// ModelFacingTrace is runtime-only metadata: true means Content was already the exact
 	// payload seen at the model boundary and must be restored byte-for-byte.
 	ModelFacingTrace bool `json:"-"`
+	// Internal provenance is restored from trusted trace metadata, never from
+	// message text. Keep it out of provider request JSON.
+	SummarizationKind         string   `json:"-"`
+	GeneratedContextKind      string   `json:"-"`
+	OriginalUserIntentEntries []string `json:"-"`
 }
 
 // MarshalJSON 自定义JSON序列化，将tool_calls中的arguments转换为JSON字符串
@@ -280,8 +286,8 @@ func (fc *FunctionCall) UnmarshalJSON(data []byte) error {
 // ProgressCallback 进度回调函数类型
 type ProgressCallback func(eventType, message string, data interface{})
 
-// EinoSingleAgentSystemInstruction 供 Eino adk.ChatModelAgent.Instruction 使用（含 system_prompt_path）。
-func (a *Agent) EinoSingleAgentSystemInstruction() string {
+// SystemInstruction returns the native agent prompt, including system_prompt_path overrides.
+func (a *Agent) SystemInstruction() string {
 	systemPrompt := DefaultSingleAgentSystemPrompt()
 	if a.agentConfig != nil {
 		if p := strings.TrimSpace(a.agentConfig.SystemPromptPath); p != "" {
@@ -507,11 +513,12 @@ func (a *Agent) convertToOpenAIType(configType string) string {
 	}
 }
 
-// ToolExecutionResult MCP 工具执行结果（供 Eino 桥与监控落库使用）。
+// ToolExecutionResult MCP 工具执行结果（供 Agent 桥与监控落库使用）。
 type ToolExecutionResult struct {
 	Result      string
 	ExecutionID string
 	IsError     bool
+	Blocked     bool
 }
 
 func buildToolFailureMessage(toolName, detail string, err error) string {
@@ -520,9 +527,16 @@ func buildToolFailureMessage(toolName, detail string, err error) string {
 	fmt.Fprintf(&b, "工具名称: %s\n", toolName)
 	fmt.Fprintf(&b, "错误详情: %s", detail)
 	if isMissingToolDependency(detail) {
-		b.WriteString("\n\n降级建议：检测到该工具的本地可执行文件未安装或不在 PATH。不要重复调用原工具；请优先使用 execute-python-script，使用 Python 标准库或已安装依赖实现等价操作，并保留原目标、授权范围和参数约束。若无法安全等价实现，再向用户说明需要安装的依赖。\n")
+		b.WriteString("\n\n依赖处理：检测到该工具的本地可执行文件未安装或不在 PATH。不要重复调用原工具；先由维护流程安装到项目 tools/runtime 并重新加载。仅当角色允许 execute-python-script 且它本身可用时，才考虑使用 Python 标准库或已安装依赖完成等价操作，保留原目标、授权范围和参数约束；禁止通过脚本绕过权限拒绝或角色限制。\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func toolFailureForRole(ctx context.Context, toolName, detail string, err error) string {
+	if rolepolicy.Active(ctx) && isMissingToolDependency(detail) {
+		return "工具依赖不可用：请由部署维护流程安装到项目 tools/runtime，验证并重新加载后重试。当前角色禁止使用 Python、终端或其他代理绕过工具范围。"
+	}
+	return buildToolFailureMessage(toolName, detail, err)
 }
 
 func isMissingToolDependency(detail string) bool {
@@ -551,10 +565,13 @@ func isMissingToolDependency(detail string) bool {
 // executeToolViaMCP 通过MCP执行工具
 // 即使工具执行失败，也返回结果而不是错误，让AI能够处理错误情况
 func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map[string]interface{}) (*ToolExecutionResult, error) {
-	a.logger.Info("通过MCP执行工具",
-		zap.String("tool", toolName),
-		zap.Any("args", args),
-	)
+	preparedArgs, release, policyErr := rolepolicy.Prepare(ctx, toolName, args)
+	if policyErr != nil {
+		return &ToolExecutionResult{Result: policyErr.Error(), IsError: true, Blocked: true}, nil
+	}
+	defer release()
+	args = preparedArgs
+	a.logger.Info("通过MCP执行工具", zap.String("tool", toolName))
 
 	// 如果是record_vulnerability工具，自动添加conversation_id
 	if toolName == builtin.ToolRecordVulnerability {
@@ -586,6 +603,11 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}
 	// C2 危险任务 HITL 异步等待：须绑定整条 Agent 运行期 ctx，而非单次工具子 ctx（return 时会被 cancel）
 	toolCtx = c2.WithHITLRunContext(toolCtx, ctx)
+	if rolepolicy.Active(ctx) {
+		// Restricted runs must not free their shared network slot while a tool
+		// continues in the background after the MCP asynchronous wait timeout.
+		toolCtx = mcp.WithSynchronousToolExecution(toolCtx, time.Minute)
+	}
 
 	// 检查是否是外部MCP工具（通过工具名称映射）
 	a.mu.RLock()
@@ -605,6 +627,9 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}
 
 	// 如果调用失败（如工具不存在、超时），返回友好的错误信息而不是抛出异常
+	if err == nil && result == nil {
+		err = fmt.Errorf("tool returned no result")
+	}
 	if err != nil {
 		detail := err.Error()
 		timeoutMinutes := 10
@@ -616,7 +641,7 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			detail = fmt.Sprintf("工具执行超过 %d 分钟被自动终止（可在 config.yaml 的 agent.tool_timeout_minutes 中调整）", timeoutMinutes)
 		}
-		errorMsg := buildToolFailureMessage(toolName, detail, err)
+		errorMsg := toolFailureForRole(ctx, toolName, detail, err)
 
 		return &ToolExecutionResult{
 			Result:      errorMsg,
@@ -633,11 +658,15 @@ func (a *Agent) executeToolViaMCP(ctx context.Context, toolName string, args map
 	}
 
 	resultStr := resultText.String()
+	if result.IsError && !result.Blocked && isMissingToolDependency(resultStr) {
+		resultStr = toolFailureForRole(ctx, toolName, resultStr, nil)
+	}
 
 	return &ToolExecutionResult{
 		Result:      resultStr,
 		ExecutionID: executionID,
 		IsError:     result != nil && result.IsError,
+		Blocked:     result != nil && result.Blocked,
 	}, nil
 }
 
@@ -773,7 +802,7 @@ func (a *Agent) repairOrphanToolMessages(messages *[]ChatMessage) bool {
 	return removed
 }
 
-// ToolsForRole 返回与单 Agent 循环一致的工具定义（OpenAI function 格式），供 Eino DeepAgent 等编排层绑定 MCP 工具。
+// ToolsForRole 返回与单 Agent 循环一致的工具定义（OpenAI function 格式），供 Agent DeepAgent 等编排层绑定 MCP 工具。
 func (a *Agent) ToolsForRole(roleTools []string) []Tool {
 	return a.getAvailableTools(roleTools)
 }
@@ -824,7 +853,7 @@ func (a *Agent) UnregisterLocalToolExecutionCancel(executionID string) {
 }
 
 // RecordLocalToolExecution 将非 CallTool 路径完成的工具调用写入 MCP 监控库（与 CallTool 落库一致），返回 executionId。
-// 用于 Eino filesystem execute 等场景，使助手气泡「渗透测试详情」与常规 MCP 一致可点进监控。
+// 用于 Agent filesystem execute 等场景，使助手气泡「渗透测试详情」与常规 MCP 一致可点进监控。
 func (a *Agent) RecordLocalToolExecution(ctx context.Context, toolName string, args map[string]interface{}, resultText string, invokeErr error) string {
 	return a.FinishLocalToolExecution(ctx, "", toolName, args, resultText, invokeErr)
 }
@@ -841,9 +870,49 @@ func (a *Agent) UpdateMCPExecutionDisplayResult(executionID, resultText string) 
 	tr := &mcp.ToolResult{
 		Content: []mcp.Content{{Type: "text", Text: text}},
 	}
+	if exec := a.mcpExecution(executionID); exec != nil && exec.Result != nil {
+		tr.IsError = exec.Result.IsError
+		tr.Blocked = exec.Result.Blocked
+	}
 	if a.mcpServer != nil {
 		_ = a.mcpServer.UpdateToolExecutionResult(executionID, tr)
 	}
+}
+
+// MCPExecutionResultText returns the monitor-facing result text after storage
+// guards such as large-output spilling have been applied.
+func (a *Agent) MCPExecutionResultText(executionID string) string {
+	exec := a.mcpExecution(executionID)
+	if exec == nil || exec.Result == nil {
+		return ""
+	}
+	return mcp.ToolResultPlainText(exec.Result)
+}
+
+// MCPExecutionStatus returns the recorded outcome independently of model-facing
+// text reduction, which can remove the original refusal wording.
+func (a *Agent) MCPExecutionStatus(executionID string) string {
+	if exec := a.mcpExecution(executionID); exec != nil {
+		return exec.Status
+	}
+	return ""
+}
+
+func (a *Agent) mcpExecution(executionID string) *mcp.ToolExecution {
+	if a == nil || strings.TrimSpace(executionID) == "" {
+		return nil
+	}
+	if a.mcpServer != nil {
+		if exec, ok := a.mcpServer.GetExecution(executionID); ok && exec != nil {
+			return exec
+		}
+	}
+	if a.externalMCPMgr != nil {
+		if exec, ok := a.externalMCPMgr.GetExecution(executionID); ok {
+			return exec
+		}
+	}
+	return nil
 }
 
 // CancelMCPToolExecutionWithNote 取消一次进行中的 MCP 工具（先内部后外部），与监控页「终止工具」一致；note 非空时合并进返回给模型的文本。

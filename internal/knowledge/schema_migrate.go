@@ -29,7 +29,7 @@ func EnsureKnowledgeEmbeddingsSchema(db *sql.DB) error {
 		`ALTER TABLE knowledge_embeddings ADD COLUMN embedding_dim INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
-	return nil
+	return ensureIndexManifest(db)
 }
 
 func addKnowledgeEmbeddingsColumnIfMissing(db *sql.DB, column, alterSQL string) error {

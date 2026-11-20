@@ -2,7 +2,6 @@ package database
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -25,30 +24,25 @@ func TestParseDBTime_projectFactFormats(t *testing.T) {
 }
 
 func TestListProjectFacts_updatedAtJSON(t *testing.T) {
-	root, err := os.Getwd()
-	if err != nil {
-		t.Skip(err)
-	}
-	dbPath := filepath.Join(root, "..", "..", "data", "conversations.db")
-	if _, err := os.Stat(dbPath); err != nil {
-		t.Skip("conversations.db not found")
-	}
-	db, err := NewDB(dbPath, zap.NewNop())
+	db, err := NewDB(filepath.Join(t.TempDir(), "project-time.db"), zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
-	projects, err := db.ListProjects("", "", 1, 0)
-	if err != nil || len(projects) == 0 {
-		t.Skip("no projects")
+	defer db.Close()
+	project, err := db.CreateProject(&Project{Name: "timestamp fixture"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	pid := projects[0].ID
+	if _, err := db.UpsertProjectFact(&ProjectFact{ProjectID: project.ID, FactKey: "fixture/time", Summary: "fixture", Confidence: "confirmed"}); err != nil {
+		t.Fatal(err)
+	}
 
-	list, err := db.ListProjectFacts(pid, ProjectFactListFilter{}, 5, 0)
+	list, err := db.ListProjectFacts(project.ID, ProjectFactListFilter{}, 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) == 0 {
-		t.Skip("no facts")
+	if len(list) != 1 {
+		t.Fatalf("expected the fixture fact, got %d", len(list))
 	}
 	for _, f := range list {
 		if f.UpdatedAt.IsZero() {

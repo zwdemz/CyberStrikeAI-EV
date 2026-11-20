@@ -652,6 +652,7 @@ async function initConfig() {
   }
   token = config.token || '';
   tokenExpiresAt = config.tokenExpiresAt || '';
+  $('username').value = config.username;
   $('host').value = config.host;
   $('port').value = config.port;
   $('https').checked = config.https;
@@ -686,6 +687,7 @@ async function persistConnection() {
 
 function connectionConfigFromForm() {
   return {
+    username: $('username').value.trim(),
     host: $('host').value.trim(),
     port: $('port').value.trim(),
     https: $('https').checked,
@@ -698,12 +700,15 @@ function connectionConfigFromForm() {
 async function onValidate() {
   if (validating) {
     validateAbort?.abort();
-    validating = false;
-    $('btn-validate').textContent = 'Validate';
-    setStatus('Cancelled', 'warn');
+    setStatus('Cancelling...', 'warn');
     return;
   }
   validating = true;
+  token = '';
+  tokenExpiresAt = '';
+  invalidateCatalogCache();
+  updateSendButtons();
+  for (const id of ['host', 'port', 'https', 'username', 'password']) $(id).disabled = true;
   validateAbort = new AbortController();
   $('btn-validate').textContent = 'Cancel';
   setStatus('Validating...', 'pending');
@@ -722,9 +727,9 @@ async function onValidate() {
 
   try {
     await hostPermission;
-    await saveConfig(nextConfig);
+    await saveConfig({ ...nextConfig, token: '', tokenExpiresAt: '' });
     config = { ...config, ...nextConfig };
-    const auth = await loginAndValidate(baseUrl, password, validateAbort.signal);
+    const auth = await loginAndValidate(baseUrl, nextConfig.username, password, validateAbort.signal);
     token = auth.token;
     tokenExpiresAt = auth.expiresAt || '';
     await saveConfig({ token, tokenExpiresAt });
@@ -750,6 +755,7 @@ async function onValidate() {
     }
     updateSendButtons();
   } finally {
+    for (const id of ['host', 'port', 'https', 'username', 'password']) $(id).disabled = false;
     validating = false;
     validateAbort = null;
     $('btn-validate').textContent = 'Validate';
@@ -757,7 +763,7 @@ async function onValidate() {
 }
 
 function fillAgentSelect(sel, selected) {
-  fillSelect(sel, AGENT_MODES.map((m) => ({ id: m.id, label: m.label })), selected || 'eino_single');
+  fillSelect(sel, AGENT_MODES.map((m) => ({ id: m.id, label: m.label })), selected || 'single');
 }
 
 function csSelectWrap(input) {
@@ -903,7 +909,7 @@ async function onSendConfirmed() {
   const instruction = $('dlg-instruction').value.trim() || defaultInstruction();
   const projectId = $('dlg-project').value || '';
   const role = $('dlg-role').value || '';
-  const agentMode = $('dlg-agent').value || 'eino_single';
+  const agentMode = $('dlg-agent').value || 'single';
 
   try {
     await saveConfig({
@@ -980,10 +986,16 @@ function handleStreamEvent(runId, type, message, ev) {
       if (message) appendToRun(runId, 'final', message);
       break;
     case 'eino_agent_reply_stream_start':
+    case 'agent_reply_stream_start':
       appendToRun(runId, 'progress', '\n\n[Sub-agent reply]\n');
       break;
     case 'eino_agent_reply_stream_delta':
+    case 'agent_reply_stream_delta':
       if (message) appendToRun(runId, 'progress', message);
+      break;
+    case 'eino_agent_reply':
+    case 'agent_reply':
+      if (message) appendToRun(runId, 'progress', '\n\n[Sub-agent reply]\n' + message + '\n');
       break;
     case 'progress':
       appendToRun(runId, 'progress', '\n[progress] ' + message + '\n');
@@ -1207,9 +1219,11 @@ function setupTabs() {
 
 $('btn-validate').addEventListener('click', onValidate);
 $('btn-conn-toggle').addEventListener('click', onConnToggle);
-$('host').addEventListener('input', updateConnSummary);
-$('port').addEventListener('input', updateConnSummary);
-$('https').addEventListener('change', updateConnSummary);
+for (const id of ['host', 'port', 'https', 'username', 'password']) {
+  $(id).addEventListener(id === 'https' ? 'change' : 'input', () => {
+    clearAuthSession('Connection changed — please Validate again').catch(onContextLoss);
+  });
+}
 $('btn-send').addEventListener('click', () => openSendDialog());
 $('btn-latest-xhr').addEventListener('click', sendLatestXhr);
 $('btn-stop').addEventListener('click', onStop);

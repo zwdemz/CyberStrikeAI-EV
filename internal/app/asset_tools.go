@@ -36,9 +36,12 @@ func registerAssetTools(server *mcp.Server, db *database.DB, logger *zap.Logger)
 			return textResult("错误: "+err.Error(), true), nil
 		}
 		access, owner, global := assetAccessFromToolContext(ctx, "asset:write")
-		result, err := db.UpsertAssets([]*database.Asset{asset}, owner, global)
+		result, err := db.UpsertAssetsContext(ctx, []*database.Asset{asset}, owner, global)
 		if err != nil {
 			logger.Error("Agent 保存资产失败", zap.Error(err))
+			if database.IsSQLiteBusy(err) {
+				return textResult("资产库持续繁忙，写入未完成；请稍后用相同目标重试", true), nil
+			}
 			return textResult("错误: "+err.Error(), true), nil
 		}
 		if result.Skipped > 0 || asset.ID == "" {
@@ -129,7 +132,10 @@ func registerAssetTools(server *mcp.Server, db *database.DB, logger *zap.Logger)
 		if err := applyAssetPatch(asset, args); err != nil {
 			return textResult("错误: "+err.Error(), true), nil
 		}
-		if err := db.UpdateAsset(id, asset, access); err != nil {
+		if err := db.UpdateAssetContext(ctx, id, asset, access); err != nil {
+			if database.IsSQLiteBusy(err) {
+				return textResult("资产库持续繁忙，更新未完成；请稍后重试", true), nil
+			}
 			return textResult("错误: "+err.Error(), true), nil
 		}
 		updated, err := db.GetAsset(id, access)

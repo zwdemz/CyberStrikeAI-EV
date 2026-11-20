@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// multiAgentPrepared 多代理请求在调用 Eino 前的会话与消息准备结果。
+// multiAgentPrepared 多代理请求在调用 Agent 前的会话与消息准备结果。
 type multiAgentPrepared struct {
 	ConversationID     string
 	CreatedNew         bool
@@ -30,7 +30,7 @@ func chatRequestAgentMode(req *ChatRequest, source string) string {
 	if strings.HasPrefix(strings.TrimSpace(source), "multi_agent") {
 		return config.NormalizeMultiAgentOrchestration(req.Orchestration)
 	}
-	return "eino_single"
+	return "single"
 }
 
 func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context, source string) (*multiAgentPrepared, error) {
@@ -90,6 +90,9 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 			return nil, fmt.Errorf("无权访问该对话")
 		}
 	}
+	if h.tasks != nil && h.tasks.GetTask(conversationID) != nil {
+		return nil, ErrTaskAlreadyRunning
+	}
 	if err := h.db.SetConversationRoleName(conversationID, req.Role); err != nil {
 		h.logger.Warn("更新对话角色失败", zap.String("conversationId", conversationID), zap.String("role", req.Role), zap.Error(err))
 	}
@@ -107,6 +110,11 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		}
 	}
 
+	resolvedMessage, resolveErr := h.db.ResolveConversationPlaceholders(conversationID, req.Message)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("解析对话占位符失败: %w", resolveErr)
+	}
+	req.Message = resolvedMessage
 	finalMessage := req.Message
 	var roleTools []string
 	if webshellID != "" {
@@ -135,6 +143,7 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 			builtin.ToolRecordVulnerability,
 			builtin.ToolListVulnerabilities,
 			builtin.ToolGetVulnerability,
+			builtin.ToolUpdateVulnerabilityStatus,
 			builtin.ToolUpsertProjectFact,
 			builtin.ToolGetProjectFact,
 			builtin.ToolListProjectFacts,
@@ -153,6 +162,21 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 		}
 	}
 
+	retest, retestErr := h.db.GetVulnerabilityRetest(conversationID)
+	if retestErr != nil {
+		return nil, fmt.Errorf("读取复测上下文失败: %w", retestErr)
+	}
+	if retest != nil && len(roleTools) > 0 {
+		// Retesting requires these tools even when the inherited role has an
+		// older tool allowlist. MCP still enforces user and finding permissions.
+		roleTools = append(append([]string(nil), roleTools...), builtin.ToolGetVulnerability, builtin.ToolUpdateVulnerabilityStatus)
+	}
+
+	finalMessage, resolveErr = h.db.ResolveConversationPlaceholders(conversationID, finalMessage)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("解析提示词占位符失败: %w", resolveErr)
+	}
+
 	var savedPaths []string
 	if len(req.Attachments) > 0 {
 		var aerr error
@@ -168,6 +192,11 @@ func (h *AgentHandler) prepareMultiAgentSession(req *ChatRequest, c *gin.Context
 	if uerr != nil {
 		h.logger.Error("保存用户消息失败", zap.Error(uerr))
 		return nil, fmt.Errorf("保存用户消息失败: %w", uerr)
+	}
+	if retest != nil {
+		if err := h.db.SetVulnerabilityRetestPrompt(conversationID, ""); err != nil {
+			h.logger.Warn("清除已发送复测提示词失败", zap.Error(err))
+		}
 	}
 	userMessageID := ""
 	if userMsgRow != nil {

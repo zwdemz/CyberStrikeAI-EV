@@ -91,6 +91,15 @@ func (db *DB) UpdateToolExecutionResult(id string, result *mcp.ToolResult) error
 	if id == "" || result == nil {
 		return nil
 	}
+	var status string
+	if err := db.QueryRow(`SELECT status FROM tool_executions WHERE id = ?`, id).Scan(&status); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if status == mcp.ToolExecutionStatusBlocked {
+		copy := *result
+		copy.Blocked, copy.IsError = true, true
+		result = &copy
+	}
 	resultBytes, err := json.Marshal(result)
 	if err != nil {
 		return err
@@ -276,6 +285,7 @@ type ToolStatsSummary struct {
 	TotalCalls   int
 	SuccessCalls int
 	FailedCalls  int
+	BlockedCalls int
 	LastCallTime *time.Time
 	ToolCount    int
 }
@@ -304,6 +314,7 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 		SELECT COUNT(*),
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0),
 			MAX(start_time),
 			COUNT(DISTINCT tool_name)
 		FROM tool_executions
@@ -313,6 +324,7 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 		&result.Summary.TotalCalls,
 		&result.Summary.SuccessCalls,
 		&result.Summary.FailedCalls,
+		&result.Summary.BlockedCalls,
 		&lastCallRaw,
 		&result.Summary.ToolCount,
 	)
@@ -334,6 +346,7 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 			COUNT(*) AS total_calls,
 			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS success_calls,
 			SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END) AS failed_calls,
+			SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked_calls,
 			MAX(start_time) AS last_call_time
 		FROM tool_executions
 		GROUP BY tool_name
@@ -354,6 +367,7 @@ func (db *DB) LoadToolStatsSummary(topN int) (*ToolStatsSummaryResult, error) {
 			&stat.TotalCalls,
 			&stat.SuccessCalls,
 			&stat.FailedCalls,
+			&stat.BlockedCalls,
 			&lastCallTime,
 		); err != nil {
 			db.logger.Warn("加载 Top 工具统计失败", zap.Error(err))
@@ -385,8 +399,9 @@ func (db *DB) LoadToolStatsSummaryForAccess(topN int, access RBACListAccess) (*T
 	err := db.QueryRow(`SELECT COUNT(*),
 		COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0),
 		MAX(start_time), COUNT(DISTINCT tool_name)`+fromSQL, args...).Scan(
-		&result.Summary.TotalCalls, &result.Summary.SuccessCalls, &result.Summary.FailedCalls,
+		&result.Summary.TotalCalls, &result.Summary.SuccessCalls, &result.Summary.FailedCalls, &result.Summary.BlockedCalls,
 		&lastCall, &result.Summary.ToolCount,
 	)
 	if err != nil {
@@ -398,7 +413,8 @@ func (db *DB) LoadToolStatsSummaryForAccess(topN int, access RBACListAccess) (*T
 	}
 	rows, err := db.Query(`SELECT tool_name, COUNT(*),
 		SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
-		SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END), MAX(start_time)`+
+		SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END),
+		SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), MAX(start_time)`+
 		fromSQL+` GROUP BY tool_name ORDER BY COUNT(*) DESC, tool_name ASC LIMIT ?`, append(args, topN)...)
 	if err != nil {
 		return nil, err
@@ -407,7 +423,7 @@ func (db *DB) LoadToolStatsSummaryForAccess(topN int, access RBACListAccess) (*T
 	for rows.Next() {
 		var stat mcp.ToolStats
 		var last sql.NullString
-		if err := rows.Scan(&stat.ToolName, &stat.TotalCalls, &stat.SuccessCalls, &stat.FailedCalls, &last); err != nil {
+		if err := rows.Scan(&stat.ToolName, &stat.TotalCalls, &stat.SuccessCalls, &stat.FailedCalls, &stat.BlockedCalls, &last); err != nil {
 			return nil, err
 		}
 		if last.Valid {
@@ -916,8 +932,11 @@ func (db *DB) SaveToolStats(toolName string, stats *mcp.ToolStats) error {
 // LoadToolStats 加载所有工具统计信息
 func (db *DB) LoadToolStats() (map[string]*mcp.ToolStats, error) {
 	query := `
-		SELECT tool_name, total_calls, success_calls, failed_calls, last_call_time
-		FROM tool_stats
+		SELECT stats.tool_name, total_calls, success_calls, failed_calls, last_call_time,
+			COALESCE(blocked.calls, 0)
+		FROM tool_stats stats
+		LEFT JOIN (SELECT tool_name, COUNT(*) AS calls FROM tool_executions WHERE status = 'blocked' GROUP BY tool_name) blocked
+		ON blocked.tool_name = stats.tool_name
 	`
 
 	rows, err := db.Query(query)
@@ -937,6 +956,7 @@ func (db *DB) LoadToolStats() (map[string]*mcp.ToolStats, error) {
 			&stat.SuccessCalls,
 			&stat.FailedCalls,
 			&lastCallTime,
+			&stat.BlockedCalls,
 		)
 		if err != nil {
 			db.logger.Warn("加载统计信息失败", zap.Error(err))
@@ -989,6 +1009,7 @@ type CallsTimelineBucket struct {
 	BucketTime time.Time
 	Total      int
 	Failed     int
+	Blocked    int
 }
 
 // truncateCallsTimelineBucket 将时间截断到趋势图桶边界（本地时区，与 handler 侧 truncateToBucket 一致）
@@ -1008,7 +1029,8 @@ func (db *DB) LoadCallsTimeline(since time.Time, dailyBuckets bool) ([]CallsTime
 		query = `
 			SELECT date(start_time, 'localtime') AS bucket,
 				COUNT(*) AS total,
-				SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END) AS failed
+				SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END) AS failed,
+				SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked
 			FROM tool_executions
 			WHERE start_time >= ?
 			GROUP BY bucket
@@ -1018,7 +1040,8 @@ func (db *DB) LoadCallsTimeline(since time.Time, dailyBuckets bool) ([]CallsTime
 		query = `
 			SELECT strftime('%Y-%m-%d %H:00:00', start_time, 'localtime') AS bucket,
 				COUNT(*) AS total,
-				SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END) AS failed
+				SUM(CASE WHEN status IN ('failed', 'hard_timeout', 'orphaned') THEN 1 ELSE 0 END) AS failed,
+				SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked
 			FROM tool_executions
 			WHERE start_time >= ?
 			GROUP BY bucket
@@ -1035,8 +1058,8 @@ func (db *DB) LoadCallsTimeline(since time.Time, dailyBuckets bool) ([]CallsTime
 	buckets := make([]CallsTimelineBucket, 0)
 	for rows.Next() {
 		var bucketStr string
-		var total, failed int
-		if err := rows.Scan(&bucketStr, &total, &failed); err != nil {
+		var total, failed, blocked int
+		if err := rows.Scan(&bucketStr, &total, &failed, &blocked); err != nil {
 			db.logger.Warn("加载调用趋势失败", zap.Error(err))
 			continue
 		}
@@ -1049,6 +1072,7 @@ func (db *DB) LoadCallsTimeline(since time.Time, dailyBuckets bool) ([]CallsTime
 			BucketTime: bucketTime,
 			Total:      total,
 			Failed:     failed,
+			Blocked:    blocked,
 		})
 	}
 	return buckets, nil

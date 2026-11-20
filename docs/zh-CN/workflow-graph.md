@@ -8,10 +8,10 @@
 
 ## 一、在哪里使用工作流
 
-1. 登录 CyberStrikeAI Web 端  
-2. 左侧导航进入 **工作流**  
-3. 在左侧列表选择已有流程，或新建流程  
-4. 在中央画布拖拽、连线、配置节点  
+1. 登录 CyberStrikeAI Web 端\
+2. 左侧导航进入 **工作流**\
+3. 在左侧列表选择已有流程，或新建流程\
+4. 在中央画布拖拽、连线、配置节点\
 5. 填写流程 **ID**、**名称**、**描述** 后点击 **保存**
 
 保存后的流程可在 **角色管理** 中绑定到某个角色。绑定后，用户与该角色对话时会按流程图自动执行（`workflow_policy: auto`）。
@@ -248,7 +248,7 @@ jq({{outputs.scan}}, ".severity") == "high"
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
-| Agent 模式 | `eino_single` / `deep` / `plan_execute` / `supervisor` | `eino_single` |
+| Agent 模式 | `single` / `deep` / `plan_execute` / `supervisor` | `single` |
 | 输入来源 | 上游数据的模板表达式 | `{{previous.output}}` |
 | 节点指令 | 本节点要完成的任务描述 | 空 |
 | 输出变量名 | 写入 `outputs` 的键名 | `agent_result` |
@@ -256,15 +256,15 @@ jq({{outputs.scan}}, ".severity") == "high"
 
 **消息拼装规则：**
 
-- 仅填 **节点指令**：直接把指令发给 Agent  
-- 仅填 **输入来源**：生成「请基于上游节点输出继续处理：…」  
+- 仅填 **节点指令**：直接把指令发给 Agent\
+- 仅填 **输入来源**：生成「请基于上游节点输出继续处理：…」\
 - 两者都填：合并为「上游输入 + 节点指令」
 
 Agent 节点执行后：
 
-- `previous.output` 更新为本节点响应文本  
+- `previous.output` 更新为本节点响应文本\
 - 若配置了 **输出变量名**，同时写入 `outputs[输出变量名]`
-- Agent 子图在 Eino 中拆为 `prepare → execute → finalize`，便于 trace 与后续局部 checkpoint
+- Agent 节点通过原生 DAG 调度 Pi 运行时；节点状态与检查点由 Go 保存
 
 ### 5.3 工具（tool）
 
@@ -310,7 +310,7 @@ Agent 节点执行后：
 
 ### 5.5 审批（hitl）
 
-人工确认检查点。流程运行到该节点前会通过 Eino interrupt/checkpoint 暂停，等待 API 或监控面板审批后恢复。
+人工确认检查点。流程运行到该节点前会通过原生 Workflow 检查点暂停，等待 API 或监控面板审批后恢复。
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
@@ -362,7 +362,7 @@ HITL 等待信息会记录：
 
 若不填连线条件：
 
-- 非条件节点：连线始终放行  
+- 非条件节点：连线始终放行\
 - 条件节点：按出边顺序自动分配是/否分支
 
 ---
@@ -420,9 +420,9 @@ HITL 等待信息会记录：
 
 ### 8.1 在角色管理中绑定
 
-1. 进入 **角色管理**，编辑或新建角色  
-2. 选择绑定的 **工作流** ID  
-3. 策略设为 `auto`（默认：有 `workflow_id` 时自动执行）  
+1. 进入 **角色管理**，编辑或新建角色\
+2. 选择绑定的 **工作流** ID\
+3. 策略设为 `auto`（默认：有 `workflow_id` 时自动执行）\
 4. 保存角色
 
 也可在角色 YAML 中直接配置：
@@ -438,8 +438,8 @@ workflow_policy: auto
 
 用户选择该角色并发送消息后：
 
-1. 引擎加载对应 `graph_json` 并按图执行  
-2. 对话页可看到 `workflow_start`、`workflow_node_start`、Agent 推理等进度事件  
+1. 引擎加载对应 `graph_json` 并按图执行\
+2. 对话页可看到 `workflow_start`、`workflow_node_start`、Agent 推理等进度事件\
 3. 流程结束后返回摘要，列出 `outputs` 中所有命名输出
 
 若未配置输出节点或条件未命中，`outputs` 可能为空，摘要会提示检查输出节点与分支。
@@ -560,13 +560,13 @@ token 与成本是否存在取决于底层模型/Agent 事件是否上报 usage�
 
 ## 十三、最佳实践
 
-1. **命名规范**：为每个需要被引用的节点设置有意义的输出变量名，如 `scan_result`、`parsed_targets`，避免都叫 `agent_result`。  
-2. **跨节点传参优先用 `outputs`**：只要中间可能插入条件、工具、审批节点，就应用命名变量。  
-3. **`previous` 仅用于直连**：A → B 且无中间节点时，`{{previous.output}}` 最简洁。  
-4. **条件判断引用源数据**：判断 Agent 输出时用 `{{outputs.xxx}}`，不要用 `{{previous.output}}`（除非条件紧跟在目标 Agent 之后）。  
-5. **每条路径都要有出口**：确保「是」「否」分支最终都能到达 **输出** 节点（或你期望的终点）。  
-6. **多上游节点显式选择汇聚策略**：综合结果用 `all_merge`，兜底用 `first_non_empty`，关键链路用 `fail_fast`。  
-7. **嵌套 JSON 用 JSONPath/JQ 安全路径**：例如 `jsonpath({{previous.output}}, "$.status") == "ok"`。  
+1. **命名规范**：为每个需要被引用的节点设置有意义的输出变量名，如 `scan_result`、`parsed_targets`，避免都叫 `agent_result`。\
+2. **跨节点传参优先用 `outputs`**：只要中间可能插入条件、工具、审批节点，就应用命名变量。\
+3. **`previous` 仅用于直连**：A → B 且无中间节点时，`{{previous.output}}` 最简洁。\
+4. **条件判断引用源数据**：判断 Agent 输出时用 `{{outputs.xxx}}`，不要用 `{{previous.output}}`（除非条件紧跟在目标 Agent 之后）。\
+5. **每条路径都要有出口**：确保「是」「否」分支最终都能到达 **输出** 节点（或你期望的终点）。\
+6. **多上游节点显式选择汇聚策略**：综合结果用 `all_merge`，兜底用 `first_non_empty`，关键链路用 `fail_fast`。\
+7. **嵌套 JSON 用 JSONPath/JQ 安全路径**：例如 `jsonpath({{previous.output}}, "$.status") == "ok"`。\
 8. **保存前先 dry-run**：用简单消息验证数据传递和分支，再绑定角色真实执行。
 
 ---
@@ -576,7 +576,7 @@ token 与成本是否存在取决于底层模型/Agent 事件是否上报 usage�
 | 模块 | 路径 |
 |------|------|
 | 执行引擎 | `internal/workflow/runner.go` |
-| Eino 编译 / checkpoint / HITL | `internal/workflow/eino_compile.go` |
+| 原生 DAG / checkpoint / HITL | `internal/workflow/native_runtime.go` |
 | 图校验 | `internal/workflow/validation.go` |
 | 表达式 / JSONPath / 汇聚 | `internal/workflow/expression.go`、`jsonpath.go`、`join.go` |
 | dry-run / replay 数据 | `internal/workflow/dry_run.go`、`internal/handler/workflow_run.go` |
