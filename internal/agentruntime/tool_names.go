@@ -36,7 +36,7 @@ func sanitizeOpenAIToolName(name string) string {
 // execution receive original MCP names; duplicate aliases fail before any model call.
 func providerToolNames(req Request, execute ToolExecutor) (Request, ToolExecutor, map[string]string, error) {
 	forward, reverse := map[string]string{}, map[string]string{}
-	req.Tools = append([]Tool(nil), req.Tools...)
+	req.Tools = append([]Tool{}, req.Tools...)
 	for i, tool := range req.Tools {
 		alias := sanitizeOpenAIToolName(tool.Name)
 		if _, exists := reverse[alias]; exists {
